@@ -1,0 +1,1 @@
+# lit curator readme

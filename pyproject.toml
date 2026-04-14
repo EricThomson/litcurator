@@ -1,0 +1,14 @@
+[build-system]
+requires = ["uv_build"]
+build-backend = "uv_build"
+
+[project]
+name = "litcurator"
+version = "0.1.0"
+description = "Find useful pubmed stuff using ai "
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv.build-backend]
+module-root = "src"
