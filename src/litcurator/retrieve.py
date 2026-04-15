@@ -18,6 +18,8 @@ from datetime import date
 import requests
 from dotenv import load_dotenv
 
+from litcurator import db
+
 load_dotenv()
 
 NCBI_API_KEY = os.getenv("NCBI_API_KEY")
@@ -155,6 +157,17 @@ def parse_single_article(article):
                 epub_date = f"{epub_year}-{epub_month}-{epub_day}"
             break
 
+    # Electronic publication date (epub ahead of print)
+    epub_date = ""
+    for article_date in article.findall(".//ArticleDate"):
+        if article_date.get("DateType") == "Electronic":
+            epub_year = article_date.findtext("Year", default="")
+            epub_month = article_date.findtext("Month", default="")
+            epub_day = article_date.findtext("Day", default="")
+            if epub_year and epub_month and epub_day:
+                epub_date = f"{epub_year}-{epub_month}-{epub_day}"
+            break
+
     # Authors and affiliations
     author_els = article.findall(".//Author")
     authors = []
@@ -189,6 +202,7 @@ def parse_single_article(article):
         "journal": journal,
         "authors": authors,
         "pub_date": pub_date,
+        "epub_date": epub_date,
         "doi": doi,
         "pub_types": pub_types,
     }
@@ -249,6 +263,11 @@ def retrieve_range(start_date, end_date, output_path=None, journals=None):
         all_articles.extend(new_articles)
 
     print(f"\nTotal articles retrieved: {len(all_articles)}")
+
+    conn = db.get_connection()
+    inserted = db.insert_articles(conn, all_articles)
+    conn.close()
+    print(f"New articles added to database: {inserted} ({len(all_articles) - inserted} already seen)")
 
     if output_path:
         with open(output_path, "w") as f:
