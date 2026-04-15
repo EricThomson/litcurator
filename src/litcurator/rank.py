@@ -1,3 +1,3 @@
 """
-LLM-based ranking of PubMed candidates against user interest profile.
+LLM-based ranking of initial PubMed candidates against user interests.
 """

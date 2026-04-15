@@ -4,11 +4,17 @@ build-backend = "uv_build"
 
 [project]
 name = "litcurator"
-version = "0.1.0"
-description = "Find useful pubmed stuff using ai "
+version = "0.0.1"
+description = "litcurator: LLM-powered pubmed literature search"
 readme = "README.md"
+license = {text = "Apache-2.0"}
 requires-python = ">=3.12"
-dependencies = []
+authors = [{ name = "Eric Thomson", email = "thomson.eric@gmail.com" }]
+dependencies = [
+    "requests",
+    "python-dotenv",
+    "streamlit",
+]
 
 [tool.uv.build-backend]
 module-root = "src"
