@@ -19,6 +19,7 @@ import requests
 from dotenv import load_dotenv
 
 from litcurator import db
+from litcurator.config import JOURNALS
 
 load_dotenv()
 
@@ -26,35 +27,6 @@ NCBI_API_KEY = os.getenv("NCBI_API_KEY")
 
 ESEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 EFETCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
-
-"""
-Journals to search.
-neuro_keyword=True means we add 'neuroscience' to the query (general journals).
-neuro_keyword=False means the journal is neuroscience-specific (no keyword needed).
-"""
-JOURNALS = [
-    # General journals — neuroscience keyword required
-    {"journal": "Science",                                                              "neuro_keyword": True},
-    {"journal": "Nature",                                                               "neuro_keyword": True},
-    {"journal": "Cell",                                                                 "neuro_keyword": True},
-    {"journal": "Curr Biol",                                                            "neuro_keyword": True},
-    {"journal": "Nature communications",                                                "neuro_keyword": True},
-    {"journal": "Proceedings of the National Academy of Sciences of the United States of America", "neuro_keyword": True},
-    {"journal": "eLife",                                                                "neuro_keyword": True},
-    # Neuroscience-specific journals — no keyword needed
-    {"journal": "Nature neuroscience",                                                  "neuro_keyword": False},
-    {"journal": "Neuron",                                                               "neuro_keyword": False},
-    {"journal": "Nature reviews. Neuroscience",                                         "neuro_keyword": False},
-    {"journal": "Trends Neurosci",                                                      "neuro_keyword": False},
-    {"journal": "The Journal of neuroscience : the official journal of the Society for Neuroscience", "neuro_keyword": False},
-    {"journal": "J Neurophysiol",                                                       "neuro_keyword": False},
-    {"journal": "Cerebral cortex (New York, N.Y. : 1991)",                              "neuro_keyword": False},
-    {"journal": "Curr Opin Neurobiol",                                                  "neuro_keyword": False},
-    {"journal": "Journal of computational neuroscience",                                "neuro_keyword": False},
-    {"journal": "Annual review of neuroscience",                                        "neuro_keyword": False},
-    {"journal": "Annual review of psychology",                                          "neuro_keyword": True},
-    {"journal": "Neural computation",                                                   "neuro_keyword": False},
-]
 
 
 def build_query(journal, neuro_keyword, start_date, end_date):
