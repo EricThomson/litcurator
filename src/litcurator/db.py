@@ -158,6 +158,40 @@ def update_curation(conn, pmid, label, score=None, notes=None):
     conn.commit()
 
 
+def reset_domain_scores(conn, journal=None):
+    """
+    Reset domain_score, domain_reasoning back to NULL and status back to 1.
+    Optionally limit to a specific journal.
+
+    Args:
+        conn: SQLite connection
+        journal: Optional journal name string (default None = all articles)
+    """
+    if journal:
+        conn.execute(
+            """
+            UPDATE articles
+            SET domain_score = NULL, domain_reasoning = NULL, status = 1
+            WHERE journal = ?
+            """,
+            (journal,)
+        )
+    else:
+        conn.execute(
+            """
+            UPDATE articles
+            SET domain_score = NULL, domain_reasoning = NULL, status = 1
+            """
+        )
+    conn.commit()
+
+
+def get_all_articles(conn):
+    """Fetch all articles regardless of status, ordered by date_added."""
+    cursor = conn.execute("SELECT * FROM articles ORDER BY date_added")
+    return cursor.fetchall()
+
+
 def get_article(conn, pmid):
     """Fetch a single article by PMID. Returns sqlite3.Row or None."""
     cursor = conn.execute("SELECT * FROM articles WHERE pmid = ?", (pmid,))

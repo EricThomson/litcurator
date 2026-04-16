@@ -12,6 +12,7 @@ requires-python = ">=3.12"
 authors = [{ name = "Eric Thomson", email = "thomson.eric@gmail.com" }]
 dependencies = [
     "requests",
+    "anthropic",
     "python-dotenv",
     "streamlit",
 ]

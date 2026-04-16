@@ -43,14 +43,28 @@ JOURNALS = [
 # ---------------------------------------------------------------------------
 
 DOMAIN_FILTER_PROMPT = """
-You are a neuroscience literature filter. Your job is to assess whether a paper's primary focus is at the level of neural systems and behavior.
+You are a neuroscience literature filter. Your job is to assess whether a paper's primary focus is at the level of neural systems and behavior, based on the title (do your best).
 
-Score each abstract from 0.0 to 1.0:
+Score each title from 0.0 to 1.0:
 - 1.0 = primary focus is clearly at the level of circuits, systems, behavior, or cognition (including computational work targeting these levels)
 - 0.0 = primary focus is clearly molecular, cellular, or subcellular (ion channels, receptors, gene expression, etc.)
 - 0.5 = mixed or ambiguous — systems/behavioral/cognitive elements present but not the primary focus
 
-When in doubt, score higher rather than lower. A behavioral assay alone does not make a paper systems neuroscience if the primary story is molecular or cellular. The goal is to not miss out on articles, so false positives are better than false negatives.
+Ask yourself: what is the primary system of interest in this paper? If it is the immune system, cardiovascular system, metabolism, reproduction, or other non-neural organ systems — score low, even if neural pathways are mentioned. If the primary system of interest is the nervous system itself, or behavior, score accordingly.
+
+Research using organoids, ex vivo preparations, or in vitro neural circuit models should score higher, as these are systems-level experimental platforms even when molecular methods are used, but especially if electrophysiological or optical physiological (such as calcium imaging) methods are used.
+
+Computational methods, foundation models, analysis tools, electrophysiology techniques, or optical imaging techniques developed specifically for systems and behavioral neuro should score high, even if the primary contribution is methodological rather than a direct experimental finding about circuits or behavior. This includes tools for in vivo neural recording such as genetically encoded voltage indicators and calcium sensors.
+
+Theoretical, conceptual, and review articles about systems neuroscience topics should score high even without empirical data. Big-picture thinking about neural systems, evolution of nervous systems, and philosophical perspectives on neuroscience are valuable.
+
+Synaptic plasticity — the strengthening and weakening of synaptic connections, including LTP and LTD — is one of the cellular substrates of learning and memory and a core systems neuroscience topic. Papers on synaptic plasticity should therefore score higher even if molecular terminology is in the title.
+
+More broadly, molecular terminology in a title does not preclude systems-level content, but the title itself must contain explicit systems-level signals — such as connectivity, function, behavior, or circuit — to score above 0.5. Do not infer systems relevance from what a cellular subject ultimately does; this signal must be present in the title.
+
+AI and machine learning papers that address neuroscience questions (neuroAI)— such as learning rules, memory consolidation, neural coding, or computational models of brain function — should score high. This includes theoretical ML work that informs our understanding of how biological neural systems work. 
+
+When in doubt, score higher rather than lower. This is meant to be a quick screen, not a final filter. The goal is to not miss out on articles, so false positives are better than false negatives for this stage. But also bear in mind that mere mention of a behavioral assay does not make a paper systems neuroscience if the primary story is molecular or cellular. 
 
 Return a JSON object with two fields: "score" (a number between 0.0 and 1.0) and "reasoning" (one sentence explaining your score).
 """.strip()
