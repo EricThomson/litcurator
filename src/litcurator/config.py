@@ -39,10 +39,29 @@ JOURNALS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Stage 1: Domain filter prompt
+# High-impact journal score bump
 # ---------------------------------------------------------------------------
 
-DOMAIN_FILTER_PROMPT = """
+"""
+Articles from these journals get a +0.1 score bump before threshold is applied.
+Rationale: missing a paper from these venues is a higher cost than a false positive.
+"""
+HIGH_IMPACT_JOURNALS = {
+    "Nature",
+    "Science",
+    "Science (New York, N.Y.)",
+    "Cell",
+    "Neuron",
+    "Nature neuroscience",
+    "Nature reviews. Neuroscience",
+}
+HIGH_IMPACT_BUMP = 0.1
+
+# ---------------------------------------------------------------------------
+# Stage 1: Domain filter prompts
+# ---------------------------------------------------------------------------
+
+DOMAIN_FILTER_PROMPT_TITLE = """
 You are a neuroscience literature filter. Your job is to assess whether a paper's primary focus is at the level of neural systems and behavior, based on the title (do your best).
 
 Score each title from 0.0 to 1.0:
@@ -62,9 +81,50 @@ Synaptic plasticity — the strengthening and weakening of synaptic connections,
 
 More broadly, molecular terminology in a title does not preclude systems-level content, but the title itself must contain explicit systems-level signals — such as connectivity, function, behavior, or circuit — to score above 0.5. Do not infer systems relevance from what a cellular subject ultimately does; this signal must be present in the title.
 
-AI and machine learning papers that address neuroscience questions (neuroAI)— such as learning rules, memory consolidation, neural coding, or computational models of brain function — should score high. This includes theoretical ML work that informs our understanding of how biological neural systems work. 
+AI and machine learning papers that address neuroscience questions (neuroAI)— such as learning rules, memory consolidation, neural coding, or computational models of brain function — should score high. This includes theoretical ML work that informs our understanding of how biological neural systems work.
 
-When in doubt, score higher rather than lower. This is meant to be a quick screen, not a final filter. The goal is to not miss out on articles, so false positives are better than false negatives for this stage. But also bear in mind that mere mention of a behavioral assay does not make a paper systems neuroscience if the primary story is molecular or cellular. 
+When in doubt, score higher rather than lower. This is meant to be a quick screen, not a final filter. The goal is to not miss out on articles, so false positives are better than false negatives for this stage. But also bear in mind that mere mention of a behavioral assay does not make a paper systems neuroscience if the primary story is molecular or cellular.
 
 Return a JSON object with two fields: "score" (a number between 0.0 and 1.0) and "reasoning" (one sentence explaining your score).
 """.strip()
+
+DOMAIN_FILTER_PROMPT_ABSTRACT = """
+You are a neuroscience literature filter. Your job is to assess whether a
+paper's primary focus is at the level of neural systems and behavior.
+
+Score each abstract from 0.0 to 1.0:
+- 1.0 = primary focus is clearly circuits, systems, behavior, or cognition
+        (including computational work targeting these levels)
+- 0.0 = primary focus is clearly molecular, cellular, or subcellular
+        (ion channels, receptors, gene expression, etc.)
+- 0.5 = mixed or ambiguous
+
+Ask: what is the primary system of interest? If it is the immune system,
+cardiovascular system, metabolism, reproduction, or other non-neural organ
+systems — score low, even if neural pathways are mentioned. If it is the
+nervous system itself, or behavior, score accordingly.
+
+Computational methods, electrophysiology, and optical imaging tools developed
+specifically for systems and behavioral neuroscience should score high, even
+if the contribution is methodological. This includes in vivo recording tools
+such as genetically encoded voltage indicators and calcium sensors.
+
+Theoretical, conceptual, and review articles on systems neuroscience topics
+should score high even without empirical data.
+
+Synaptic plasticity — the strengthening and weakening of synaptic connections,
+including LTP and LTD — is a core systems neuroscience topic and should score
+higher even when the framing is mechanistic.
+
+AI and machine learning papers that address neuroscience questions (NeuroAI)
+— learning rules, memory consolidation, neural coding, computational models
+of brain function — should score high. This includes theoretical ML work that
+informs our understanding of biological neural systems.
+
+When in doubt, score higher. False positives are better than false negatives
+at this stage.
+
+Return a JSON object with two fields: "score" (a number between 0.0 and 1.0) and "reasoning" (one sentence explaining your score).
+""".strip()
+
+DOMAIN_FILTER_PROMPT = DOMAIN_FILTER_PROMPT_TITLE
