@@ -15,7 +15,8 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-DATA_DIR = Path.home() / ".litcurator"
+from litcurator.config import DATA_DIR
+
 DB_PATH = DATA_DIR / "litcurator.db"
 
 CREATE_TABLE_SQL = """
@@ -38,6 +39,10 @@ CREATE TABLE IF NOT EXISTS articles (
     curation_score REAL,        -- LLM score 0.0-1.0
     curation_label INTEGER,     -- 0 (no), 1 (meh/keep), 2 (love it)
     curation_notes TEXT,        -- curator's annotations
+
+    -- Human labeling
+    selected_for_review INTEGER DEFAULT 0,  -- 1 if drawn for human labeling
+    relevant INTEGER,                       -- 1 relevant, 0 not relevant, NULL unlabeled
 
     -- Pipeline metadata
     status INTEGER DEFAULT 1,   -- 1: retrieved, 2: systems-scored, 3: curated
@@ -144,7 +149,7 @@ def update_curation(conn, pmid, label, score=None, notes=None):
     Args:
         conn: SQLite connection
         pmid: PubMed ID string
-        label: int 0 (no), 1 (meh/keep), 2 (love it)
+        label: int 0 (didn't make cut), 1 (above the noise 🙂), 2 (well above noise ❤️), 3 (can't miss 🔥)
         score: optional float 0.0-1.0 from LLM
         notes: optional string annotations from curator
     """

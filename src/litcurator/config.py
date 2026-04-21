@@ -5,37 +5,52 @@ To adapt this tool for a different field, update JOURNALS and the prompts in
 this file. The rest of the pipeline (retrieve.py, rank.py, db.py) is domain-agnostic.
 """
 
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+
+DATA_DIR = Path.home() / ".litcurator"
+GROUND_TRUTH_DB = DATA_DIR / "ground_truth.db"
+PROFILE_DIR = DATA_DIR / "profile"
+PROFILE_PATH = PROFILE_DIR / "profile.md"
+PROFILE_QA_LOG = PROFILE_DIR / "qa_log.md"
+
 # ---------------------------------------------------------------------------
 # Journals
 # ---------------------------------------------------------------------------
 
 """
 Journals to search each retrieval run.
-neuro_keyword=True means we add 'neuroscience' to the query (general journals).
-neuro_keyword=False means the journal is field-specific (no keyword needed).
+neuro_keyword: string added to query to filter for neuroscience content, or None for
+field-specific journals that need no filtering. General journals use a broad keyword
+to avoid missing papers with thin PubMed metadata.
 """
+NEURO_KEYWORD = "(neur* OR brain)"
+
 JOURNALS = [
-    # General journals — neuroscience keyword required
-    {"journal": "Science",                                                              "neuro_keyword": True},
-    {"journal": "Nature",                                                               "neuro_keyword": True},
-    {"journal": "Cell",                                                                 "neuro_keyword": True},
-    {"journal": "Curr Biol",                                                            "neuro_keyword": True},
-    {"journal": "Nature communications",                                                "neuro_keyword": True},
-    {"journal": "Proceedings of the National Academy of Sciences of the United States of America", "neuro_keyword": True},
-    {"journal": "eLife",                                                                "neuro_keyword": True},
+    # General journals — broad neuro keyword required
+    {"journal": "Science",                                                              "neuro_keyword": NEURO_KEYWORD},
+    {"journal": "Nature",                                                               "neuro_keyword": NEURO_KEYWORD},
+    {"journal": "Cell",                                                                 "neuro_keyword": NEURO_KEYWORD},
+    {"journal": "Curr Biol",                                                            "neuro_keyword": NEURO_KEYWORD},
+    {"journal": "Nature communications",                                                "neuro_keyword": NEURO_KEYWORD},
+    {"journal": "Proceedings of the National Academy of Sciences of the United States of America", "neuro_keyword": NEURO_KEYWORD},
+    {"journal": "eLife",                                                                "neuro_keyword": NEURO_KEYWORD},
     # Neuroscience-specific journals — no keyword needed
-    {"journal": "Nature neuroscience",                                                  "neuro_keyword": False},
-    {"journal": "Neuron",                                                               "neuro_keyword": False},
-    {"journal": "Nature reviews. Neuroscience",                                         "neuro_keyword": False},
-    {"journal": "Trends Neurosci",                                                      "neuro_keyword": False},
-    {"journal": "The Journal of neuroscience : the official journal of the Society for Neuroscience", "neuro_keyword": False},
-    {"journal": "J Neurophysiol",                                                       "neuro_keyword": False},
-    {"journal": "Cerebral cortex (New York, N.Y. : 1991)",                              "neuro_keyword": False},
-    {"journal": "Curr Opin Neurobiol",                                                  "neuro_keyword": False},
-    {"journal": "Journal of computational neuroscience",                                "neuro_keyword": False},
-    {"journal": "Annual review of neuroscience",                                        "neuro_keyword": False},
-    {"journal": "Annual review of psychology",                                          "neuro_keyword": True},
-    {"journal": "Neural computation",                                                   "neuro_keyword": False},
+    {"journal": "Nature neuroscience",                                                  "neuro_keyword": None},
+    {"journal": "Neuron",                                                               "neuro_keyword": None},
+    {"journal": "Nature reviews. Neuroscience",                                         "neuro_keyword": None},
+    {"journal": "Trends Neurosci",                                                      "neuro_keyword": None},
+    {"journal": "The Journal of neuroscience : the official journal of the Society for Neuroscience", "neuro_keyword": None},
+    {"journal": "J Neurophysiol",                                                       "neuro_keyword": None},
+    {"journal": "Cerebral cortex (New York, N.Y. : 1991)",                              "neuro_keyword": None},
+    {"journal": "Curr Opin Neurobiol",                                                  "neuro_keyword": None},
+    {"journal": "Journal of computational neuroscience",                                "neuro_keyword": None},
+    {"journal": "Annual review of neuroscience",                                        "neuro_keyword": None},
+    {"journal": "Annual review of psychology",                                          "neuro_keyword": NEURO_KEYWORD},
+    {"journal": "Neural computation",                                                   "neuro_keyword": None},
 ]
 
 # ---------------------------------------------------------------------------

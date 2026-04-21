@@ -39,7 +39,7 @@ def build_query(journal, neuro_keyword, start_date, end_date):
     abstract_filter = "hasabstract"
 
     if neuro_keyword:
-        query = f"{date_range} AND {journal_filter} AND neuroscience AND {abstract_filter}"
+        query = f"{date_range} AND {journal_filter} AND {neuro_keyword} AND {abstract_filter}"
     else:
         query = f"{date_range} AND {journal_filter} AND {abstract_filter}"
 
@@ -106,13 +106,22 @@ def parse_single_article(article):
     journal = journal_el.text if journal_el is not None else ""
 
     # Publication date — fall back to MedlineDate if structured date is missing
+    MONTH_MAP = {
+        "Jan": "01", "Feb": "02", "Mar": "03", "Apr": "04",
+        "May": "05", "Jun": "06", "Jul": "07", "Aug": "08",
+        "Sep": "09", "Oct": "10", "Nov": "11", "Dec": "12",
+    }
     year_el = article.find(".//PubDate/Year")
     month_el = article.find(".//PubDate/Month")
+    day_el = article.find(".//PubDate/Day")
     pub_date = ""
     if year_el is not None:
         pub_date = year_el.text
         if month_el is not None:
-            pub_date = f"{year_el.text}-{month_el.text}"
+            month_num = MONTH_MAP.get(month_el.text, month_el.text)
+            pub_date = f"{year_el.text}-{month_num}"
+            if day_el is not None:
+                pub_date = f"{pub_date}-{int(day_el.text):02d}"
     else:
         medline_el = article.find(".//PubDate/MedlineDate")
         if medline_el is not None:
@@ -180,13 +189,14 @@ def parse_single_article(article):
     }
 
 
-def retrieve_range(start_date, end_date, output_path=None, journals=None):
+def retrieve_range(start_date, end_date, db_path=None, output_path=None, journals=None):
     """
     Fetch all candidate articles across all configured journals for a given date range.
 
     Args:
         start_date: Start of date range (date object)
         end_date: End of date range (date object)
+        db_path: Optional path to SQLite DB. Defaults to DB_PATH.
         output_path: Optional path to save results as JSON. If None, results
                      are returned but not saved.
         journals: Optional list of journal dicts to search. Defaults to JOURNALS.
@@ -236,7 +246,7 @@ def retrieve_range(start_date, end_date, output_path=None, journals=None):
 
     print(f"\nTotal articles retrieved: {len(all_articles)}")
 
-    conn = db.get_connection()
+    conn = db.get_connection(db_path)
     inserted = db.insert_articles(conn, all_articles)
     conn.close()
     print(f"New articles added to database: {inserted} ({len(all_articles) - inserted} already seen)")
@@ -249,13 +259,14 @@ def retrieve_range(start_date, end_date, output_path=None, journals=None):
     return all_articles
 
 
-def retrieve_month(year, month, output_path=None, journals=None):
+def retrieve_month(year, month, db_path=None, output_path=None, journals=None):
     """
     Convenience wrapper around retrieve_range for a full calendar month.
 
     Args:
         year: Publication year (e.g. 2026)
         month: Publication month as integer (e.g. 2 for February)
+        db_path: Optional path to SQLite DB. Defaults to DB_PATH.
         output_path: Optional path to save results as JSON.
         journals: Optional list of journal dicts to search. Defaults to JOURNALS.
 
@@ -266,4 +277,4 @@ def retrieve_month(year, month, output_path=None, journals=None):
     last_day = calendar.monthrange(year, month)[1]
     end_date = date(year, month, last_day)
 
-    return retrieve_range(start_date, end_date, output_path=output_path, journals=journals)
+    return retrieve_range(start_date, end_date, db_path=db_path, output_path=output_path, journals=journals)
