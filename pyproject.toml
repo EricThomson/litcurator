@@ -17,5 +17,8 @@ dependencies = [
     "streamlit",
 ]
 
+[project.scripts]
+litcurator = "litcurator.label:main"
+
 [tool.uv.build-backend]
 module-root = "src"
