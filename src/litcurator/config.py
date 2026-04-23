@@ -18,6 +18,13 @@ PROFILE_PATH = PROFILE_DIR / "profile.md"
 PROFILE_QA_LOG = PROFILE_DIR / "qa_log.md"
 
 # ---------------------------------------------------------------------------
+# Labeling
+# ---------------------------------------------------------------------------
+
+RELEVANCE_BATCH_SIZE = 25
+CURATION_BATCH_SIZE = 10
+
+# ---------------------------------------------------------------------------
 # Journals
 # ---------------------------------------------------------------------------
 
@@ -71,6 +78,17 @@ HIGH_IMPACT_JOURNALS = {
     "Nature reviews. Neuroscience",
 }
 HIGH_IMPACT_BUMP = 0.1
+
+# ---------------------------------------------------------------------------
+# Journal score adjustments
+# ---------------------------------------------------------------------------
+
+# Per-journal score adjustments applied before thresholding.
+# Negative values penalize journals that pass too many off-topic titles.
+JOURNAL_SCORE_ADJUSTMENTS = {
+    "Nature communications": -0.1,
+    "eLife": -0.05,
+}
 
 # ---------------------------------------------------------------------------
 # Stage 1: Domain filter prompts

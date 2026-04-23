@@ -9,7 +9,6 @@ import json
 import random
 from litcurator.config import DATA_DIR
 
-BATCH_SIZE = 10
 BATCH_STATE_FILE = DATA_DIR / "batch_state.txt"
 RANDOM_SEED = 42
 TARGET_MONTHS = ["2025-01", "2025-03", "2025-05", "2025-07", "2025-09", "2025-11"]
@@ -113,16 +112,20 @@ def print_status(conn):
         "WHERE relevant = 1 AND curation_label IS NOT NULL "
         "GROUP BY curation_label ORDER BY curation_label"
     ).fetchall())
-    curation_unlabeled = conn.execute(
-        "SELECT COUNT(*) FROM articles WHERE relevant = 1 AND curation_label IS NULL"
-    ).fetchone()[0]
+    curation_labeled = sum(curation_counts.values())
+
     print(f"Total articles in target months: {total}")
     print(f"Selected for review:  {selected}")
     print(f"Relevance-labeled:    {relevance_labeled} of {selected}")
-    print(f"Relevant:             {relevant}")
-    print(f"  Curation unlabeled: {curation_unlabeled}")
+    pct_relevant = 100 * relevant / relevance_labeled if relevance_labeled > 0 else 0
+    print(f"Relevant:             {relevant} ({pct_relevant:.1f}%)")
+    print(f"Curation-labeled:     {curation_labeled} of {relevant}")
+    print(f"  Breakdown:")
     for label in range(6):
         print(f"  {label}: {curation_counts.get(label, 0)}")
+    above_noise = sum(curation_counts.get(l, 0) for l in range(1, 6))
+    pct = 100 * above_noise / curation_labeled if curation_labeled > 0 else 0
+    print(f"  Above the noise (1+): {above_noise} ({pct:.1f}% of curated)")
 
 
 def main():
