@@ -5,7 +5,7 @@ build-backend = "uv_build"
 [project]
 name = "litcurator"
 version = "0.0.1"
-description = "litcurator: LLM-powered pubmed literature search"
+description = "litcurator: LLM-powered pubmed literature extraction"
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.12"
