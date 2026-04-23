@@ -14,7 +14,7 @@ import streamlit as st
 from litcurator import db
 from litcurator.config import GROUND_TRUTH_DB
 from litcurator.config import RELEVANCE_BATCH_SIZE as BATCH_SIZE
-from litcurator.label import render_authors, read_batch_state, write_batch_state, BATCH_STATE_FILE
+from litcurator.label import render_authors, read_batch_state, write_batch_state, BATCH_STATE_FILE, get_status
 
 st.title("LitCurator — Relevance Labeling")
 
@@ -86,6 +86,13 @@ remaining = [a for a in articles if a["relevant"] is None]
 
 if st.session_state.get("done"):
     st.title("See you next time! 😊👋")
+    st.divider()
+    s = get_status(conn)
+    col_rel, col_cur = st.columns(2)
+    col_rel.metric("Relevance labeled", f"{s['relevance_labeled']} / {s['selected']}")
+    col_rel.metric("Relevant", f"{s['relevant']}  ({s['pct_relevant']:.1f}%)")
+    col_cur.metric("Curation labeled", f"{s['curation_labeled']} / {s['relevant']}")
+    col_cur.metric("Above the noise (1+)", f"{s['above_noise']}  ({s['pct_above_noise']:.1f}%)")
     conn.close()
     st.stop()
 
@@ -138,6 +145,10 @@ if batch_count >= BATCH_SIZE and st.session_state.review_index is None:
         st.session_state.review_index = None
         st.rerun()
     if col_done.button("Done", type="secondary"):
+        write_batch_state("relevance", labeled, 0.0, total_elapsed)
+        st.session_state.batch_history = []
+        save_batch_history("relevance", [])
+        st.session_state.review_index = None
         st.session_state.done = True
         st.rerun()
     if st.session_state.batch_history:

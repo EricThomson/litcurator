@@ -20,5 +20,8 @@ dependencies = [
 [project.scripts]
 litcurator = "litcurator.label:main"
 
+[project.urls]
+Repository = "https://github.com/EricThomson/litcurator"
+
 [tool.uv.build-backend]
 module-root = "src"
