@@ -61,33 +61,23 @@ JOURNALS = [
 ]
 
 # ---------------------------------------------------------------------------
-# High-impact journal score bump
-# ---------------------------------------------------------------------------
-
-"""
-Articles from these journals get a +0.1 score bump before threshold is applied.
-Rationale: missing a paper from these venues is a higher cost than a false positive.
-"""
-HIGH_IMPACT_JOURNALS = {
-    "Nature",
-    "Science",
-    "Science (New York, N.Y.)",
-    "Cell",
-    "Neuron",
-    "Nature neuroscience",
-    "Nature reviews. Neuroscience",
-}
-HIGH_IMPACT_BUMP = 0.1
-
-# ---------------------------------------------------------------------------
 # Journal score adjustments
 # ---------------------------------------------------------------------------
 
 # Per-journal score adjustments applied before thresholding.
+# Positive values boost journals where missing a paper is costly.
 # Negative values penalize journals that pass too many off-topic titles.
 JOURNAL_SCORE_ADJUSTMENTS = {
-    "Nature communications": -0.1,
-    "eLife": -0.05,
+    "Nature":                          +0.10,
+    "Science":                         +0.10,
+    "Science (New York, N.Y.)":        +0.10,
+    "Cell":                            +0.10,
+    "Neuron":                          +0.10,
+    "Nature neuroscience":             +0.10,
+    "Nature reviews. Neuroscience":    +0.10,
+    "Curr Biol":                       +0.05,
+    "Nature communications":           -0.10,
+    "eLife":                           -0.05,
 }
 
 # ---------------------------------------------------------------------------

@@ -227,7 +227,7 @@ if col2.button("❌ Not Relevant", type="secondary", use_container_width=True):
     save_batch_history("relevance", st.session_state.batch_history)
     st.rerun()
 
-st.write(f"**Batch: {batch_count} / {BATCH_SIZE}**")
+st.write(f"**Batch: {batch_count + 1} / {BATCH_SIZE}**")
 st.caption(f"{labeled} of {total} labeled overall  |  {overall_avg:.1f}s per article (overall avg)")
 
 st.write("")

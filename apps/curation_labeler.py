@@ -261,7 +261,7 @@ for col, val in [(c1, 1), (c2, 2), (c3, 3), (c4, 4), (c5, 5)]:
         save_batch_history("curation", st.session_state.batch_history)
         st.rerun()
 
-st.write(f"**Batch: {batch_count} / {BATCH_SIZE}**")
+st.write(f"**Batch: {batch_count + 1} / {BATCH_SIZE}**")
 st.caption(f"{labeled} of {total} curated overall  |  {overall_avg:.1f}s per article (overall avg)")
 
 st.write("")
