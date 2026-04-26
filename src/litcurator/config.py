@@ -21,7 +21,7 @@ PROFILE_QA_LOG = PROFILE_DIR / "qa_log.md"
 # Labeling
 # ---------------------------------------------------------------------------
 
-RELEVANCE_BATCH_SIZE = 25
+RELEVANCE_BATCH_SIZE = 51
 CURATION_BATCH_SIZE = 10
 
 # ---------------------------------------------------------------------------
