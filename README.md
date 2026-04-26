@@ -1,5 +1,6 @@
+<img src="https://raw.githubusercontent.com/EricThomson/litcurator/main/src/litcurator/assets/litcurator_logo.png" alt="litcurator logo" align="right" width="250">
+
 # litcurator 
-<img src="https://raw.githubusercontent.com/EricThomson/litcurator/main/src/litcurator/assets/litcurator_logo.svg" alt="litcurator logo" align="right" width="250">
 
 Literature curator: utilities to retrieve publications from pubmed each month (or whatever time range you care about) within your field. Then, narrow them down to a final curated list using an LLM that has learned your interests (and continues to learn them each month). 
 
