@@ -12,4 +12,7 @@ For this to work you need some API keys that you should store in `.env`:
 - An NCBI (National Center for Biotechnology Information) API key. For info on this: https://www.ncbi.nlm.nih.gov/datasets/docs/v2/api/api-keys/. 
 - An API key for an LLM vendor (I'm currently using anthropic). 
 
+## Status
+- Tools for labeling and displaying articles are done.
+- Using them to generate ground truth labels for building user profile. 
 
