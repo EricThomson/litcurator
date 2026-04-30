@@ -1,9 +1,9 @@
 
 # litcurator 
 
-<img src="https://raw.githubusercontent.com/EricThomson/litcurator/main/src/litcurator/assets/litcurator_logo.png" alt="litcurator logo" align="right" width="250">
+An LLM-based literature filter. 
 
-Literature curator: utilities to retrieve publications from pubmed each month (or whatever time range you care about) within your field. Then, narrow them down to a final curated list using an LLM that has learned your interests (and continues to learn them each month). 
+Litcurator works in two stages. First, retrieve publications from PubMed within your field of interest. This casts a very broad net (e.g., neuroscience). Then, narrow them down to a final curated list using an LLM that builds up a profile of your interests. It uses [streamlit](https://streamlit.io/) to display articles in the browser.
 
 Initial focus is on systems neuroscience. 
 
@@ -11,4 +11,5 @@ Initial focus is on systems neuroscience.
 For this to work you need some API keys that you should store in `.env`:
 - An NCBI (National Center for Biotechnology Information) API key. For info on this: https://www.ncbi.nlm.nih.gov/datasets/docs/v2/api/api-keys/. 
 - An API key for an LLM vendor (I'm currently using anthropic). 
+
 

@@ -7,7 +7,8 @@ the core logic for sampling articles for review.
 
 import json
 import random
-from litcurator.config import DATA_DIR
+import sqlite3
+from litcurator.config import DATA_DIR, GROUND_TRUTH_DB, UI_TEST_RELEVANCE_DB, UI_TEST_CURATION_DB
 
 BATCH_STATE_FILE = DATA_DIR / "batch_state.txt"
 RANDOM_SEED = 42
@@ -140,6 +141,112 @@ def print_status(conn):
     for label in range(6):
         print(f"  {label}: {s['curation_counts'].get(label, 0)}")
     print(f"  Above the noise (1+): {s['above_noise']} ({s['pct_above_noise']:.1f}% of curated)")
+
+
+def _copy_rows_to_test_db(rows, cols, schema, db_path, overrides_by_pmid):
+    """Write rows to a fresh test DB, applying per-pmid column overrides."""
+    if db_path.exists():
+        db_path.unlink()
+    dst = sqlite3.connect(db_path)
+    dst.execute(schema)
+    dst.commit()
+    insert_sql = f"INSERT INTO articles ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})"
+    for row in rows:
+        row_dict = dict(row)
+        row_dict.update(overrides_by_pmid.get(row_dict["pmid"], {}))
+        dst.execute(insert_sql, [row_dict[c] for c in cols])
+    dst.commit()
+    dst.close()
+
+
+def setup_ui_test_relevance_db():
+    """
+    Create ui_test_relevance.db with 20 articles (all selected_for_review=1):
+      - 5 pre-labeled relevant=1
+      - 5 pre-labeled relevant=0
+      - 10 that start as relevant=NULL (unlabeled pool for testing normal flow)
+    """
+    rng = random.Random(RANDOM_SEED)
+    src = sqlite3.connect(GROUND_TRUTH_DB)
+    src.row_factory = sqlite3.Row
+
+    rel = [r["pmid"] for r in src.execute(
+        "SELECT pmid FROM articles WHERE relevant = 1 AND selected_for_review = 1 ORDER BY pmid"
+    ).fetchall()]
+    not_rel = [r["pmid"] for r in src.execute(
+        "SELECT pmid FROM articles WHERE relevant = 0 AND selected_for_review = 1 ORDER BY pmid"
+    ).fetchall()]
+    rng.shuffle(rel)
+    rng.shuffle(not_rel)
+    pre_labeled = rel[:5] + not_rel[:5]
+
+    exclude = set(pre_labeled)
+    pool = [r["pmid"] for r in src.execute(
+        "SELECT pmid FROM articles WHERE relevant IS NOT NULL AND selected_for_review = 1 ORDER BY pmid"
+    ).fetchall() if r["pmid"] not in exclude]
+    rng.shuffle(pool)
+    unlabeled = pool[:10]
+
+    all_pmids = pre_labeled + unlabeled
+    placeholders = ",".join("?" * len(all_pmids))
+    rows = src.execute(
+        f"SELECT * FROM articles WHERE pmid IN ({placeholders})", all_pmids
+    ).fetchall()
+    cols = list(dict(rows[0]).keys())
+    schema = src.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='articles'"
+    ).fetchone()[0]
+    src.close()
+
+    overrides = {pmid: {"relevant": None, "selected_for_review": 1} for pmid in unlabeled}
+    for pmid in pre_labeled:
+        overrides.setdefault(pmid, {})["selected_for_review"] = 1
+    _copy_rows_to_test_db(rows, cols, schema, UI_TEST_RELEVANCE_DB, overrides)
+    print(f"Created {UI_TEST_RELEVANCE_DB}: 5 relevant, 5 not-relevant, 10 unlabeled")
+
+
+def setup_ui_test_curation_db():
+    """
+    Create ui_test_curation.db with 20 articles (all relevant=1):
+      - 10 pre-curation-labeled (spread across scores)
+      - 10 that start as curation_label=NULL (unlabeled pool for testing normal flow)
+    """
+    rng = random.Random(RANDOM_SEED)
+    src = sqlite3.connect(GROUND_TRUTH_DB)
+    src.row_factory = sqlite3.Row
+
+    curated = []
+    for label in range(6):
+        pmids = [r["pmid"] for r in src.execute(
+            "SELECT pmid FROM articles WHERE relevant = 1 AND curation_label = ? ORDER BY pmid", (label,)
+        ).fetchall()]
+        curated.extend(pmids)
+    rng.shuffle(curated)
+    pre_curated = curated[:10]
+
+    exclude = set(pre_curated)
+    uncurated_pool = [r["pmid"] for r in src.execute(
+        "SELECT pmid FROM articles WHERE relevant = 1 AND curation_label IS NULL ORDER BY pmid"
+    ).fetchall() if r["pmid"] not in exclude]
+    rng.shuffle(uncurated_pool)
+    unlabeled = uncurated_pool[:10]
+
+    all_pmids = pre_curated + unlabeled
+    placeholders = ",".join("?" * len(all_pmids))
+    rows = src.execute(
+        f"SELECT * FROM articles WHERE pmid IN ({placeholders})", all_pmids
+    ).fetchall()
+    cols = list(dict(rows[0]).keys())
+    schema = src.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='articles'"
+    ).fetchone()[0]
+    src.close()
+
+    overrides = {pmid: {"relevant": 1, "curation_label": None} for pmid in unlabeled}
+    for pmid in pre_curated:
+        overrides.setdefault(pmid, {})["relevant"] = 1
+    _copy_rows_to_test_db(rows, cols, schema, UI_TEST_CURATION_DB, overrides)
+    print(f"Created {UI_TEST_CURATION_DB}: 10 pre-curated, 10 unlabeled")
 
 
 def main():

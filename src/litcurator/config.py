@@ -13,6 +13,9 @@ from pathlib import Path
 
 DATA_DIR = Path.home() / ".litcurator"
 GROUND_TRUTH_DB = DATA_DIR / "ground_truth.db"
+UI_TEST_RELEVANCE_DB = DATA_DIR / "ui_test_relevance.db"
+UI_TEST_CURATION_DB = DATA_DIR / "ui_test_curation.db"
+UI_TEST_BATCH_SIZE = 20
 PROFILE_DIR = DATA_DIR / "profile"
 PROFILE_PATH = PROFILE_DIR / "profile.md"
 PROFILE_QA_LOG = PROFILE_DIR / "qa_log.md"
@@ -21,7 +24,7 @@ PROFILE_QA_LOG = PROFILE_DIR / "qa_log.md"
 # Labeling
 # ---------------------------------------------------------------------------
 
-RELEVANCE_BATCH_SIZE = 51
+RELEVANCE_BATCH_SIZE = 50
 CURATION_BATCH_SIZE = 10
 
 # ---------------------------------------------------------------------------
