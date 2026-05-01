@@ -286,11 +286,14 @@ with col_left:
         if not UI_TEST_MODE:
             save_batch_history("curation", st.session_state.batch_history)
         st.rerun()
-    # Skip: user is unsure — moves article to end of queue without assigning a label or adding to batch_history
+    # Skip: user is unsure — reinserts article at a random position past the current batch
     if col_skip.button("Skip", key="btn_skip", use_container_width=True):
         order = st.session_state.curation_order
+        current_idx = order.index(article["pmid"])
         order.remove(article["pmid"])
-        order.append(article["pmid"])
+        min_idx = min(current_idx + (effective_batch_size - batch_count), len(order))
+        insert_at = random.randint(min_idx, len(order))
+        order.insert(insert_at, article["pmid"])
         st.rerun()
     st.write("")
     st.markdown("<p style='color: black; font-size: 1rem; margin-bottom: 4px;'>1 = above the noise &nbsp;&nbsp;|&nbsp;&nbsp; 3 = very cool &nbsp;&nbsp;|&nbsp;&nbsp; 5 = can't miss</p>", unsafe_allow_html=True)

@@ -25,7 +25,7 @@ PROFILE_QA_LOG = PROFILE_DIR / "qa_log.md"
 # ---------------------------------------------------------------------------
 
 RELEVANCE_BATCH_SIZE = 50
-CURATION_BATCH_SIZE = 10
+CURATION_BATCH_SIZE = 15
 
 # ---------------------------------------------------------------------------
 # Journals
