@@ -13,6 +13,6 @@ For this to work you need some API keys that you should store in `.env`:
 - An API key for an LLM vendor (I'm currently using anthropic). 
 
 ## Status
-- Tools for labeling and displaying articles are done.
-- Using them to generate ground truth labels for building user profile. 
+- Labeled 1200 articles to get ground truth.
+- Currently working on shifting to LiteLLM so I can easily compare gemini, claude, chatgpt model for cost and accuracy.
 

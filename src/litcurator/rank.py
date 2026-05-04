@@ -16,7 +16,10 @@ import anthropic
 from dotenv import load_dotenv
 
 from litcurator import db
-from litcurator.config import DOMAIN_FILTER_PROMPT_TITLE, DOMAIN_FILTER_PROMPT_ABSTRACT
+from litcurator.config import (
+    DOMAIN_FILTER_PROMPT_TITLE, DOMAIN_FILTER_PROMPT_ABSTRACT,
+    CURATION_PROMPT, LLM_SCORE_THRESHOLD, JOURNAL_SCORE_ADJUSTMENTS, PROFILE_PATH,
+)
 
 load_dotenv()
 
@@ -26,12 +29,14 @@ DOMAIN_FILTER_MODEL = "claude-haiku-4-5-20251001"
 CURATION_MODEL = "claude-sonnet-4-6"
 BATCH_SIZE_TITLE = 20
 BATCH_SIZE_FULL = 10
+CURATION_BATCH_SIZE = 5
 ABSTRACT_EXCERPT_LEN = 250
 
 MODEL_COSTS = {
     "claude-haiku-4-5-20251001": {"input": 0.80,  "output": 4.00},
     "claude-sonnet-4-6":         {"input": 3.00,  "output": 15.00},
 }
+
 
 
 def domain_filter(conn, threshold=0.5, journal=None, model=None, mode="title"):
@@ -137,6 +142,126 @@ def _score_domain_batch(articles, model=None, mode="title"):
     print(f"  DEBUG: stop_reason={response.stop_reason}, usage={response.usage}, raw={raw[:200]!r}")
     results = json.loads(raw)
     return [(float(r["score"]), r["reasoning"]) for r in results], response.usage
+
+
+def curation_rank(conn, profile_path=None, model=None, date_start=None, date_end=None):
+    """
+    Run Stage 2 curation scoring on relevant articles.
+
+    Scores each article 0-5 against the user profile, then applies journal
+    adjustments as a postprocessing step. Results saved to curation_score,
+    curation_confidence, curation_rationale columns.
+
+    Args:
+        conn: SQLite connection
+        profile_path: Path to profile markdown file (default: PROFILE_PATH from config)
+        model: Model ID override (default: CURATION_MODEL)
+        date_start: Optional 'YYYY-MM-DD' string to filter articles by pub_date
+        date_end: Optional 'YYYY-MM-DD' string to filter articles by pub_date
+
+    Returns:
+        Tuple of (total scored, above threshold count)
+    """
+    use_model = model or CURATION_MODEL
+    use_profile = profile_path or PROFILE_PATH
+
+    if not use_profile.exists():
+        raise FileNotFoundError(f"Profile not found: {use_profile}")
+    profile_text = use_profile.read_text()
+
+    # Query relevant articles with optional date range filter.
+    # TODO: for real monthly use without human labels, query by domain_score >= threshold.
+    if date_start and date_end:
+        articles = conn.execute(
+            "SELECT * FROM articles WHERE relevant = 1 AND pub_date >= ? AND pub_date <= ? ORDER BY pub_date",
+            (date_start, date_end)
+        ).fetchall()
+    else:
+        articles = conn.execute(
+            "SELECT * FROM articles WHERE relevant = 1 ORDER BY pub_date"
+        ).fetchall()
+
+    total = len(articles)
+    above_threshold = 0
+    total_input_tokens = 0
+    total_output_tokens = 0
+    t_start = time.time()
+
+    for batch_start in range(0, total, CURATION_BATCH_SIZE):
+        batch = articles[batch_start: batch_start + CURATION_BATCH_SIZE]
+        batch_num = batch_start // CURATION_BATCH_SIZE + 1
+        total_batches = (total + CURATION_BATCH_SIZE - 1) // CURATION_BATCH_SIZE
+        print(f"  Batch {batch_num}/{total_batches} ({len(batch)} articles)...")
+
+        try:
+            results, usage = _score_curation_batch(batch, profile_text, use_model)
+        except Exception as e:
+            print(f"  Batch {batch_num} failed ({e}), retrying...")
+            time.sleep(2)
+            results, usage = _score_curation_batch(batch, profile_text, use_model)
+
+        total_input_tokens += usage.input_tokens
+        total_output_tokens += usage.output_tokens
+
+        adjusted_scores = []
+        for row, (score, confidence, rationale) in zip(batch, results):
+            adjustment = JOURNAL_SCORE_ADJUSTMENTS.get(row["journal"], 0.0)
+            adjusted_score = min(1.0, max(0.0, score + adjustment))
+            db.update_curation_score(conn, row["pmid"], adjusted_score, confidence, rationale)
+            if adjusted_score >= LLM_SCORE_THRESHOLD:
+                above_threshold += 1
+            adjusted_scores.append(adjusted_score)
+
+        scores_str = ", ".join(f"{s:.2f}" for s in adjusted_scores)
+        print(f"    scores: {scores_str}")
+
+    elapsed = time.time() - t_start
+    costs = MODEL_COSTS.get(use_model, {"input": 0, "output": 0})
+    total_cost = (total_input_tokens * costs["input"] + total_output_tokens * costs["output"]) / 1_000_000
+
+    print(f"\nCuration scoring complete: {above_threshold}/{total} above threshold (score >= {LLM_SCORE_THRESHOLD})")
+    print(f"Time: {elapsed:.1f}s | Tokens: {total_input_tokens:,} in / {total_output_tokens:,} out | Cost: ${total_cost:.4f}")
+    return total, above_threshold
+
+
+def _score_curation_batch(articles, profile_text, model):
+    """
+    Score a batch of articles against a user profile.
+
+    Args:
+        articles: List of sqlite3.Row objects with title, abstract, journal
+        profile_text: User interest profile as a string
+        model: Model ID string
+
+    Returns:
+        List of (score, confidence, rationale) tuples, and usage object.
+    """
+    lines = []
+    for i, row in enumerate(articles):
+        abstract = (row["abstract"] or "").strip() or "(no abstract)"
+        lines.append(f"{i+1}. Title: {row['title']}\n   Abstract: {abstract}")
+
+    user_message = (
+        f"## User Interest Profile\n\n{profile_text}\n\n"
+        f"## Articles to Score\n\n" + "\n\n".join(lines)
+    )
+
+    response = client.messages.create(
+        model=model,
+        max_tokens=max(len(articles) * 150, 512),
+        system=CURATION_PROMPT,
+        messages=[{"role": "user", "content": user_message}]
+    )
+
+    raw = response.content[0].text.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.strip()
+
+    results = json.loads(raw)
+    return [(float(r["score"]), float(r["confidence"]), r["rationale"]) for r in results], response.usage
 
 
 def score_domain(title, prompt=None):

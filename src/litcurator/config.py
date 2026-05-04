@@ -26,6 +26,8 @@ PROFILE_QA_LOG = PROFILE_DIR / "qa_log.md"
 
 RELEVANCE_BATCH_SIZE = 50
 CURATION_BATCH_SIZE = 15
+CURATION_THRESHOLD = 1          # human label >= this is "above the noise" (0-5 scale)
+LLM_SCORE_THRESHOLD = 0.5       # LLM score >= this is predicted above the noise (0.0-1.0 scale, tuned on val)
 
 # ---------------------------------------------------------------------------
 # Journals
@@ -154,3 +156,29 @@ Return a JSON object with two fields: "score" (a number between 0.0 and 1.0) and
 """.strip()
 
 DOMAIN_FILTER_PROMPT = DOMAIN_FILTER_PROMPT_TITLE
+
+# ---------------------------------------------------------------------------
+# Stage 2: Curation scoring prompt
+# ---------------------------------------------------------------------------
+
+CURATION_PROMPT = """
+You are a personalized literature curator. Score each neuroscience article against the user's interest profile provided below.
+
+Use the profile as the primary basis for scoring — you are assessing fit to this specific person's interests, not general scientific importance.
+
+Assign a relevance score from 0.0 to 1.0:
+  0.0 — Clearly outside the user's interests
+  0.5 — Borderline: has some relevant elements but not a clear fit
+  1.0 — Perfect fit: exactly the kind of work this user cares about
+
+Use the full range continuously — do not round to a small number of values.
+
+Also provide:
+  confidence (float 0.0-1.0): your confidence in the score
+  rationale (one sentence): explain the score in terms of the user's stated interests
+
+Score each article independently against the profile — do not rank articles relative to each other.
+
+Return a JSON array with one object per article in the same order as input:
+[{"score": <float 0.0-1.0>, "confidence": <float 0.0-1.0>, "rationale": <string>}, ...]
+""".strip()

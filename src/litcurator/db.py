@@ -36,8 +36,10 @@ CREATE TABLE IF NOT EXISTS articles (
     domain_reasoning TEXT,      -- LLM explanation for auditing/debugging
 
     -- Stage 2: curation (fine-grained relevance to user interests)
-    curation_score REAL,        -- LLM score 0.0-1.0
-    curation_label INTEGER,     -- 0 (no), 1 (meh/keep), 2 (love it)
+    curation_score REAL,        -- LLM score 0-5
+    curation_confidence REAL,   -- LLM confidence 0.0-1.0
+    curation_rationale TEXT,    -- LLM one-sentence rationale
+    curation_label INTEGER,     -- human label: 0 (no), 1-5 (above noise)
     curation_notes TEXT,        -- curator's annotations
 
     -- Human labeling
@@ -60,7 +62,22 @@ def get_connection(path=None):
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute(CREATE_TABLE_SQL)
     conn.commit()
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn):
+    """Add columns introduced after initial schema creation."""
+    new_columns = [
+        ("curation_confidence", "REAL"),
+        ("curation_rationale", "TEXT"),
+    ]
+    for col, col_type in new_columns:
+        try:
+            conn.execute(f"ALTER TABLE articles ADD COLUMN {col} {col_type}")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
 
 
 def insert_articles(conn, articles):
@@ -141,16 +158,38 @@ def update_domain_score(conn, pmid, score, reasoning):
     conn.commit()
 
 
-def update_curation(conn, pmid, label, score=None, notes=None):
+def update_curation_score(conn, pmid, score, confidence, rationale):
     """
-    Store Stage 2 curation label, optional score, and optional notes.
-    Advances status to 3 (curated).
+    Store Stage 2 LLM curation score, confidence, and rationale.
+    Does not change pipeline status (that is reserved for human curation_label).
 
     Args:
         conn: SQLite connection
         pmid: PubMed ID string
-        label: int 0 (didn't make cut), 1 (above the noise 🙂), 2 (well above noise ❤️), 3 (can't miss 🔥)
-        score: optional float 0.0-1.0 from LLM
+        score: float 0-5 from LLM (may include journal adjustment)
+        confidence: float 0.0-1.0 from LLM
+        rationale: one-sentence string from LLM
+    """
+    conn.execute(
+        """
+        UPDATE articles
+        SET curation_score = ?, curation_confidence = ?, curation_rationale = ?
+        WHERE pmid = ?
+        """,
+        (score, confidence, rationale, pmid)
+    )
+    conn.commit()
+
+
+def update_curation(conn, pmid, label, score=None, notes=None):
+    """
+    Store human curation label and advance status to 3 (curated).
+
+    Args:
+        conn: SQLite connection
+        pmid: PubMed ID string
+        label: int 0 (didn't make cut) or 1-5 (above the noise)
+        score: unused, kept for backwards compatibility
         notes: optional string annotations from curator
     """
     conn.execute(
