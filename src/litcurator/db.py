@@ -1,57 +1,134 @@
 """
 Database interface for litcurator.
 
-Uses a single SQLite table to store articles as they flow through the
-retrieval and curation pipeline. The database lives at ~/.litcurator/litcurator.db.
+Six-table normalized schema:
+  articles      -- permanent PubMed metadata and human labels
+  profiles      -- versioned user interest profile snapshots
+  prompts       -- versioned scoring prompt snapshots
+  scoring_runs  -- provenance for one scoring session
+  evaluations   -- one LLM score per article per scoring run
+  feedback      -- permanent user flags on specific evaluations
 
-Pipeline status values:
-    1 = retrieved (pulled from PubMed)
-    2 = domain-scored (passed Stage 1 domain filter, has domain_score)
-    3 = curated (has curation_label from Stage 2)
+Pipeline status values on articles:
+  1 = retrieved (pulled from PubMed)
+  2 = domain-scored (has at least one domain evaluation)
+  3 = relevant (human label: relevant=1)
 """
 
+import hashlib
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from litcurator.config import DATA_DIR
 
 DB_PATH = DATA_DIR / "litcurator.db"
 
-CREATE_TABLE_SQL = """
+# ---------------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------------
+
+_CREATE_ARTICLES = """
 CREATE TABLE IF NOT EXISTS articles (
     pmid TEXT PRIMARY KEY,
     title TEXT NOT NULL,
     abstract TEXT,
-    authors_json TEXT,          -- JSON: list of {name, affiliation}
+    authors_json TEXT,
     journal TEXT,
-    pub_date TEXT,              -- issue/print date, whatever PubMed provides
-    epub_date TEXT,             -- electronic pub date if available
+    pub_date TEXT,
+    epub_date TEXT,
     doi TEXT,
-    pub_types_json TEXT,        -- JSON: list of publication type strings
-
-    -- Stage 1: domain filter (e.g. systems/behavioral/computational neuro)
-    domain_score REAL,          -- LLM score 0.0-1.0
-    domain_reasoning TEXT,      -- LLM explanation for auditing/debugging
-
-    -- Stage 2: curation (fine-grained relevance to user interests)
-    curation_score REAL,        -- LLM score 0-5
-    curation_confidence REAL,   -- LLM confidence 0.0-1.0
-    curation_rationale TEXT,    -- LLM one-sentence rationale
-    curation_label INTEGER,     -- human label: 0 (no), 1-5 (above noise)
-    curation_notes TEXT,        -- curator's annotations
-
-    -- Human labeling
-    selected_for_review INTEGER DEFAULT 0,  -- 1 if drawn for human labeling
-    relevant INTEGER,                       -- 1 relevant, 0 not relevant, NULL unlabeled
-
-    -- Pipeline metadata
-    status INTEGER DEFAULT 1,   -- 1: retrieved, 2: systems-scored, 3: curated
+    pub_types_json TEXT,
+    selected_for_review INTEGER DEFAULT 0,
+    relevant INTEGER,
+    curation_label INTEGER,
+    curation_notes TEXT,
+    status INTEGER DEFAULT 1,
     date_added DATETIME DEFAULT CURRENT_TIMESTAMP
 )
 """
 
+_CREATE_PROFILES = """
+CREATE TABLE IF NOT EXISTS profiles (
+    id TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    parent_id TEXT REFERENCES profiles(id),
+    notes TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
+_CREATE_PROMPTS = """
+CREATE TABLE IF NOT EXISTS prompts (
+    id TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    notes TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
+_CREATE_SCORING_RUNS = """
+CREATE TABLE IF NOT EXISTS scoring_runs (
+    id TEXT PRIMARY KEY,
+    stage TEXT NOT NULL,
+    model TEXT NOT NULL,
+    profile_id TEXT REFERENCES profiles(id),
+    prompt_id TEXT NOT NULL REFERENCES prompts(id),
+    date_start TEXT,
+    date_end TEXT,
+    threshold REAL DEFAULT 0.5,
+    status TEXT DEFAULT 'started',
+    notes TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    completed_at DATETIME,
+    CHECK (stage IN ('domain', 'curation')),
+    CHECK (status IN ('started', 'completed', 'failed', 'partial'))
+)
+"""
+
+_CREATE_EVALUATIONS = """
+CREATE TABLE IF NOT EXISTS evaluations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pmid TEXT NOT NULL REFERENCES articles(pmid),
+    run_id TEXT NOT NULL REFERENCES scoring_runs(id),
+    score REAL NOT NULL,
+    rationale TEXT,
+    evaluated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (pmid, run_id),
+    CHECK (score >= 0.0 AND score <= 1.0)
+)
+"""
+
+_CREATE_FEEDBACK = """
+CREATE TABLE IF NOT EXISTS feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    evaluation_id INTEGER NOT NULL REFERENCES evaluations(id),
+    is_correct INTEGER NOT NULL,
+    feedback_label TEXT,
+    note TEXT,
+    ingested_to_profile_id TEXT REFERENCES profiles(id),
+    flagged_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    ingested_at DATETIME,
+    CHECK (is_correct IN (0, 1))
+)
+"""
+
+_CREATE_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_articles_pub_date ON articles(pub_date)",
+    "CREATE INDEX IF NOT EXISTS idx_scoring_runs_stage ON scoring_runs(stage, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_scoring_runs_profile ON scoring_runs(profile_id)",
+    "CREATE INDEX IF NOT EXISTS idx_scoring_runs_prompt ON scoring_runs(prompt_id)",
+    "CREATE INDEX IF NOT EXISTS idx_evaluations_pmid ON evaluations(pmid)",
+    "CREATE INDEX IF NOT EXISTS idx_evaluations_run ON evaluations(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_feedback_evaluation ON feedback(evaluation_id)",
+    "CREATE INDEX IF NOT EXISTS idx_feedback_ingested ON feedback(ingested_to_profile_id)",
+]
+
+
+# ---------------------------------------------------------------------------
+# Connection
+# ---------------------------------------------------------------------------
 
 def get_connection(path=None):
     """Open a connection to the litcurator database, creating it if needed."""
@@ -60,37 +137,25 @@ def get_connection(path=None):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute(CREATE_TABLE_SQL)
+    for sql in [_CREATE_ARTICLES, _CREATE_PROFILES, _CREATE_PROMPTS,
+                _CREATE_SCORING_RUNS, _CREATE_EVALUATIONS, _CREATE_FEEDBACK]:
+        conn.execute(sql)
+    for sql in _CREATE_INDEXES:
+        conn.execute(sql)
     conn.commit()
-    _migrate(conn)
     return conn
 
 
-def _migrate(conn):
-    """Add columns introduced after initial schema creation."""
-    new_columns = [
-        ("curation_confidence", "REAL"),
-        ("curation_rationale", "TEXT"),
-    ]
-    for col, col_type in new_columns:
-        try:
-            conn.execute(f"ALTER TABLE articles ADD COLUMN {col} {col_type}")
-            conn.commit()
-        except sqlite3.OperationalError:
-            pass  # column already exists
-
+# ---------------------------------------------------------------------------
+# Articles
+# ---------------------------------------------------------------------------
 
 def insert_articles(conn, articles):
     """
     Insert a list of article dicts into the database.
-    Skips any article whose PMID already exists (INSERT OR IGNORE).
+    Skips any article whose PMID already exists.
 
-    Args:
-        conn: SQLite connection
-        articles: list of article dicts from retrieve.py
-
-    Returns:
-        Number of new articles inserted.
+    Returns number of new articles inserted.
     """
     sql = """
         INSERT OR IGNORE INTO articles
@@ -113,137 +178,377 @@ def insert_articles(conn, articles):
         ))
         if cursor.rowcount > 0:
             inserted += 1
-
     conn.commit()
     return inserted
 
 
 def get_articles_by_status(conn, status):
-    """
-    Fetch all articles at a given pipeline status.
-
-    Args:
-        conn: SQLite connection
-        status: 1 (retrieved), 2 (domain-scored), 3 (curated)
-
-    Returns:
-        List of sqlite3.Row objects.
-    """
-    cursor = conn.execute(
+    """Fetch all articles at a given pipeline status, ordered by date_added."""
+    return conn.execute(
         "SELECT * FROM articles WHERE status = ? ORDER BY date_added",
         (status,)
-    )
-    return cursor.fetchall()
+    ).fetchall()
 
 
-def update_domain_score(conn, pmid, score, reasoning):
-    """
-    Store Stage 1 domain filter score and reasoning for an article.
-    Advances status to 2 (domain-scored).
+def get_all_articles(conn):
+    """Fetch all articles regardless of status, ordered by date_added."""
+    return conn.execute("SELECT * FROM articles ORDER BY date_added").fetchall()
 
-    Args:
-        conn: SQLite connection
-        pmid: PubMed ID string
-        score: float 0.0-1.0
-        reasoning: LLM explanation string
-    """
-    conn.execute(
-        """
-        UPDATE articles
-        SET domain_score = ?, domain_reasoning = ?, status = 2
-        WHERE pmid = ?
-        """,
-        (score, reasoning, pmid)
-    )
+
+def get_article(conn, pmid):
+    """Fetch a single article by PMID. Returns sqlite3.Row or None."""
+    return conn.execute("SELECT * FROM articles WHERE pmid = ?", (pmid,)).fetchone()
+
+
+def article_exists(conn, pmid):
+    """Return True if an article with this PMID is already in the database."""
+    return conn.execute("SELECT 1 FROM articles WHERE pmid = ?", (pmid,)).fetchone() is not None
+
+
+def update_relevance(conn, pmid, relevant):
+    """Store human relevance label (0 or 1)."""
+    conn.execute("UPDATE articles SET relevant = ? WHERE pmid = ?", (relevant, pmid))
     conn.commit()
 
 
-def update_curation_score(conn, pmid, score, confidence, rationale):
-    """
-    Store Stage 2 LLM curation score, confidence, and rationale.
-    Does not change pipeline status (that is reserved for human curation_label).
-
-    Args:
-        conn: SQLite connection
-        pmid: PubMed ID string
-        score: float 0-5 from LLM (may include journal adjustment)
-        confidence: float 0.0-1.0 from LLM
-        rationale: one-sentence string from LLM
-    """
+def update_curation(conn, pmid, label, notes=None):
+    """Store human curation label (0-5) and advance status to 3."""
     conn.execute(
-        """
-        UPDATE articles
-        SET curation_score = ?, curation_confidence = ?, curation_rationale = ?
-        WHERE pmid = ?
-        """,
-        (score, confidence, rationale, pmid)
-    )
-    conn.commit()
-
-
-def update_curation(conn, pmid, label, score=None, notes=None):
-    """
-    Store human curation label and advance status to 3 (curated).
-
-    Args:
-        conn: SQLite connection
-        pmid: PubMed ID string
-        label: int 0 (didn't make cut) or 1-5 (above the noise)
-        score: unused, kept for backwards compatibility
-        notes: optional string annotations from curator
-    """
-    conn.execute(
-        """
-        UPDATE articles
-        SET curation_label = ?, curation_score = ?, curation_notes = ?, status = 3
-        WHERE pmid = ?
-        """,
-        (label, score, notes, pmid)
+        "UPDATE articles SET curation_label = ?, curation_notes = ?, status = 3 WHERE pmid = ?",
+        (label, notes, pmid)
     )
     conn.commit()
 
 
 def reset_domain_scores(conn, journal=None):
-    """
-    Reset domain_score, domain_reasoning back to NULL and status back to 1.
-    Optionally limit to a specific journal.
-
-    Args:
-        conn: SQLite connection
-        journal: Optional journal name string (default None = all articles)
-    """
+    """Reset article status back to 1 so domain scoring reruns. Optionally limit to a journal."""
     if journal:
+        conn.execute("UPDATE articles SET status = 1 WHERE journal = ?", (journal,))
+    else:
+        conn.execute("UPDATE articles SET status = 1")
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Profiles
+# ---------------------------------------------------------------------------
+
+def _sha256(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def get_or_create_profile(conn, content, notes=None, parent_id=None):
+    """
+    Snapshot a profile. If identical content already exists, return existing id.
+
+    Returns profile id (SHA256 hash of content).
+    """
+    profile_id = _sha256(content)
+    existing = conn.execute("SELECT id FROM profiles WHERE id = ?", (profile_id,)).fetchone()
+    if not existing:
         conn.execute(
-            """
-            UPDATE articles
-            SET domain_score = NULL, domain_reasoning = NULL, status = 1
-            WHERE journal = ?
-            """,
-            (journal,)
+            "INSERT INTO profiles (id, content, parent_id, notes) VALUES (?, ?, ?, ?)",
+            (profile_id, content, parent_id, notes)
+        )
+        conn.commit()
+    return profile_id
+
+
+# ---------------------------------------------------------------------------
+# Prompts
+# ---------------------------------------------------------------------------
+
+def get_or_create_prompt(conn, content, notes=None):
+    """
+    Snapshot a prompt. If identical content already exists, return existing id.
+
+    Returns prompt id (SHA256 hash of content).
+    """
+    prompt_id = _sha256(content)
+    existing = conn.execute("SELECT id FROM prompts WHERE id = ?", (prompt_id,)).fetchone()
+    if not existing:
+        conn.execute(
+            "INSERT INTO prompts (id, content, notes) VALUES (?, ?, ?)",
+            (prompt_id, content, notes)
+        )
+        conn.commit()
+    return prompt_id
+
+
+# ---------------------------------------------------------------------------
+# Scoring runs
+# ---------------------------------------------------------------------------
+
+def create_scoring_run(conn, stage, model, prompt_id, profile_id=None,
+                       date_start=None, date_end=None, threshold=0.5, notes=None):
+    """
+    Create a new scoring run row and return its id.
+
+    Run id is a UTC timestamp string: "YYYYMMDD_HHMMSS".
+    """
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    conn.execute(
+        """
+        INSERT INTO scoring_runs
+            (id, stage, model, profile_id, prompt_id, date_start, date_end, threshold, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (run_id, stage, model, profile_id, prompt_id, date_start, date_end, threshold, notes)
+    )
+    conn.commit()
+    return run_id
+
+
+def complete_scoring_run(conn, run_id):
+    """Mark a scoring run as completed."""
+    conn.execute(
+        "UPDATE scoring_runs SET status = 'completed', completed_at = ? WHERE id = ?",
+        (datetime.now(timezone.utc).isoformat(), run_id)
+    )
+    conn.commit()
+
+
+def fail_scoring_run(conn, run_id):
+    """Mark a scoring run as failed."""
+    conn.execute(
+        "UPDATE scoring_runs SET status = 'failed', completed_at = ? WHERE id = ?",
+        (datetime.now(timezone.utc).isoformat(), run_id)
+    )
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Evaluations
+# ---------------------------------------------------------------------------
+
+def insert_evaluation(conn, pmid, run_id, score, rationale=None):
+    """
+    Insert one evaluation row. Updates article status based on run stage.
+
+    Returns evaluation id.
+    """
+    cursor = conn.execute(
+        """
+        INSERT OR REPLACE INTO evaluations (pmid, run_id, score, rationale)
+        VALUES (?, ?, ?, ?)
+        """,
+        (pmid, run_id, score, rationale)
+    )
+    run = conn.execute("SELECT stage FROM scoring_runs WHERE id = ?", (run_id,)).fetchone()
+    if run and run["stage"] == "domain":
+        conn.execute("UPDATE articles SET status = 2 WHERE pmid = ? AND status < 2", (pmid,))
+    conn.commit()
+    return cursor.lastrowid
+
+
+def get_latest_evaluations(conn, stage, date_start=None, date_end=None):
+    """
+    Get the most recent evaluation per article for a given stage.
+    Optionally filter articles by pub_date range.
+
+    Returns rows with all evaluation fields plus article metadata.
+    """
+    date_filter = ""
+    params = [stage]
+    if date_start and date_end:
+        date_filter = "AND a.pub_date >= ? AND a.pub_date <= ?"
+        params += [date_start, date_end]
+
+    return conn.execute(
+        f"""
+        SELECT e.*, a.title, a.abstract, a.journal, a.pub_date, a.doi,
+               a.authors_json, a.relevant, a.curation_label, a.curation_notes,
+               r.model, r.profile_id, r.prompt_id, r.created_at AS run_created_at
+        FROM evaluations e
+        JOIN scoring_runs r ON e.run_id = r.id
+        JOIN articles a ON e.pmid = a.pmid
+        WHERE r.stage = ?
+          {date_filter}
+          AND r.id = (
+              SELECT r2.id FROM scoring_runs r2
+              JOIN evaluations e2 ON e2.run_id = r2.id
+              WHERE r2.stage = ? AND e2.pmid = e.pmid
+              ORDER BY r2.created_at DESC LIMIT 1
+          )
+        ORDER BY e.score DESC
+        """,
+        params + [stage]
+    ).fetchall()
+
+
+# ---------------------------------------------------------------------------
+# Feedback
+# ---------------------------------------------------------------------------
+
+def upsert_feedback(conn, evaluation_id, note, is_correct=0, feedback_label=None):
+    """Insert or update user feedback for an evaluation. One row per evaluation."""
+    existing = conn.execute(
+        "SELECT id FROM feedback WHERE evaluation_id = ?", (evaluation_id,)
+    ).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE feedback SET note = ?, is_correct = ?, feedback_label = ?, flagged_at = ? WHERE id = ?",
+            (note, is_correct, feedback_label, datetime.now(timezone.utc).isoformat(), existing["id"])
         )
     else:
         conn.execute(
-            """
-            UPDATE articles
-            SET domain_score = NULL, domain_reasoning = NULL, status = 1
-            """
+            "INSERT INTO feedback (evaluation_id, is_correct, note, feedback_label) VALUES (?, ?, ?, ?)",
+            (evaluation_id, is_correct, note, feedback_label)
         )
     conn.commit()
 
 
-def get_all_articles(conn):
-    """Fetch all articles regardless of status, ordered by date_added."""
-    cursor = conn.execute("SELECT * FROM articles ORDER BY date_added")
-    return cursor.fetchall()
+def delete_feedback_for_evaluation(conn, evaluation_id):
+    """Remove feedback for a specific evaluation."""
+    conn.execute("DELETE FROM feedback WHERE evaluation_id = ?", (evaluation_id,))
+    conn.commit()
 
 
-def get_article(conn, pmid):
-    """Fetch a single article by PMID. Returns sqlite3.Row or None."""
-    cursor = conn.execute("SELECT * FROM articles WHERE pmid = ?", (pmid,))
-    return cursor.fetchone()
+def get_feedback_for_evaluations(conn, evaluation_ids):
+    """
+    Get feedback rows for a list of evaluation IDs.
+    Returns dict mapping evaluation_id -> feedback Row.
+    """
+    if not evaluation_ids:
+        return {}
+    placeholders = ",".join("?" * len(evaluation_ids))
+    rows = conn.execute(
+        f"SELECT * FROM feedback WHERE evaluation_id IN ({placeholders})",
+        list(evaluation_ids)
+    ).fetchall()
+    return {row["evaluation_id"]: row for row in rows}
 
 
-def article_exists(conn, pmid):
-    """Return True if an article with this PMID is already in the database."""
-    cursor = conn.execute("SELECT 1 FROM articles WHERE pmid = ?", (pmid,))
-    return cursor.fetchone() is not None
+def get_latest_feedback_by_pmids(conn, pmids):
+    """
+    Get the most recent feedback per pmid across all scoring runs.
+    Useful for surfacing prior notes when an article has been re-scored.
+    Returns dict mapping pmid -> Row with note, score, flagged_at.
+    """
+    if not pmids:
+        return {}
+    placeholders = ",".join("?" * len(pmids))
+    rows = conn.execute(
+        f"""
+        SELECT a.pmid, f.id AS feedback_id, f.note, f.flagged_at, e.score
+        FROM feedback f
+        JOIN evaluations e ON f.evaluation_id = e.id
+        JOIN articles a ON e.pmid = a.pmid
+        WHERE a.pmid IN ({placeholders})
+        ORDER BY f.flagged_at DESC
+        """,
+        list(pmids)
+    ).fetchall()
+    result = {}
+    for row in rows:
+        if row["pmid"] not in result:
+            result[row["pmid"]] = row
+    return result
+
+
+def get_uningested_feedback(conn):
+    """
+    Get the most recent uningested feedback per article,
+    joined with evaluation and article data.
+    """
+    return conn.execute("""
+        SELECT f.id AS feedback_id, f.note, f.feedback_label,
+               e.id AS evaluation_id, e.score, e.rationale,
+               a.pmid, a.title, a.abstract, a.journal
+        FROM feedback f
+        JOIN evaluations e ON f.evaluation_id = e.id
+        JOIN articles a ON e.pmid = a.pmid
+        WHERE f.ingested_to_profile_id IS NULL
+          AND f.flagged_at = (
+              SELECT MAX(f2.flagged_at)
+              FROM feedback f2
+              JOIN evaluations e2 ON f2.evaluation_id = e2.id
+              WHERE e2.pmid = a.pmid
+                AND f2.ingested_to_profile_id IS NULL
+          )
+        ORDER BY e.score DESC
+    """).fetchall()
+
+
+def get_all_uningested_feedback_ids_for_pmids(conn, pmids):
+    """Get all uningested feedback IDs for a list of pmids, including duplicates from older runs."""
+    if not pmids:
+        return []
+    placeholders = ",".join("?" * len(pmids))
+    rows = conn.execute(
+        f"""
+        SELECT f.id FROM feedback f
+        JOIN evaluations e ON f.evaluation_id = e.id
+        JOIN articles a ON e.pmid = a.pmid
+        WHERE a.pmid IN ({placeholders}) AND f.ingested_to_profile_id IS NULL
+        """,
+        list(pmids)
+    ).fetchall()
+    return [row["id"] for row in rows]
+
+
+def mark_feedback_ingested(conn, feedback_ids, profile_id):
+    """Mark a list of feedback rows as ingested into a profile version."""
+    placeholders = ",".join("?" * len(feedback_ids))
+    conn.execute(
+        f"UPDATE feedback SET ingested_to_profile_id = ?, ingested_at = ? WHERE id IN ({placeholders})",
+        [profile_id, datetime.now(timezone.utc).isoformat()] + list(feedback_ids)
+    )
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Stats
+# ---------------------------------------------------------------------------
+
+def get_status(conn):
+    """
+    Return pipeline counts as a dict.
+    Used by CLI --status and labeler apps.
+    """
+    from litcurator.config import CURATION_THRESHOLD
+
+    total = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
+    selected = conn.execute("SELECT COUNT(*) FROM articles WHERE selected_for_review = 1").fetchone()[0]
+    relevance_labeled = conn.execute("SELECT COUNT(*) FROM articles WHERE relevant IS NOT NULL").fetchone()[0]
+    relevant = conn.execute("SELECT COUNT(*) FROM articles WHERE relevant = 1").fetchone()[0]
+    curation_labeled = conn.execute("SELECT COUNT(*) FROM articles WHERE curation_label IS NOT NULL").fetchone()[0]
+
+    curation_counts = {}
+    for row in conn.execute(
+        "SELECT curation_label, COUNT(*) as n FROM articles WHERE curation_label IS NOT NULL GROUP BY curation_label"
+    ).fetchall():
+        curation_counts[row["curation_label"]] = row["n"]
+
+    above_noise = conn.execute(
+        "SELECT COUNT(*) FROM articles WHERE curation_label >= ?", (CURATION_THRESHOLD,)
+    ).fetchone()[0]
+
+    pct_relevant = round(relevant / relevance_labeled * 100, 1) if relevance_labeled else 0
+    pct_above_noise = round(above_noise / curation_labeled * 100, 1) if curation_labeled else 0
+
+    return {
+        "total": total,
+        "selected": selected,
+        "relevance_labeled": relevance_labeled,
+        "relevant": relevant,
+        "pct_relevant": pct_relevant,
+        "curation_labeled": curation_labeled,
+        "curation_counts": curation_counts,
+        "above_noise": above_noise,
+        "pct_above_noise": pct_above_noise,
+    }
+
+
+def print_status(conn):
+    """Print pipeline status to stdout."""
+    s = get_status(conn)
+    print(f"Total articles:       {s['total']}")
+    print(f"Selected for review:  {s['selected']}")
+    print(f"Relevance labeled:    {s['relevance_labeled']} ({s['pct_relevant']}% relevant)")
+    print(f"Relevant:             {s['relevant']}")
+    print(f"Curation labeled:     {s['curation_labeled']}")
+    print(f"Above noise:          {s['above_noise']} ({s['pct_above_noise']}%)")
+    if s["curation_counts"]:
+        dist = ", ".join(f"{k}:{v}" for k, v in sorted(s["curation_counts"].items()))
+        print(f"Curation distribution: {dist}")

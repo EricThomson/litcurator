@@ -55,6 +55,7 @@ def domain_filter(conn, threshold=0.5, journal=None, model=None, mode="title"):
     """
     use_model = model or DOMAIN_FILTER_MODEL
     batch_size = BATCH_SIZE_FULL if mode == "full" else BATCH_SIZE_TITLE
+    prompt_text = DOMAIN_FILTER_PROMPT_ABSTRACT if mode == "full" else DOMAIN_FILTER_PROMPT_TITLE
     articles = db.get_articles_by_status(conn, status=1)
 
     if journal is not None:
@@ -66,26 +67,35 @@ def domain_filter(conn, threshold=0.5, journal=None, model=None, mode="title"):
     total_output_tokens = 0
     t_start = time.time()
 
-    for batch_start in range(0, total, batch_size):
-        batch = articles[batch_start: batch_start + batch_size]
-        batch_num = batch_start // batch_size + 1
-        total_batches = (total + batch_size - 1) // batch_size
-        print(f"  Batch {batch_num}/{total_batches} ({len(batch)} articles)...")
+    prompt_id = db.get_or_create_prompt(conn, prompt_text)
+    run_id = db.create_scoring_run(conn, stage="domain", model=use_model, prompt_id=prompt_id, threshold=threshold)
 
-        try:
-            scores, usage = _score_domain_batch(batch, model=use_model, mode=mode)
-        except Exception as e:
-            print(f"  Batch {batch_num} failed ({e}), retrying...")
-            time.sleep(2)
-            scores, usage = _score_domain_batch(batch, model=use_model, mode=mode)
+    try:
+        for batch_start in range(0, total, batch_size):
+            batch = articles[batch_start: batch_start + batch_size]
+            batch_num = batch_start // batch_size + 1
+            total_batches = (total + batch_size - 1) // batch_size
+            print(f"  Batch {batch_num}/{total_batches} ({len(batch)} articles)...")
 
-        total_input_tokens += usage.input_tokens
-        total_output_tokens += usage.output_tokens
+            try:
+                scores, usage = _score_domain_batch(batch, model=use_model, mode=mode)
+            except Exception as e:
+                print(f"  Batch {batch_num} failed ({e}), retrying...")
+                time.sleep(2)
+                scores, usage = _score_domain_batch(batch, model=use_model, mode=mode)
 
-        for row, (score, reasoning) in zip(batch, scores):
-            db.update_domain_score(conn, row["pmid"], score, reasoning)
-            if score >= threshold:
-                passed += 1
+            total_input_tokens += usage.input_tokens
+            total_output_tokens += usage.output_tokens
+
+            for row, (score, reasoning) in zip(batch, scores):
+                db.insert_evaluation(conn, row["pmid"], run_id, score, reasoning)
+                if score >= threshold:
+                    passed += 1
+    except Exception:
+        db.fail_scoring_run(conn, run_id)
+        raise
+
+    db.complete_scoring_run(conn, run_id)
 
     elapsed = time.time() - t_start
     costs = MODEL_COSTS.get(use_model, {"input": 0, "output": 0})
@@ -166,7 +176,13 @@ def curation_rank(conn, profile_path=None, model=None, date_start=None, date_end
     use_profile = profile_path or PROFILE_PATH
 
     if not use_profile.exists():
-        raise FileNotFoundError(f"Profile not found: {use_profile}")
+        seed = use_profile.parent / "seed_profile.md"
+        if seed.exists():
+            import shutil
+            shutil.copy(seed, use_profile)
+            print(f"  No profile.md found — copied seed_profile.md to {use_profile}")
+        else:
+            raise FileNotFoundError(f"Profile not found: {use_profile} (and no seed_profile.md to bootstrap from)")
     profile_text = use_profile.read_text()
 
     # Query relevant articles with optional date range filter.
@@ -187,33 +203,48 @@ def curation_rank(conn, profile_path=None, model=None, date_start=None, date_end
     total_output_tokens = 0
     t_start = time.time()
 
-    for batch_start in range(0, total, CURATION_BATCH_SIZE):
-        batch = articles[batch_start: batch_start + CURATION_BATCH_SIZE]
-        batch_num = batch_start // CURATION_BATCH_SIZE + 1
-        total_batches = (total + CURATION_BATCH_SIZE - 1) // CURATION_BATCH_SIZE
-        print(f"  Batch {batch_num}/{total_batches} ({len(batch)} articles)...")
+    profile_id = db.get_or_create_profile(conn, profile_text)
+    prompt_id = db.get_or_create_prompt(conn, CURATION_PROMPT)
+    run_id = db.create_scoring_run(
+        conn, stage="curation", model=use_model,
+        prompt_id=prompt_id, profile_id=profile_id,
+        date_start=date_start, date_end=date_end,
+        threshold=LLM_SCORE_THRESHOLD,
+    )
 
-        try:
-            results, usage = _score_curation_batch(batch, profile_text, use_model)
-        except Exception as e:
-            print(f"  Batch {batch_num} failed ({e}), retrying...")
-            time.sleep(2)
-            results, usage = _score_curation_batch(batch, profile_text, use_model)
+    try:
+        for batch_start in range(0, total, CURATION_BATCH_SIZE):
+            batch = articles[batch_start: batch_start + CURATION_BATCH_SIZE]
+            batch_num = batch_start // CURATION_BATCH_SIZE + 1
+            total_batches = (total + CURATION_BATCH_SIZE - 1) // CURATION_BATCH_SIZE
+            print(f"  Batch {batch_num}/{total_batches} ({len(batch)} articles)...")
 
-        total_input_tokens += usage.input_tokens
-        total_output_tokens += usage.output_tokens
+            try:
+                results, usage = score_curation_batch(batch, profile_text, use_model)
+            except Exception as e:
+                print(f"  Batch {batch_num} failed ({e}), retrying...")
+                time.sleep(2)
+                results, usage = score_curation_batch(batch, profile_text, use_model)
 
-        adjusted_scores = []
-        for row, (score, confidence, rationale) in zip(batch, results):
-            adjustment = JOURNAL_SCORE_ADJUSTMENTS.get(row["journal"], 0.0)
-            adjusted_score = min(1.0, max(0.0, score + adjustment))
-            db.update_curation_score(conn, row["pmid"], adjusted_score, confidence, rationale)
-            if adjusted_score >= LLM_SCORE_THRESHOLD:
-                above_threshold += 1
-            adjusted_scores.append(adjusted_score)
+            total_input_tokens += usage.input_tokens
+            total_output_tokens += usage.output_tokens
 
-        scores_str = ", ".join(f"{s:.2f}" for s in adjusted_scores)
-        print(f"    scores: {scores_str}")
+            adjusted_scores = []
+            for row, (score, rationale) in zip(batch, results):
+                adjustment = JOURNAL_SCORE_ADJUSTMENTS.get(row["journal"], 0.0)
+                adjusted_score = min(1.0, max(0.0, score + adjustment))
+                db.insert_evaluation(conn, row["pmid"], run_id, adjusted_score, rationale)
+                if adjusted_score >= LLM_SCORE_THRESHOLD:
+                    above_threshold += 1
+                adjusted_scores.append(adjusted_score)
+
+            scores_str = ", ".join(f"{s:.2f}" for s in adjusted_scores)
+            print(f"    scores: {scores_str}")
+    except Exception:
+        db.fail_scoring_run(conn, run_id)
+        raise
+
+    db.complete_scoring_run(conn, run_id)
 
     elapsed = time.time() - t_start
     costs = MODEL_COSTS.get(use_model, {"input": 0, "output": 0})
@@ -224,7 +255,7 @@ def curation_rank(conn, profile_path=None, model=None, date_start=None, date_end
     return total, above_threshold
 
 
-def _score_curation_batch(articles, profile_text, model):
+def score_curation_batch(articles, profile_text, model):
     """
     Score a batch of articles against a user profile.
 
@@ -234,34 +265,40 @@ def _score_curation_batch(articles, profile_text, model):
         model: Model ID string
 
     Returns:
-        List of (score, confidence, rationale) tuples, and usage object.
+        List of (score, rationale) tuples, and usage object.
     """
     lines = []
     for i, row in enumerate(articles):
         abstract = (row["abstract"] or "").strip() or "(no abstract)"
         lines.append(f"{i+1}. Title: {row['title']}\n   Abstract: {abstract}")
 
-    user_message = (
-        f"## User Interest Profile\n\n{profile_text}\n\n"
-        f"## Articles to Score\n\n" + "\n\n".join(lines)
-    )
+    system = f"{CURATION_PROMPT}\n\n## User Interest Profile\n\n{profile_text}"
+    user_message = "## Articles to Score\n\n" + "\n\n".join(lines)
 
     response = client.messages.create(
         model=model,
-        max_tokens=max(len(articles) * 150, 512),
-        system=CURATION_PROMPT,
+        max_tokens=max(len(articles) * 300, 1024),
+        system=system,
         messages=[{"role": "user", "content": user_message}]
     )
 
     raw = response.content[0].text.strip()
+    print(f"  DEBUG: stop_reason={response.stop_reason}, usage={response.usage}, raw={raw[:200]!r}")
+
+    if response.stop_reason == "max_tokens":
+        raise ValueError(f"Response truncated (max_tokens); got stop_reason=max_tokens with {response.usage.output_tokens} output tokens")
+
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
             raw = raw[4:]
         raw = raw.strip()
 
+    if not raw:
+        raise ValueError("Empty response after stripping code fences")
+
     results = json.loads(raw)
-    return [(float(r["score"]), float(r["confidence"]), r["rationale"]) for r in results], response.usage
+    return [(float(r["score"]), r["rationale"]) for r in results], response.usage
 
 
 def score_domain(title, prompt=None):

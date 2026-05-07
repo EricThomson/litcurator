@@ -12,13 +12,15 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 DATA_DIR = Path.home() / ".litcurator"
-GROUND_TRUTH_DB = DATA_DIR / "ground_truth.db"
+GROUND_TRUTH_DB = DATA_DIR / "ground_truth.db"   # legacy, kept as backup
+LITCURATOR_DB = DATA_DIR / "litcurator.db"
 UI_TEST_RELEVANCE_DB = DATA_DIR / "ui_test_relevance.db"
 UI_TEST_CURATION_DB = DATA_DIR / "ui_test_curation.db"
 UI_TEST_BATCH_SIZE = 20
 PROFILE_DIR = DATA_DIR / "profile"
 PROFILE_PATH = PROFILE_DIR / "profile.md"
 PROFILE_QA_LOG = PROFILE_DIR / "qa_log.md"
+USER_FEEDBACK_DIR = DATA_DIR / "user_feedback"
 
 # ---------------------------------------------------------------------------
 # Labeling
@@ -28,6 +30,7 @@ RELEVANCE_BATCH_SIZE = 50
 CURATION_BATCH_SIZE = 15
 CURATION_THRESHOLD = 1          # human label >= this is "above the noise" (0-5 scale)
 LLM_SCORE_THRESHOLD = 0.5       # LLM score >= this is predicted above the noise (0.0-1.0 scale, tuned on val)
+PROFILE_UPDATE_MAX_ITERATIONS = 2  # max react loop iterations in profile builder
 
 # ---------------------------------------------------------------------------
 # Journals
@@ -164,21 +167,31 @@ DOMAIN_FILTER_PROMPT = DOMAIN_FILTER_PROMPT_TITLE
 CURATION_PROMPT = """
 You are a personalized literature curator. Score each neuroscience article against the user's interest profile provided below.
 
-Use the profile as the primary basis for scoring — you are assessing fit to this specific person's interests, not general scientific importance.
+Read the profile carefully. Score based on whether the paper's PRIMARY CONTRIBUTION matches what the user cares about — not whether it mentions topics or key words from the profile. We aren't doing keyword matches here. 
+
+The title has already been screened. Base your score primarily on the abstract, which tells you what the paper actually does.
+
+Treat the topical interests in the profile as illustrative of the user's taste — not as an exclusive and exhaustive list. A strong systems neuroscience paper in an unlisted area should still score well on its own merits. Do not penalize a paper simply for being outside the explicitly listed topics. The list should be used to boost, but not strongly penalize. 
+
+Methodology matters: if a paper uses methods that the user explicitly is not interested in (e.g., EEG), generic topical relevance should not bring the score above threshold unless there are multiple interesting factors pulling it that way along multiple dimensions. 
+
+When in doubt, score higher rather than lower. Missing a good paper is worse than including a borderline one.
 
 Assign a relevance score from 0.0 to 1.0:
-  0.0 — Clearly outside the user's interests
-  0.5 — Borderline: has some relevant elements but not a clear fit
+  0.0 — Primary contribution is clearly outside the user's interests
+  0.5 — Borderline: some relevant elements but not a clear fit (this will be considered above threshold)
   1.0 — Perfect fit: exactly the kind of work this user cares about
 
-Use the full range continuously — do not round to a small number of values.
+Use the full range continuously (include at least two decimal places in the score -- 0.75). Score each article independently.
 
 Also provide:
-  confidence (float 0.0-1.0): your confidence in the score
-  rationale (one sentence): explain the score in terms of the user's stated interests
+  rationale (one sentence): what is the paper primarily about, and why does or doesn't it fit the profile?
 
-Score each article independently against the profile — do not rank articles relative to each other.
+Return ONLY a JSON array of objects — one object per article, in the same order as input. Your entire response must be valid JSON: a list starting with [ and ending with ], with no explanation or preamble outside the brackets.
 
-Return a JSON array with one object per article in the same order as input:
-[{"score": <float 0.0-1.0>, "confidence": <float 0.0-1.0>, "rationale": <string>}, ...]
+Example output for 2 articles:
+[
+  {"score": 0.85, "rationale": "Primarily reports in vivo calcium imaging of leech ganglion during local bending, directly matching the user's interest in optical physiology of intact circuits and neuroethology."},
+  {"score": 0.12, "rationale": "Primarily characterizes receptor trafficking kinetics in dissociated neurons — a molecular/cellular study outside the user's stated interests."}
+]
 """.strip()
