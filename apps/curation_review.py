@@ -11,6 +11,8 @@ Run from repo root:
 """
 
 import argparse
+import subprocess
+import sys
 from datetime import date
 from dotenv import load_dotenv
 import streamlit as st
@@ -216,7 +218,9 @@ if st.session_state.get("review_done"):
     if total_pending > 0:
         period_summary = ", ".join(f"{m} ({c})" for m, c in uningested)
         st.info(f"{total_pending} flags pending profile update across: {period_summary}")
-        st.markdown("Ready to update the profile? Run:\n```\nstreamlit run apps/profile_builder.py\n```")
+        if st.button("Launch profile builder", type="primary"):
+            subprocess.Popen([sys.executable, "-m", "streamlit", "run", "apps/profile_builder.py"])
+            st.caption("Profile builder launching in a new tab...")
     else:
         st.info("No pending flags — nothing to update in the profile builder yet.")
 

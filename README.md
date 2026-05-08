@@ -13,6 +13,5 @@ For this to work you need some API keys that you should store in `.env`:
 - An API key for an LLM vendor (I'm currently using anthropic). 
 
 ## Status
-- Labeled 1200 articles to get ground truth.
-- Currently working on profile building pipeline to curate articles. 
+- Working on curation step/profile builder 
 

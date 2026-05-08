@@ -20,8 +20,11 @@ conn = db.get_connection(LITCURATOR_DB)
 evaluate.curation_score(conn, date_start=args.start, date_end=args.end)
 conn.close()
 
-subprocess.run([
-    sys.executable, "-m", "streamlit", "run",
-    "apps/curation_review.py", "--",
-    "--start", args.start, "--end", args.end,
-])
+try:
+    subprocess.run([
+        sys.executable, "-m", "streamlit", "run",
+        "apps/curation_review.py", "--",
+        "--start", args.start, "--end", args.end,
+    ])
+except KeyboardInterrupt:
+    pass

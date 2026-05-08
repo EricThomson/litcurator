@@ -253,7 +253,7 @@ stage = st.session_state.get("pb_stage", "select_periods")
 if stage == "select_periods":
     periods = db.get_uningested_feedback_periods(conn)
     if not periods:
-        st.info("No unprocessed flags. Flag articles in the rank viewer first.")
+        st.info("No unprocessed flags. Flag articles in curation review first.")
         conn.close()
         st.stop()
     st.subheader("Select periods to build profile from")
@@ -271,7 +271,7 @@ selected_months = st.session_state.get("pb_selected_months")
 flags = db.get_uningested_feedback(conn, months=selected_months)
 
 if not flags and stage != "done":
-    st.info("No unprocessed flags. Flag articles in the rank viewer first.")
+    st.info("No unprocessed flags. Flag articles in curation review first.")
     conn.close()
     st.stop()
 
