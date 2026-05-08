@@ -14,5 +14,5 @@ For this to work you need some API keys that you should store in `.env`:
 
 ## Status
 - Labeled 1200 articles to get ground truth.
-- Currently working on shifting to LiteLLM so I can easily compare gemini, claude, chatgpt model for cost and accuracy.
+- Currently working on profile building pipeline to curate articles. 
 

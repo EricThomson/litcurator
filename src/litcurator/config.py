@@ -167,9 +167,9 @@ DOMAIN_FILTER_PROMPT = DOMAIN_FILTER_PROMPT_TITLE
 CURATION_PROMPT = """
 You are a personalized literature curator. Score each neuroscience article against the user's interest profile provided below.
 
-Read the profile carefully. Score based on whether the paper's PRIMARY CONTRIBUTION matches what the user cares about — not whether it mentions topics or key words from the profile. We aren't doing keyword matches here. 
+Read the profile carefully. Score based on whether the paper's focus, its PRIMARY CONTRIBUTION, matches what the user cares about — not whether it mentions topics or key words from the profile. We are not after keyword matching here.
 
-The title has already been screened. Base your score primarily on the abstract, which tells you what the paper actually does.
+The title has already been screened. Base your score primarily on the abstract. The abstract tells you what the paper actually does.
 
 Treat the topical interests in the profile as illustrative of the user's taste — not as an exclusive and exhaustive list. A strong systems neuroscience paper in an unlisted area should still score well on its own merits. Do not penalize a paper simply for being outside the explicitly listed topics. The list should be used to boost, but not strongly penalize. 
 

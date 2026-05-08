@@ -1,11 +1,17 @@
 """
-LLM-based ranking of initial PubMed candidates against user interests.
+LLM-based evaluation of PubMed articles against user interests.
 
-Stage 1 (domain_filter): Coarse filter — is this paper in the right domain?
-    Uses Haiku + truncated abstract (250 chars) + batching for speed and low cost.
+Two pipeline stages:
 
-Stage 2 (curation_rank): Fine-grained filter — does this match the curator's interests?
-    Uses Sonnet + full abstract for nuanced scoring.
+Stage 1 (domain_filter): Coarse relevance filter — is this paper in the right domain?
+    Uses Haiku on titles (or titles + abstracts) in batches for speed and low cost.
+    Scores 0-1; articles >= threshold advance to Stage 2.
+
+Stage 2 (curation_score): Fine-grained personal interest scoring — does this match
+    the curator's specific interests?
+    Uses Sonnet with full abstract scored against the user's evolving interest profile.
+    Scores 0-1 with a one-sentence rationale; results stored with full provenance
+    (profile version, prompt version, model, threshold) in the evaluations table.
 """
 
 import json
@@ -38,20 +44,22 @@ MODEL_COSTS = {
 }
 
 
-
 def domain_filter(conn, threshold=0.5, journal=None, model=None, mode="title"):
     """
     Run Stage 1 domain filter on status=1 (retrieved) articles.
 
+    Scores each article 0-1 for domain relevance using Haiku. Articles scoring
+    >= threshold are marked as passing the domain filter (relevant=1).
+
     Args:
         conn: SQLite connection
-        threshold: Minimum domain_score to advance to status=2 (default 0.5)
-        journal: Optional journal name string to filter articles (default None = all)
+        threshold: Minimum domain score to pass (default 0.5)
+        journal: Optional journal name to restrict scoring to one journal
         model: Model ID override (default: DOMAIN_FILTER_MODEL)
         mode: "title" (title only) or "full" (title + full abstract)
 
     Returns:
-        Tuple of (total scored, passed threshold)
+        Tuple of (total_scored, passed_threshold)
     """
     use_model = model or DOMAIN_FILTER_MODEL
     batch_size = BATCH_SIZE_FULL if mode == "full" else BATCH_SIZE_TITLE
@@ -108,15 +116,18 @@ def domain_filter(conn, threshold=0.5, journal=None, model=None, mode="title"):
 
 def _score_domain_batch(articles, model=None, mode="title"):
     """
-    Score a batch of articles.
+    Score a batch of articles for domain relevance (Stage 1 internal helper).
+
+    Sends a batch to the domain filter LLM and returns a score (0-1) and
+    reasoning string per article. Used by domain_filter(); not called directly.
 
     Args:
-        articles: List of sqlite3.Row objects with at least 'pmid', 'title', 'abstract'
+        articles: List of sqlite3.Row objects with at least 'title' and 'abstract'
         model: Model ID override (default: DOMAIN_FILTER_MODEL)
-        mode: "title" (title only) or "full" (title + full abstract)
+        mode: "title" (title only) or "full" (title + abstract excerpt)
 
     Returns:
-        List of (score, reasoning) tuples in the same order as input articles.
+        Tuple of (list of (score, reasoning) tuples, usage object)
     """
     use_model = model or DOMAIN_FILTER_MODEL
 
@@ -142,35 +153,41 @@ def _score_domain_batch(articles, model=None, mode="title"):
 
     raw = response.content[0].text.strip()
 
-    # Strip markdown code fences if present
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
             raw = raw[4:]
         raw = raw.strip()
 
-    print(f"  DEBUG: stop_reason={response.stop_reason}, usage={response.usage}, raw={raw[:200]!r}")
     results = json.loads(raw)
     return [(float(r["score"]), r["reasoning"]) for r in results], response.usage
 
 
-def curation_rank(conn, profile_path=None, model=None, date_start=None, date_end=None):
+def curation_score(conn, profile_path=None, model=None, date_start=None, date_end=None):
     """
-    Run Stage 2 curation scoring on relevant articles.
+    Score domain-filtered articles against the user interest profile (Stage 2 curation pipeline).
 
-    Scores each article 0-5 against the user profile, then applies journal
-    adjustments as a postprocessing step. Results saved to curation_score,
-    curation_confidence, curation_rationale columns.
+    Fetches articles that passed the domain filter (relevant=1) for the given date range and
+    scores each 0-1 using the curation LLM against the user's interest profile. Applies
+    journal score adjustments as a postprocessing step.
+
+    Each call creates a scoring_run row linking the model, profile version, prompt version,
+    threshold, and date range, with one evaluation row per article containing the score and
+    a one-sentence rationale. This makes every score fully traceable to the exact profile
+    and prompt that produced it.
+
+    Articles scoring >= LLM_SCORE_THRESHOLD surface in the curation review step.
 
     Args:
         conn: SQLite connection
-        profile_path: Path to profile markdown file (default: PROFILE_PATH from config)
+        profile_path: Path to profile markdown file (default: PROFILE_PATH from config).
+            If profile.md does not exist, bootstraps from seed_profile.md.
         model: Model ID override (default: CURATION_MODEL)
-        date_start: Optional 'YYYY-MM-DD' string to filter articles by pub_date
-        date_end: Optional 'YYYY-MM-DD' string to filter articles by pub_date
+        date_start: Optional 'YYYY-MM-DD' to filter articles by pub_date (inclusive)
+        date_end: Optional 'YYYY-MM-DD' to filter articles by pub_date (inclusive)
 
     Returns:
-        Tuple of (total scored, above threshold count)
+        Tuple of (total_scored, above_threshold_count)
     """
     use_model = model or CURATION_MODEL
     use_profile = profile_path or PROFILE_PATH
@@ -185,8 +202,6 @@ def curation_rank(conn, profile_path=None, model=None, date_start=None, date_end
             raise FileNotFoundError(f"Profile not found: {use_profile} (and no seed_profile.md to bootstrap from)")
     profile_text = use_profile.read_text()
 
-    # Query relevant articles with optional date range filter.
-    # TODO: for real monthly use without human labels, query by domain_score >= threshold.
     if date_start and date_end:
         articles = conn.execute(
             "SELECT * FROM articles WHERE relevant = 1 AND pub_date >= ? AND pub_date <= ? ORDER BY pub_date",
@@ -257,15 +272,19 @@ def curation_rank(conn, profile_path=None, model=None, date_start=None, date_end
 
 def score_curation_batch(articles, profile_text, model):
     """
-    Score a batch of articles against a user profile.
+    Score a batch of articles against the user interest profile (Stage 2 internal helper).
+
+    Sends a batch to the curation LLM and returns a score (0-1) and one-sentence
+    rationale per article. Used by curation_score() and the profile builder's
+    validation loop; not typically called directly.
 
     Args:
-        articles: List of sqlite3.Row objects with title, abstract, journal
-        profile_text: User interest profile as a string
+        articles: List of dicts or sqlite3.Row objects with 'title', 'abstract', 'journal'
+        profile_text: User interest profile as a markdown string
         model: Model ID string
 
     Returns:
-        List of (score, rationale) tuples, and usage object.
+        Tuple of (list of (score, rationale) tuples, usage object)
     """
     lines = []
     for i, row in enumerate(articles):
@@ -283,7 +302,6 @@ def score_curation_batch(articles, profile_text, model):
     )
 
     raw = response.content[0].text.strip()
-    print(f"  DEBUG: stop_reason={response.stop_reason}, usage={response.usage}, raw={raw[:200]!r}")
 
     if response.stop_reason == "max_tokens":
         raise ValueError(f"Response truncated (max_tokens); got stop_reason=max_tokens with {response.usage.output_tokens} output tokens")
@@ -303,12 +321,14 @@ def score_curation_batch(articles, profile_text, model):
 
 def score_domain(title, prompt=None):
     """
-    Score a single article title or abstract for domain relevance.
-    Useful for testing individual articles.
+    Score a single article title for domain relevance (Stage 1 utility).
+
+    Convenience wrapper around the domain filter LLM for testing individual
+    articles without running the full batch pipeline.
 
     Args:
-        title: Article title (or title + abstract) string
-        prompt: Optional system prompt override (default: DOMAIN_FILTER_PROMPT)
+        title: Article title string (or title + abstract)
+        prompt: Optional system prompt override (default: DOMAIN_FILTER_PROMPT_TITLE)
 
     Returns:
         Tuple of (score: float, reasoning: str)

@@ -446,15 +446,13 @@ def get_latest_feedback_by_pmids(conn, pmids):
     return result
 
 
-def get_uningested_feedback(conn):
+def get_uningested_feedback_periods(conn):
     """
-    Get the most recent uningested feedback per article,
-    joined with evaluation and article data.
+    Return list of (year_month, count) for months that have uningested flags,
+    e.g. [("2025-01", 8), ("2025-03", 4)], sorted chronologically.
     """
-    return conn.execute("""
-        SELECT f.id AS feedback_id, f.note, f.feedback_label,
-               e.id AS evaluation_id, e.score, e.rationale,
-               a.pmid, a.title, a.abstract, a.journal
+    rows = conn.execute("""
+        SELECT strftime('%Y-%m', a.pub_date) AS month, COUNT(DISTINCT a.pmid) AS cnt
         FROM feedback f
         JOIN evaluations e ON f.evaluation_id = e.id
         JOIN articles a ON e.pmid = a.pmid
@@ -466,8 +464,43 @@ def get_uningested_feedback(conn):
               WHERE e2.pmid = a.pmid
                 AND f2.ingested_to_profile_id IS NULL
           )
-        ORDER BY e.score DESC
+        GROUP BY month
+        ORDER BY month
     """).fetchall()
+    return [(r["month"], r["cnt"]) for r in rows]
+
+
+def get_uningested_feedback(conn, months=None):
+    """
+    Get the most recent uningested feedback per article,
+    joined with evaluation and article data.
+    Optionally filter to articles whose pub_date falls in the given months
+    (list of 'YYYY-MM' strings).
+    """
+    month_filter = ""
+    params = []
+    if months:
+        placeholders = ",".join("?" * len(months))
+        month_filter = f"AND strftime('%Y-%m', a.pub_date) IN ({placeholders})"
+        params = list(months)
+    return conn.execute(f"""
+        SELECT f.id AS feedback_id, f.note, f.feedback_label,
+               e.id AS evaluation_id, e.score, e.rationale,
+               a.pmid, a.title, a.abstract, a.journal
+        FROM feedback f
+        JOIN evaluations e ON f.evaluation_id = e.id
+        JOIN articles a ON e.pmid = a.pmid
+        WHERE f.ingested_to_profile_id IS NULL
+          {month_filter}
+          AND f.flagged_at = (
+              SELECT MAX(f2.flagged_at)
+              FROM feedback f2
+              JOIN evaluations e2 ON f2.evaluation_id = e2.id
+              WHERE e2.pmid = a.pmid
+                AND f2.ingested_to_profile_id IS NULL
+          )
+        ORDER BY e.score DESC
+    """, params).fetchall()
 
 
 def get_all_uningested_feedback_ids_for_pmids(conn, pmids):
