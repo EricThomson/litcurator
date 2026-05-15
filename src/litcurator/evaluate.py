@@ -33,6 +33,7 @@ client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 DOMAIN_FILTER_MODEL = "claude-haiku-4-5-20251001"
 CURATION_MODEL = "claude-sonnet-4-6"
+PROFILE_BUILDER_MODEL = "claude-sonnet-4-6"
 BATCH_SIZE_TITLE = 20
 BATCH_SIZE_FULL = 10
 CURATION_BATCH_SIZE = 5
@@ -41,18 +42,22 @@ ABSTRACT_EXCERPT_LEN = 250
 MODEL_COSTS = {
     "claude-haiku-4-5-20251001": {"input": 0.80,  "output": 4.00},
     "claude-sonnet-4-6":         {"input": 3.00,  "output": 15.00},
+    "claude-opus-4-7":           {"input": 15.00, "output": 75.00},
 }
 
 
-def domain_filter(conn, threshold=0.5, journal=None, model=None, mode="title"):
+def domain_filter(conn, date_start, date_end, threshold=0.5, journal=None, model=None, mode="title", progress_callback=None):
     """
-    Run Stage 1 domain filter on status=1 (retrieved) articles.
+    Run Stage 1 domain filter on articles in the given date range.
 
-    Scores each article 0-1 for domain relevance using Haiku. Articles scoring
-    >= threshold are marked as passing the domain filter (relevant=1).
+    Scores each article 0-1 for domain relevance using Haiku. Results are stored
+    in the evaluations table with full provenance. Articles scoring >= threshold
+    advance to Stage 2 (curation_score).
 
     Args:
         conn: SQLite connection
+        date_start: Start of date range (YYYY-MM-DD string)
+        date_end: End of date range (YYYY-MM-DD string)
         threshold: Minimum domain score to pass (default 0.5)
         journal: Optional journal name to restrict scoring to one journal
         model: Model ID override (default: DOMAIN_FILTER_MODEL)
@@ -64,7 +69,7 @@ def domain_filter(conn, threshold=0.5, journal=None, model=None, mode="title"):
     use_model = model or DOMAIN_FILTER_MODEL
     batch_size = BATCH_SIZE_FULL if mode == "full" else BATCH_SIZE_TITLE
     prompt_text = DOMAIN_FILTER_PROMPT_ABSTRACT if mode == "full" else DOMAIN_FILTER_PROMPT_TITLE
-    articles = db.get_articles_by_status(conn, status=1)
+    articles = db.get_articles_for_date_range(conn, date_start, date_end)
 
     if journal is not None:
         articles = [a for a in articles if a["journal"] == journal]
@@ -76,7 +81,10 @@ def domain_filter(conn, threshold=0.5, journal=None, model=None, mode="title"):
     t_start = time.time()
 
     prompt_id = db.get_or_create_prompt(conn, prompt_text)
-    run_id = db.create_scoring_run(conn, stage="domain", model=use_model, prompt_id=prompt_id, threshold=threshold)
+    run_id = db.create_scoring_run(
+        conn, stage="domain", model=use_model, prompt_id=prompt_id,
+        date_start=date_start, date_end=date_end, threshold=threshold,
+    )
 
     try:
         for batch_start in range(0, total, batch_size):
@@ -99,6 +107,9 @@ def domain_filter(conn, threshold=0.5, journal=None, model=None, mode="title"):
                 db.insert_evaluation(conn, row["pmid"], run_id, score, reasoning)
                 if score >= threshold:
                     passed += 1
+
+            if progress_callback:
+                progress_callback(batch_num, total_batches, passed)
     except Exception:
         db.fail_scoring_run(conn, run_id)
         raise
@@ -163,7 +174,7 @@ def _score_domain_batch(articles, model=None, mode="title"):
     return [(float(r["score"]), r["reasoning"]) for r in results], response.usage
 
 
-def curation_score(conn, profile_path=None, model=None, date_start=None, date_end=None):
+def curation_score(conn, profile_path=None, model=None, date_start=None, date_end=None, use_human_relevance_gate=False, progress_callback=None):
     """
     Score domain-filtered articles against the user interest profile (Stage 2 curation pipeline).
 
@@ -202,15 +213,15 @@ def curation_score(conn, profile_path=None, model=None, date_start=None, date_en
             raise FileNotFoundError(f"Profile not found: {use_profile} (and no seed_profile.md to bootstrap from)")
     profile_text = use_profile.read_text()
 
-    if date_start and date_end:
-        articles = conn.execute(
-            "SELECT * FROM articles WHERE relevant = 1 AND pub_date >= ? AND pub_date <= ? ORDER BY pub_date",
-            (date_start, date_end)
-        ).fetchall()
+    if not (date_start and date_end):
+        raise ValueError("curation_score() requires date_start and date_end")
+
+    if use_human_relevance_gate:
+        articles = db.get_human_relevant_articles_for_date_range(conn, date_start, date_end)
+        run_notes = "benchmark mode: gated on human relevance label, not Haiku"
     else:
-        articles = conn.execute(
-            "SELECT * FROM articles WHERE relevant = 1 ORDER BY pub_date"
-        ).fetchall()
+        articles = db.get_articles_passing_domain_filter(conn, date_start, date_end, threshold=0.5)
+        run_notes = None
 
     total = len(articles)
     above_threshold = 0
@@ -225,6 +236,7 @@ def curation_score(conn, profile_path=None, model=None, date_start=None, date_en
         prompt_id=prompt_id, profile_id=profile_id,
         date_start=date_start, date_end=date_end,
         threshold=LLM_SCORE_THRESHOLD,
+        notes=run_notes,
     )
 
     try:
@@ -255,6 +267,8 @@ def curation_score(conn, profile_path=None, model=None, date_start=None, date_en
 
             scores_str = ", ".join(f"{s:.2f}" for s in adjusted_scores)
             print(f"    scores: {scores_str}")
+            if progress_callback:
+                progress_callback(batch_num, total_batches)
     except Exception:
         db.fail_scoring_run(conn, run_id)
         raise

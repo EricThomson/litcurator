@@ -189,13 +189,13 @@ def parse_single_article(article):
     }
 
 
-def retrieve_range(start_date, end_date, db_path=None, output_path=None, journals=None):
+def retrieve_range(date_start, date_end, db_path=None, output_path=None, journals=None):
     """
     Fetch all candidate articles across all configured journals for a given date range.
 
     Args:
-        start_date: Start of date range (date object)
-        end_date: End of date range (date object)
+        date_start: Start of date range (YYYY-MM-DD string)
+        date_end: End of date range (YYYY-MM-DD string)
         db_path: Optional path to SQLite DB. Defaults to DB_PATH.
         output_path: Optional path to save results as JSON. If None, results
                      are returned but not saved.
@@ -204,6 +204,9 @@ def retrieve_range(start_date, end_date, db_path=None, output_path=None, journal
     Returns:
         List of article dicts.
     """
+    start_date = date.fromisoformat(date_start)
+    end_date = date.fromisoformat(date_end)
+
     if journals is None:
         journals = JOURNALS
 
@@ -273,8 +276,7 @@ def retrieve_month(year, month, db_path=None, output_path=None, journals=None):
     Returns:
         List of article dicts.
     """
-    start_date = date(year, month, 1)
-    last_day = calendar.monthrange(year, month)[1]
-    end_date = date(year, month, last_day)
+    date_start = date(year, month, 1).isoformat()
+    date_end = date(year, month, calendar.monthrange(year, month)[1]).isoformat()
 
-    return retrieve_range(start_date, end_date, db_path=db_path, output_path=output_path, journals=journals)
+    return retrieve_range(date_start, date_end, db_path=db_path, output_path=output_path, journals=journals)

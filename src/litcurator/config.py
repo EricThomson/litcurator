@@ -30,7 +30,7 @@ RELEVANCE_BATCH_SIZE = 50
 CURATION_BATCH_SIZE = 15
 CURATION_THRESHOLD = 1          # human label >= this is "above the noise" (0-5 scale)
 LLM_SCORE_THRESHOLD = 0.5       # LLM score >= this is predicted above the noise (0.0-1.0 scale, tuned on val)
-PROFILE_UPDATE_MAX_ITERATIONS = 2  # max react loop iterations in profile builder
+PROFILE_UPDATE_MAX_ITERATIONS = 1
 
 # ---------------------------------------------------------------------------
 # Journals
@@ -102,6 +102,10 @@ Score each title from 0.0 to 1.0:
 
 Ask yourself: what is the primary system of interest in this paper? If it is the immune system, cardiovascular system, metabolism, reproduction, or other non-neural organ systems — score low, even if neural pathways are mentioned. If the primary system of interest is the nervous system itself, or behavior, score accordingly.
 
+Note that neuroanatomy at the level of identified brain regions or circuits — cell type composition, synaptic inventories, connectomes, mesoscale connectivity — is systems neuroscience. The cellular/molecular exclusion applies to single-cell molecular biology (ion channels, receptors, gene expression), not to neural circuit architecture.
+
+Animal behavior studies (predation, reproduction, communication, navigation, learning, social behavior, and the like) are systems neuroscience by default. Behavior is the output of neural systems; the title does not need to name a neural mechanism explicitly.
+
 Research using organoids, ex vivo preparations, or in vitro neural circuit models should score higher, as these are systems-level experimental platforms even when molecular methods are used, but especially if electrophysiological or optical physiological (such as calcium imaging) methods are used.
 
 Computational methods, foundation models, analysis tools, electrophysiology techniques, or optical imaging techniques developed specifically for systems and behavioral neuro should score high, even if the primary contribution is methodological rather than a direct experimental finding about circuits or behavior. This includes tools for in vivo neural recording such as genetically encoded voltage indicators and calcium sensors.
@@ -132,8 +136,8 @@ Score each abstract from 0.0 to 1.0:
 
 Ask: what is the primary system of interest? If it is the immune system,
 cardiovascular system, metabolism, reproduction, or other non-neural organ
-systems — score low, even if neural pathways are mentioned. If it is the
-nervous system itself, or behavior, score accordingly.
+systems — score low, even if neural pathways are mentioned. If the paper primarily focuses on the
+the nervous system itself, or behavior, score accordingly.
 
 Computational methods, electrophysiology, and optical imaging tools developed
 specifically for systems and behavioral neuroscience should score high, even
@@ -148,8 +152,7 @@ including LTP and LTD — is a core systems neuroscience topic and should score
 higher even when the framing is mechanistic.
 
 AI and machine learning papers that address neuroscience questions (NeuroAI)
-— learning rules, memory consolidation, neural coding, computational models
-of brain function — should score high. This includes theoretical ML work that
+— neural coding, computational models of brain function, memory, plasticity — should score high. This includes theoretical ML work that
 informs our understanding of biological neural systems.
 
 When in doubt, score higher. False positives are better than false negatives

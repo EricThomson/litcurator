@@ -229,6 +229,130 @@ def reset_domain_scores(conn, journal=None):
     conn.commit()
 
 
+def has_articles_for_date_range(conn, date_start, date_end):
+    """Return True if any articles with pub_date in this range exist in the DB."""
+    return conn.execute(
+        "SELECT 1 FROM articles WHERE pub_date >= ? AND pub_date <= ? LIMIT 1",
+        (date_start, date_end)
+    ).fetchone() is not None
+
+
+def get_articles_for_date_range(conn, date_start, date_end):
+    """Fetch all articles with pub_date in the given range, ordered by pub_date."""
+    return conn.execute(
+        "SELECT * FROM articles WHERE pub_date >= ? AND pub_date <= ? ORDER BY pub_date",
+        (date_start, date_end)
+    ).fetchall()
+
+
+def has_evaluations_for_date_range(conn, stage, date_start, date_end):
+    """
+    Return True if any articles in this date range have a completed evaluation
+    for the given stage. Works for both real LLM runs and synthetic migration runs.
+    """
+    return conn.execute(
+        """
+        SELECT 1 FROM articles a
+        JOIN evaluations e ON a.pmid = e.pmid
+        JOIN scoring_runs r ON e.run_id = r.id
+        WHERE r.stage = ? AND r.status = 'completed'
+          AND a.pub_date >= ? AND a.pub_date <= ?
+        LIMIT 1
+        """,
+        (stage, date_start, date_end)
+    ).fetchone() is not None
+
+
+def count_curation_labeled_for_date_range(conn, date_start, date_end):
+    """Count of articles with a human curation label (0-5) in the given pub_date range."""
+    return conn.execute(
+        "SELECT COUNT(*) FROM articles WHERE curation_label IS NOT NULL AND pub_date >= ? AND pub_date <= ?",
+        (date_start, date_end)
+    ).fetchone()[0]
+
+
+def get_human_relevant_articles_for_date_range(conn, date_start, date_end):
+    """
+    Articles where the human relevance label is 1 within the given pub_date range.
+    Used by curation_score in evaluation mode (gates Sonnet on human labels rather
+    than Haiku output, so curation can be evaluated independently of domain filter).
+    """
+    return conn.execute(
+        "SELECT * FROM articles WHERE relevant = 1 AND pub_date >= ? AND pub_date <= ? ORDER BY pub_date",
+        (date_start, date_end)
+    ).fetchall()
+
+
+def get_articles_passing_domain_filter(conn, date_start, date_end, threshold=0.5):
+    """
+    Return articles in this date range that passed the most recent domain filter
+    evaluation (score >= threshold). Works for both LLM and synthetic migration runs.
+    """
+    return conn.execute(
+        """
+        SELECT a.*
+        FROM articles a
+        JOIN evaluations e ON a.pmid = e.pmid
+        JOIN scoring_runs r ON e.run_id = r.id
+        WHERE r.stage = 'domain' AND r.status = 'completed'
+          AND a.pub_date >= ? AND a.pub_date <= ?
+          AND e.score >= ?
+          AND r.id = (
+              SELECT r2.id FROM scoring_runs r2
+              JOIN evaluations e2 ON e2.run_id = r2.id
+              WHERE r2.stage = 'domain' AND e2.pmid = a.pmid
+              ORDER BY r2.created_at DESC LIMIT 1
+          )
+        ORDER BY a.pub_date
+        """,
+        (date_start, date_end, threshold)
+    ).fetchall()
+
+
+def get_domain_borderline_articles(conn, date_start, date_end, threshold=0.5, window=0.15):
+    """
+    Return articles with domain scores within window of the threshold, in both
+    directions. Useful for spot-checking domain filter behavior.
+    """
+    return conn.execute(
+        """
+        SELECT a.pmid, a.title, a.journal, a.pub_date, e.score, e.rationale
+        FROM articles a
+        JOIN evaluations e ON a.pmid = e.pmid
+        JOIN scoring_runs r ON e.run_id = r.id
+        WHERE r.stage = 'domain' AND r.status = 'completed'
+          AND a.pub_date >= ? AND a.pub_date <= ?
+          AND ABS(e.score - ?) <= ?
+          AND r.id = (
+              SELECT r2.id FROM scoring_runs r2
+              JOIN evaluations e2 ON e2.run_id = r2.id
+              WHERE r2.stage = 'domain' AND e2.pmid = a.pmid
+              ORDER BY r2.created_at DESC LIMIT 1
+          )
+        ORDER BY e.score DESC
+        """,
+        (date_start, date_end, threshold, window)
+    ).fetchall()
+
+
+def get_pipeline_coverage(conn):
+    """
+    Return a summary of completed scoring runs by date range and stage.
+    Each entry has date_start, date_end, stage, and latest_run timestamp.
+    Excludes synthetic migration runs (which have NULL date_start).
+    """
+    rows = conn.execute(
+        """
+        SELECT stage, date_start, date_end, MAX(created_at) AS latest_run
+        FROM scoring_runs
+        WHERE status = 'completed' AND date_start IS NOT NULL
+        GROUP BY stage, date_start, date_end
+        ORDER BY date_start, stage
+        """
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 # ---------------------------------------------------------------------------
 # Profiles
 # ---------------------------------------------------------------------------
@@ -419,6 +543,33 @@ def get_feedback_for_evaluations(conn, evaluation_ids):
     return {row["evaluation_id"]: row for row in rows}
 
 
+def get_uningested_feedback_by_pmids(conn, pmids):
+    """
+    Get most recent uningested feedback per pmid, keyed by pmid.
+    Used to surface pending flags from previous scoring runs in the feed UI.
+    Returns dict mapping pmid -> Row with feedback_id, evaluation_id, note, score.
+    """
+    if not pmids:
+        return {}
+    placeholders = ",".join("?" * len(pmids))
+    rows = conn.execute(f"""
+        SELECT a.pmid, f.id AS feedback_id, f.evaluation_id, f.note, e.score
+        FROM feedback f
+        JOIN evaluations e ON f.evaluation_id = e.id
+        JOIN articles a ON e.pmid = a.pmid
+        WHERE a.pmid IN ({placeholders})
+          AND f.ingested_to_profile_id IS NULL
+          AND f.flagged_at = (
+              SELECT MAX(f2.flagged_at)
+              FROM feedback f2
+              JOIN evaluations e2 ON f2.evaluation_id = e2.id
+              WHERE e2.pmid = a.pmid
+                AND f2.ingested_to_profile_id IS NULL
+          )
+    """, list(pmids)).fetchall()
+    return {row["pmid"]: row for row in rows}
+
+
 def get_latest_feedback_by_pmids(conn, pmids):
     """
     Get the most recent feedback per pmid across all scoring runs.
@@ -486,7 +637,7 @@ def get_uningested_feedback(conn, months=None):
     return conn.execute(f"""
         SELECT f.id AS feedback_id, f.note, f.feedback_label,
                e.id AS evaluation_id, e.score, e.rationale,
-               a.pmid, a.title, a.abstract, a.journal
+               a.pmid, a.title, a.abstract, a.journal, a.curation_label
         FROM feedback f
         JOIN evaluations e ON f.evaluation_id = e.id
         JOIN articles a ON e.pmid = a.pmid
@@ -518,6 +669,28 @@ def get_all_uningested_feedback_ids_for_pmids(conn, pmids):
         list(pmids)
     ).fetchall()
     return [row["id"] for row in rows]
+
+
+def discard_uningested_feedback(conn, months=None):
+    """
+    Delete uningested feedback rows, optionally restricted to specific months.
+    months: list of 'YYYY-MM' strings, or None to discard all.
+    Does not affect ingested feedback or the pre-fill read path.
+    """
+    if months:
+        placeholders = ",".join("?" * len(months))
+        conn.execute(f"""
+            DELETE FROM feedback
+            WHERE ingested_to_profile_id IS NULL
+              AND evaluation_id IN (
+                SELECT e.id FROM evaluations e
+                JOIN articles a ON e.pmid = a.pmid
+                WHERE strftime('%Y-%m', a.pub_date) IN ({placeholders})
+              )
+        """, list(months))
+    else:
+        conn.execute("DELETE FROM feedback WHERE ingested_to_profile_id IS NULL")
+    conn.commit()
 
 
 def mark_feedback_ingested(conn, feedback_ids, profile_id):

@@ -249,32 +249,3 @@ def setup_ui_test_curation_db():
     print(f"Created {UI_TEST_CURATION_DB}: 10 pre-curated, 10 unlabeled")
 
 
-def main():
-    import argparse
-    from litcurator.config import GROUND_TRUTH_DB
-    from litcurator import db
-
-    parser = argparse.ArgumentParser(prog="litcurator")
-    parser.add_argument("--n", type=int, default=100, help="Number of articles to add to the sample")
-    parser.add_argument("--status", action="store_true", help="Print pipeline snapshot and exit")
-    args = parser.parse_args()
-
-    conn = db.get_connection(GROUND_TRUTH_DB)
-
-    for col, typedef in [("selected_for_review", "INTEGER DEFAULT 0"), ("relevant", "INTEGER")]:
-        try:
-            conn.execute(f"ALTER TABLE articles ADD COLUMN {col} {typedef}")
-            conn.commit()
-        except Exception:
-            pass
-
-    if args.status:
-        print_status(conn)
-    else:
-        sample_for_review(conn, args.n)
-
-    conn.close()
-
-
-if __name__ == "__main__":
-    main()

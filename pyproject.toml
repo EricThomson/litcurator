@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-litcurator = "litcurator.label:main"
+litcurator = "litcurator.cli:main"
 
 [project.urls]
 Repository = "https://github.com/EricThomson/litcurator"
