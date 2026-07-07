@@ -12,13 +12,14 @@ Pipeline:
 import calendar
 import json
 import os
+import re
 import xml.etree.ElementTree as ET
 from datetime import date
 
 import requests
 from dotenv import load_dotenv
 
-from litcurator import db
+from litcurator import db_interface
 from litcurator.config import JOURNALS
 
 load_dotenv()
@@ -90,6 +91,35 @@ def parse_articles_xml(xml_text):
     return articles
 
 
+_PAGE_RANGE_RE = re.compile(r"\d+\S*-\S*\d+")
+
+
+def clean_pages(pages, pii="", doi=""):
+    """Return a real page reference, or '' if the value is an article NUMBER.
+
+    The basic distinction: a PAGE is a location in an issue; an article NUMBER is
+    the article's identifier. An identifier is, by construction, encoded in the
+    article's electronic id -- it equals the PII (Nature Communications '1220') or
+    is the DOI's suffix (Science 'eadp5182' in '...science.adp5182'; eLife 'e51234'
+    in '...eLife.51234'; Curr Opin '102972' in '...conb.2025.102972'). A real page
+    is independent of the DOI/PII, so it survives. A leading 'e' marks an electronic
+    page, stripped for the match. Ranges are always real pages and pass straight
+    through -- that is where a short commentary shows up, as a small span."""
+    pages = (pages or "").strip()
+    if not pages:
+        return ""
+    if _PAGE_RANGE_RE.search(pages):
+        return pages
+    core = pages[1:] if pages[:1].lower() == "e" else pages   # strip electronic-'e'
+    if pii:
+        pii = pii.strip()
+        if pages == pii or core == pii:
+            return ""                                 # the number IS the pii
+    if doi and (doi.endswith("." + pages) or doi.endswith("." + core)):
+        return ""                                     # the number IS the doi suffix
+    return pages                                      # a real page, independent of both
+
+
 def parse_single_article(article):
     """Extract fields from a single PubmedArticle XML element."""
     # Title
@@ -97,8 +127,11 @@ def parse_single_article(article):
     title = "".join(title_el.itertext()) if title_el is not None else ""
 
     # Abstract — may have multiple AbstractText elements (e.g. structured abstracts).
-    # Use itertext() to capture text inside nested tags like <sup>, <sub>, <i>, etc.
-    abstract_parts = article.findall(".//AbstractText")
+    # Scope to <Abstract>/<AbstractText>: PubMed also emits sibling <OtherAbstract>
+    # blocks (eLife plain-language digests, translated abstracts, author summaries),
+    # whose AbstractText a bare .//AbstractText would wrongly concatenate onto the
+    # abstract. Use itertext() to capture text in nested tags like <sup>, <i>, etc.
+    abstract_parts = article.findall(".//Abstract/AbstractText")
     abstract = " ".join("".join(part.itertext()) for part in abstract_parts)
 
     # Journal name
@@ -138,17 +171,6 @@ def parse_single_article(article):
                 epub_date = f"{epub_year}-{epub_month}-{epub_day}"
             break
 
-    # Electronic publication date (epub ahead of print)
-    epub_date = ""
-    for article_date in article.findall(".//ArticleDate"):
-        if article_date.get("DateType") == "Electronic":
-            epub_year = article_date.findtext("Year", default="")
-            epub_month = article_date.findtext("Month", default="")
-            epub_day = article_date.findtext("Day", default="")
-            if epub_year and epub_month and epub_day:
-                epub_date = f"{epub_year}-{epub_month}-{epub_day}"
-            break
-
     # Authors and affiliations
     author_els = article.findall(".//Author")
     authors = []
@@ -176,6 +198,25 @@ def parse_single_article(article):
             doi = article_id.text
             break
 
+    # Page reference (MedlinePgn, e.g. "1176-1180", with a StartPage/EndPage
+    # fallback). Its only use is a length signal -- a short span or single page
+    # flags a commentary vs a substantive piece -- so we keep genuine ranges AND
+    # genuine single pages, but drop the article NUMBER that continuous-publication
+    # journals (Nature Communications etc.) emit here. They reuse that number as the
+    # pii ELocationID, so clean_pages drops a single value equal to the pii.
+    pii = ""
+    for eloc in article.findall(".//ELocationID"):
+        if eloc.get("EIdType") == "pii":
+            pii = (eloc.text or "").strip()
+            break
+    pages = article.findtext(".//Pagination/MedlinePgn") or ""
+    if not pages:
+        start = article.findtext(".//Pagination/StartPage")
+        end = article.findtext(".//Pagination/EndPage")
+        if start:
+            pages = f"{start}-{end}" if end else start
+    pages = clean_pages(pages, pii, doi)
+
     return {
         "pubmed_id": pubmed_id,
         "title": title,
@@ -186,6 +227,7 @@ def parse_single_article(article):
         "epub_date": epub_date,
         "doi": doi,
         "pub_types": pub_types,
+        "pages": pages,
     }
 
 
@@ -232,9 +274,17 @@ def retrieve_range(date_start, date_end, db_path=None, output_path=None, journal
 
         # Keep only Journal Articles and Reviews — drop comments, news, editorials, etc.
         ALLOWED_TYPES = {"Journal Article", "Review"}
+        # Drop non-research items even when PubMed ALSO tags them "Journal Article"
+        # (News & Views / Perspectives / commentary are routinely dual-tagged, so an
+        # OR-keep on ALLOWED_TYPES lets them through). Exclusion wins over inclusion.
+        # "Historical Article" is deliberately NOT blocked -- substantive
+        # history-of-neuroscience can be worth keeping.
+        BLOCKED_TYPES = {"Comment", "News", "Editorial", "Biography",
+                         "Portrait", "Interview", "Published Erratum"}
         articles = [
             a for a in articles
             if any(t in ALLOWED_TYPES for t in a["pub_types"])
+            and not any(t in BLOCKED_TYPES for t in a["pub_types"])
         ]
 
         # Deduplicate across journals by PMID
@@ -249,8 +299,8 @@ def retrieve_range(date_start, date_end, db_path=None, output_path=None, journal
 
     print(f"\nTotal articles retrieved: {len(all_articles)}")
 
-    conn = db.get_connection(db_path)
-    inserted = db.insert_articles(conn, all_articles)
+    conn = db_interface.get_connection(db_path)
+    inserted = db_interface.insert_articles(conn, all_articles)
     conn.close()
     print(f"New articles added to database: {inserted} ({len(all_articles) - inserted} already seen)")
 

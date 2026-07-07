@@ -5,7 +5,7 @@ build-backend = "uv_build"
 [project]
 name = "litcurator"
 version = "0.0.4"
-description = "litcurator: LLM-powered pubmed literature extraction"
+description = "litcurator: personalized PubMed literature curation"
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.12"
@@ -14,14 +14,25 @@ dependencies = [
     "requests",
     "anthropic",
     "python-dotenv",
-    "streamlit",
+    "dash",
+    "dash-bootstrap-components",
+    "dash-resizable-panels",
 ]
 
-[project.scripts]
-litcurator = "litcurator.cli:main"
+[dependency-groups]
+# Opt-in extras for the offline embedding-based analysis tools (sandbox/v4_useful_stuff).
+# Kept out of the core install: `uv sync --group analysis` to use the score map.
+analysis = [
+    "voyageai",
+    "umap-learn",
+    "numpy",
+]
 
 [project.urls]
 Repository = "https://github.com/EricThomson/litcurator"
+
+[project.scripts]
+litcurator = "litcurator.cli:main"
 
 [tool.uv.build-backend]
 module-root = "src"

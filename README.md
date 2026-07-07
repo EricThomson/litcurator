@@ -3,7 +3,7 @@
 
 An LLM-based literature filter. 
 
-Litcurator works in two stages. First, retrieve publications from PubMed within your field of interest. This casts a very broad net (e.g., neuroscience). Then, narrow them down to a final curated list using an LLM that builds up a profile of your interests. It uses [streamlit](https://streamlit.io/) to display articles in the browser.
+Litcurator works in two stages. First, retrieve publications from PubMed within your field of interest. This casts a very broad net (e.g., neuroscience). Then, narrow them down to a final curated list using an LLM that works from a user profile. 
 
 Initial focus is on systems neuroscience. 
 
@@ -13,5 +13,5 @@ For this to work you need some API keys that you should store in `.env`:
 - An API key for an LLM vendor (I'm currently using anthropic). 
 
 ## Status
-- Working on curation step/profile builder 
+- generating ground truth labels for 2000 articles from 2025.
 
