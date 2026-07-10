@@ -42,16 +42,25 @@ def _fp(text):
     return hashlib.sha1((text or "").encode("utf-8")).hexdigest()[:12]
 
 
+def _chunks(seq, n):
+    """Yield successive n-sized chunks of seq (mirrors pipeline._chunks)."""
+    for i in range(0, len(seq), n):
+        yield seq[i:i + n]
+
+
 def load_cases(path=None):
     path = path or config.JUDGE_HARNESS_CASES_FILE
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def run_tests(prompt_text=None, profile_text=None, cases=None, conn=None):
+def run_tests(prompt_text=None, profile_text=None, cases=None, conn=None, progress=None):
     """Score every case under (profile, prompt) and check its band. Returns a list of
     result dicts (the case fields plus score/passed/title/journal/rationale/
-    possible_mismatch/error). Pure: does not print. prompt_text/profile_text default
-    to whatever is active on disk."""
+    possible_mismatch/error). Does not print. prompt_text/profile_text default to
+    whatever is active on disk. Scores in chunks of JUDGE_BATCH_SIZE, exactly like the
+    live pipeline (so harness scores match production, not an all-in-one-batch that the
+    pipeline never uses), and calls progress(done, total) after each chunk if given --
+    the CLI passes a callback to print n/total; the workbench passes none (stays silent)."""
     close = False
     if conn is None:
         conn = db_interface.get_connection()
@@ -66,16 +75,29 @@ def run_tests(prompt_text=None, profile_text=None, cases=None, conn=None):
 
         articles = {c["pmid"]: db_interface.get_article(conn, c["pmid"]) for c in cases}
         scorable = [c for c in cases if articles[c["pmid"]] is not None]
-        items = [{"title": articles[c["pmid"]]["title"],
-                  "abstract": articles[c["pmid"]].get("abstract"),
-                  "journal": articles[c["pmid"]].get("journal"),
-                  "pages": articles[c["pmid"]].get("pages")} for c in scorable]
+        from litcurator.pipeline import JUDGE_BATCH_SIZE
 
-        judgments = []
-        if items:
-            judgments, _cost = judge.judge_articles_batch(items, profile_text, system_prompt=prompt_text)
-
-        judged = {c["pmid"]: j for c, j in zip(scorable, judgments)}
+        judged = {}
+        chunk_errors = {}
+        total = len(scorable)
+        done = 0
+        for chunk in _chunks(scorable, JUDGE_BATCH_SIZE):
+            items = [{"title": articles[c["pmid"]]["title"],
+                      "abstract": articles[c["pmid"]].get("abstract"),
+                      "journal": articles[c["pmid"]].get("journal"),
+                      "pages": articles[c["pmid"]].get("pages")} for c in chunk]
+            try:
+                judgments, _cost = judge.judge_articles_batch(items, profile_text, system_prompt=prompt_text)
+                for c, j in zip(chunk, judgments):
+                    judged[c["pmid"]] = j
+            except Exception as e:
+                # one flaky chunk (e.g. a transient empty API response) should not nuke
+                # the whole run -- mark its cases and keep scoring the rest.
+                for c in chunk:
+                    chunk_errors[c["pmid"]] = str(e)
+            done += len(chunk)
+            if progress:
+                progress(done, total)
         results = []
         for c in cases:
             art = articles[c["pmid"]]
@@ -83,6 +105,12 @@ def run_tests(prompt_text=None, profile_text=None, cases=None, conn=None):
                 results.append({**c, "title": c.get("title"), "journal": None,
                                 "score": None, "passed": None, "rationale": None,
                                 "possible_mismatch": None, "error": "pmid not in articles"})
+                continue
+            if c["pmid"] not in judged:
+                results.append({**c, "title": art["title"], "journal": art["journal"],
+                                "score": None, "passed": None, "rationale": None,
+                                "possible_mismatch": None,
+                                "error": f"judge failed: {chunk_errors.get(c['pmid'], 'unknown')}"})
                 continue
             j = judged[c["pmid"]]
             score = j["estimated_score"]
@@ -135,8 +163,9 @@ def format_report(results, prompt_fp="", profile_fp=""):
         lines.append("\nPASSING:")
         lines += [row(r) for r in passed]
     if errs:
-        lines.append("\nUNRESOLVED (pmid missing from DB):")
-        lines += [f"  {r['pmid']} {_ascii(r.get('title'))[:70]}" for r in errs]
+        lines.append("\nUNRESOLVED (missing from DB, or judge error):")
+        lines += [f"  {r['pmid']} {_ascii(r.get('title'))[:55]}  -- {_ascii(r.get('error'))[:45]}"
+                  for r in errs]
 
     # coverage by tag
     tags = {}

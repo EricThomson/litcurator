@@ -9,6 +9,7 @@ precedents.
 import hashlib
 import json
 import os
+import time
 
 import anthropic
 from dotenv import load_dotenv
@@ -27,6 +28,13 @@ COST_PER_M_INPUT = 3.0
 COST_PER_M_OUTPUT = 15.0
 
 VALID_SURFACE_DECISION = {"surface", "maybe", "do_not_surface"}
+
+# The judge endpoint intermittently returns an empty completion (or a transient
+# overload / connection error). An empty response must NEVER silently drop a
+# paper -- in live curation that paper just vanishes from the feed with no trace.
+# So we retry with exponential backoff instead of giving up after 2 tries.
+_MAX_JUDGE_ATTEMPTS = 5
+_TRANSIENT_API_ERRORS = (anthropic.APIStatusError, anthropic.APIConnectionError)
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +156,64 @@ def _article_to_text(title, abstract, journal, pages=None):
     return "\n".join(lines)
 
 
+def _decode_json(raw, opener):
+    """Decode the first JSON value starting at the first `opener` ("{" or "[") in
+    raw, tolerating any prose/preamble or code fences the model emits around it
+    (raw_decode stops at the end of the value and ignores trailing text). Raises
+    ValueError if no opener is present -- an empty or prose-only response, which
+    the caller retries. This is what keeps a stray sentence of reasoning from
+    silently dropping a paper."""
+    start = raw.find(opener)
+    if start == -1:
+        raise ValueError(f"no JSON {opener!r} found in response")
+    value, _end = json.JSONDecoder().raw_decode(raw, start)
+    return value
+
+
+def _judge_call(system_prompt, user_message, max_tokens, parse):
+    """Make one judge API call and parse it, resilient to the transient empty
+    completions and overload errors the endpoint occasionally returns. Retries up
+    to _MAX_JUDGE_ATTEMPTS with exponential backoff (0.5, 1, 2, 4s). An EMPTY
+    response is treated as a retryable failure -- letting an empty completion
+    silently drop a paper is the exact failure mode we must avoid. parse(raw_text)
+    decodes and validates a non-empty response, raising ValueError/KeyError on a
+    malformed one (also retried). Returns (parsed_result, usage, cumulative_cost);
+    raises after the last attempt if every attempt fails."""
+    last_error = None
+    total_cost = 0.0
+    usage = None
+    for attempt in range(_MAX_JUDGE_ATTEMPTS):
+        response = None
+        try:
+            response = _client().messages.create(
+                model=MODEL,
+                max_tokens=max_tokens,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_message}],
+            )
+        except _TRANSIENT_API_ERRORS as e:
+            last_error = e
+
+        if response is not None:
+            usage = response.usage
+            total_cost += (usage.input_tokens * COST_PER_M_INPUT
+                           + usage.output_tokens * COST_PER_M_OUTPUT) / 1_000_000
+            raw = response.content[0].text.strip() if response.content else ""
+            if not raw:
+                last_error = ValueError("empty response from judge")
+            else:
+                try:
+                    return parse(raw), usage, total_cost
+                except (ValueError, KeyError) as e:
+                    last_error = e
+
+        if attempt < _MAX_JUDGE_ATTEMPTS - 1:
+            time.sleep(0.5 * 2 ** attempt)
+
+    raise ValueError(f"Judge failed after {_MAX_JUDGE_ATTEMPTS} attempts. "
+                     f"Last error: {last_error}")
+
+
 def judge_article(title, abstract, journal, profile_text, pages=None, system_prompt=None):
     """Judge a paper from title + abstract + journal (+ optional page range) against
     the user profile. system_prompt is the active judge prompt (from disk); falls
@@ -163,35 +229,15 @@ def judge_article(title, abstract, journal, profile_text, pages=None, system_pro
         f"Judge this paper for this user."
     )
 
-    total_cost = 0.0
-    last_error = None
-    for attempt in range(2):
-        response = _client().messages.create(
-            model=MODEL,
-            max_tokens=700,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_message}],
-        )
-        total_cost += (response.usage.input_tokens * COST_PER_M_INPUT
-                       + response.usage.output_tokens * COST_PER_M_OUTPUT) / 1_000_000
-        raw = response.content[0].text.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
-        try:
-            decoder = json.JSONDecoder()
-            judgment, _end = decoder.raw_decode(raw)
-            _validate(judgment)
-        except ValueError as e:
-            last_error = e
-            continue
-        judgment["judge_prompt_version"] = _fingerprint(system_prompt)
-        judgment["judge_model"] = MODEL
-        return judgment, response.usage, total_cost
+    def parse(raw):
+        judgment = _decode_json(raw, "{")
+        _validate(judgment)
+        return judgment
 
-    raise ValueError(f"Judge failed after 2 attempts. Last error: {last_error}")
+    judgment, usage, cost = _judge_call(system_prompt, user_message, 700, parse)
+    judgment["judge_prompt_version"] = _fingerprint(system_prompt)
+    judgment["judge_model"] = MODEL
+    return judgment, usage, cost
 
 
 def judge_articles_batch(items, profile_text, system_prompt=None):
@@ -219,40 +265,20 @@ def judge_articles_batch(items, profile_text, system_prompt=None):
         f"Return a JSON array with exactly {len(items)} objects, in order."
     )
 
-    total_cost = 0.0
-    last_error = None
-    for attempt in range(2):
-        response = _client().messages.create(
-            model=MODEL,
-            max_tokens=len(items) * 700,
-            system=batch_prompt,
-            messages=[{"role": "user", "content": user_message}],
-        )
-        total_cost += (response.usage.input_tokens * COST_PER_M_INPUT
-                       + response.usage.output_tokens * COST_PER_M_OUTPUT) / 1_000_000
-        raw = response.content[0].text.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
-        try:
-            decoder = json.JSONDecoder()
-            judgments, _end = decoder.raw_decode(raw)
-            if not isinstance(judgments, list):
-                raise ValueError(f"Expected JSON array, got {type(judgments).__name__}")
-            if len(judgments) != len(items):
-                raise ValueError(f"Expected {len(items)} judgments, got {len(judgments)}")
-            for j in judgments:
-                _validate(j)
-                j["judge_prompt_version"] = _fingerprint(system_prompt)
-                j["judge_model"] = MODEL
-            return judgments, total_cost
-        except (ValueError, KeyError) as e:
-            last_error = e
-            continue
+    def parse(raw):
+        judgments = _decode_json(raw, "[")
+        if not isinstance(judgments, list):
+            raise ValueError(f"Expected JSON array, got {type(judgments).__name__}")
+        if len(judgments) != len(items):
+            raise ValueError(f"Expected {len(items)} judgments, got {len(judgments)}")
+        for j in judgments:
+            _validate(j)
+            j["judge_prompt_version"] = _fingerprint(system_prompt)
+            j["judge_model"] = MODEL
+        return judgments
 
-    raise ValueError(f"Batch judge failed after 2 attempts. Last error: {last_error}")
+    judgments, _usage, total_cost = _judge_call(batch_prompt, user_message, len(items) * 700, parse)
+    return judgments, total_cost
 
 
 def _validate(j):

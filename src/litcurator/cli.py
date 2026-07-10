@@ -206,7 +206,9 @@ def _cmd_judge_harness(args):
         print(judge_harness.dry_run())
         return
     prompt_text = Path(args.prompt).read_text(encoding="utf-8") if args.prompt else None
-    results, prompt_fp, profile_fp = judge_harness.run_tests(prompt_text=prompt_text)
+    results, prompt_fp, profile_fp = judge_harness.run_tests(
+        prompt_text=prompt_text,
+        progress=lambda done, total: print(f"  scored {done}/{total}", flush=True))
     report = judge_harness.format_report(results, prompt_fp, profile_fp)
     print(report)
     path = judge_harness.write_report(report + "\n" + judge_harness.format_rationales(results))
