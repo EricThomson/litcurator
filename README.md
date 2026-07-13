@@ -12,5 +12,5 @@ For this to work you need some API keys that you should store in `.env`:
 - An API key for an LLM vendor (I'm currently using anthropic). 
 
 ## Status
-- generating ground truth labels for 2000 articles from 2025.
+- Rebuilding db getting ready for profile-building machinery.
 
