@@ -1,6 +1,5 @@
 
 # litcurator 
-
 An LLM-based literature filter. 
 
 Litcurator works in two stages. First, retrieve publications from PubMed within your field of interest. This casts a very broad net (e.g., neuroscience). Then, narrow them down to a final curated list using an LLM that works from a user profile. 

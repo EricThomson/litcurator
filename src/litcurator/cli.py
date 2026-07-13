@@ -206,8 +206,10 @@ def _cmd_judge_harness(args):
         print(judge_harness.dry_run())
         return
     prompt_text = Path(args.prompt).read_text(encoding="utf-8") if args.prompt else None
+    profile_text = Path(args.profile).read_text(encoding="utf-8") if args.profile else None
     results, prompt_fp, profile_fp = judge_harness.run_tests(
         prompt_text=prompt_text,
+        profile_text=profile_text,
         progress=lambda done, total: print(f"  scored {done}/{total}", flush=True))
     report = judge_harness.format_report(results, prompt_fp, profile_fp)
     print(report)
@@ -341,6 +343,8 @@ def main():
                            help="run the judge harness -- fast floor-of-competence gate (tests prompt + profile)")
     jh_p.add_argument("--prompt", default=None,
                       help="path to a draft prompt to test (default: active prompt on disk)")
+    jh_p.add_argument("--profile", default=None,
+                      help="path to a draft profile to test (default: active profile on disk)")
     jh_p.add_argument("--dry-run", action="store_true",
                       help="verify the fixture pmids resolve and list cases, without scoring")
     jh_p.set_defaults(func=_cmd_judge_harness)
