@@ -106,7 +106,6 @@ def _domain_stage(conn, start, end, mode, threshold):
     prompt_hash = hashlib.sha256(domain_filter.DOMAIN_FILTER_PROMPT_TITLE.encode("utf-8")).hexdigest()
     run_id = db_interface.find_or_create_scoring_run(
         conn, "domain", domain_filter.DOMAIN_FILTER_MODEL, mode,
-        judge_prompt_version=domain_filter.DOMAIN_FILTER_PROMPT_VERSION,
         judge_prompt_hash=prompt_hash,
         date_start=start, date_end=end, threshold=threshold)
     todo = db_interface.unevaluated_in_run(conn, run_id, [a["pmid"] for a in candidates])
@@ -202,7 +201,6 @@ def _judge_stage(conn, survivors, profile_text, profile_id, mode,
     prompt_id = db_interface.get_or_create_prompt(conn, system_prompt)
     run_id = db_interface.find_or_create_scoring_run(
         conn, "curation", judge.MODEL, mode, profile_id=profile_id,
-        judge_prompt_version=prompt_interface.content_hash(system_prompt),
         judge_prompt_hash=prompt_id,
         date_start=start, date_end=end, threshold=threshold)
     todo = db_interface.unevaluated_in_run(conn, run_id, [a["pmid"] for a in survivors])

@@ -141,9 +141,11 @@ def load_autosave():
 # ---------------------------------------------------------------------------
 
 def content_hash(text):
-    """Short stable id for a profile's content. Recorded on judgments so you can
-    tell which profile version produced a given score."""
-    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
+    """Short display id for a profile's content: the 12-char prefix of its SHA256,
+    so it lines up with the DB content-address (profiles.id = SHA256(content)). Used
+    in the workbench / CLI / reports; the load-bearing provenance is the full sha256
+    profiles.id stamped on each scoring_run, not this short form."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 
 def active_version_id():

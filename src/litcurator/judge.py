@@ -20,9 +20,11 @@ MODEL = "claude-sonnet-4-6"
 
 
 def _fingerprint(text):
-    """Short content id of a prompt, stamped on each judgment so the judgment
-    self-identifies its prompt (mirrors profile_interface.content_hash)."""
-    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
+    """Short display id of a prompt: the 12-char prefix of its SHA256, so it lines up
+    with the DB content-address (prompts.id = SHA256(content)); mirrors
+    profile_interface.content_hash. Attached to a judgment dict for display; the
+    persisted provenance is the full sha256 judge_prompt_hash on the scoring_run."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 COST_PER_M_INPUT = 3.0
 COST_PER_M_OUTPUT = 15.0

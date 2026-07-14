@@ -148,10 +148,12 @@ def load_autosave():
 # ---------------------------------------------------------------------------
 
 def content_hash(text):
-    """Short stable id for a prompt's content (mirrors profile_interface.content_hash
-    and judge._fingerprint). Recorded on runs so you can tell which prompt version
-    produced a given score."""
-    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
+    """Short display id for a prompt's content: the 12-char prefix of its SHA256, so
+    it lines up with the DB content-address (prompts.id = SHA256(content)). Mirrors
+    profile_interface.content_hash and judge._fingerprint. Display only; the
+    load-bearing provenance is the full sha256 judge_prompt_hash on each scoring_run,
+    not this short form."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 
 def active_version_id():

@@ -1,18 +1,26 @@
 """
-profile_workbench.py -- edit and version the active profile from flag suggestions.
+profile_workbench.py -- edit the active profile, curating the pattern memory.
 
-Left panel: ranked step-2 suggestions from profile_analysis (loaded from
-~/.litcurator/suggestions/), one card each. Mark each Done, Cut, or send to chat.
+Left panel: the ACTIVE PATTERNS (db_interface.get_active_patterns) -- recurring
+taste-gaps the suggester surfaced from your flags, each with a drill-down to the
+papers behind it. Per pattern you can edit its wording and then decide its fate,
+which is written to the append-only pattern_events log (nothing is ever deleted):
+  - Incorporate: you folded it into the profile. Stamps the currently-active
+    profile version, drops the pattern off the active list.
+  - Carry: not yet -- keep it open for a later round.
+  - Reject (with a reason): not a real gap. Drops off the active list, kept as a
+    tombstone so the suggester will not re-propose it.
 
 Right panel: the live active profile, editable. Never overwritten silently:
   - "Save version" writes a timestamped copy to versions/.
   - "Set as active" snapshots the outgoing active into versions/, writes
     user_profile.md, and registers the new version in the DB (parent_id = outgoing).
 
-Bottom: chat sounding-board. Committed profile + live draft both loaded as context
-so the assistant can reason about the delta between them.
+Bottom: chat sounding-board. Committed profile + live draft both loaded as context.
 
-The human authors every word of the profile.
+The human authors every word of the profile; the machinery only surfaces and
+remembers. Typical flow: Discuss / edit a pattern -> author the profile edit on the
+right -> Set as active -> Incorporate the pattern (it stamps that version).
 
 Run:
     litcurator profile_workbench
@@ -20,78 +28,115 @@ Run:
 """
 
 import os
-import re
 from datetime import datetime
-from pathlib import Path
 
 import anthropic
 import dash_bootstrap_components as dbc
-from dash import ALL, Dash, Input, Output, State, callback, ctx, dash_table, dcc, html, no_update
+from dash import ALL, Dash, Input, Output, State, callback, ctx, dcc, html, no_update
 from dash_resizable_panels import Panel, PanelGroup, PanelResizeHandle
 from dotenv import load_dotenv
 
 from litcurator import db_interface, profile_interface
-from litcurator.config import DATA_DIR
 
 load_dotenv()
 
 CHAT_MODEL = "claude-sonnet-4-6"
-SUGGESTIONS_DIR = DATA_DIR / "suggestions"
 
-# Marks the start of the step-2 ranked suggestions in a profile_analysis output file.
-DISTILL_MARKER = "## Distilled suggestions"
+DIRECTIONS = ["over", "under", "sharpen", "judge-not-applying"]
+_DIR_COLOR = {"over": "danger", "under": "success",
+              "sharpen": "warning", "judge-not-applying": "info"}
 
 
 # ---------------------------------------------------------------------------
-# Suggestions parsing
+# Pattern cards
 # ---------------------------------------------------------------------------
 
-def _suggestion_files():
-    """Available suggestion .md files, newest first."""
-    if not SUGGESTIONS_DIR.exists():
-        return []
-    return sorted(SUGGESTIONS_DIR.glob("seed_suggestions_*.md"),
-                  key=lambda p: p.stat().st_mtime, reverse=True)
+def _render_provenance(prov):
+    """The papers behind a pattern, read-only. Largest |delta| first."""
+    if not prov:
+        return [html.Div("(no linked papers)", className="text-muted small")]
+    out = []
+    for f in prov:
+        note = f"  -- {f['note']}" if f.get("note") else ""
+        out.append(html.Div(
+            f"delta {f['delta']:+.2f} (judge {f['judge_score']:.2f} -> you "
+            f"{f['your_score']:.2f})  {f.get('journal') or ''}: {f.get('title') or ''}{note}",
+            className="small text-muted"))
+    return out
 
 
-def _parse_suggestions(md_text):
-    """Parse the step-2 section into (items, cut_markdown).
+def _pattern_card(conn, p):
+    pid = p["id"]
+    prov = db_interface.get_pattern_provenance(conn, pid)
+    return html.Div(dbc.Card(dbc.CardBody([
+        html.Div([
+            dbc.Badge(p["direction"], color=_DIR_COLOR.get(p["direction"], "secondary"),
+                      className="me-2", style={"flex": "0 0 auto"}),
+            dbc.Input(id={"type": "pat-name", "pid": pid}, value=p["name"], size="sm",
+                      style={"flex": "1 1 auto", "minWidth": 0}),
+            dbc.Badge(p["status"], color="light", text_color="dark", className="ms-2",
+                      style={"flex": "0 0 auto"}),
+        ], className="d-flex align-items-center mb-2"),
+        dbc.Select(id={"type": "pat-dir", "pid": pid},
+                   options=[{"label": d, "value": d} for d in DIRECTIONS],
+                   value=p["direction"], size="sm", className="mb-2"),
+        html.Small("description", className="text-muted"),
+        dbc.Textarea(id={"type": "pat-desc", "pid": pid}, value=p.get("description") or "",
+                     style={"height": "3rem", "fontSize": "0.8rem"}, className="mb-2"),
+        html.Small("suggested edit (your working draft -- you author the profile prose)",
+                   className="text-muted"),
+        dbc.Textarea(id={"type": "pat-sugg", "pid": pid}, value=p.get("suggested_edit") or "",
+                     style={"height": "4rem", "fontSize": "0.8rem"}, className="mb-2"),
+        html.Details([
+            html.Summary(f"{p['flag_count']} papers (provenance)", className="small text-muted"),
+            html.Div(_render_provenance(prov), className="mt-1"),
+        ], className="mb-2"),
+        dbc.Input(id={"type": "pat-reject-note", "pid": pid}, size="sm",
+                  placeholder="reason (recorded on Reject)", className="mb-2"),
+        html.Div([
+            dbc.Button("Save edits", id={"type": "pat-save", "pid": pid},
+                       color="primary", outline=True, size="sm", className="me-1"),
+            dbc.Button("Discuss", id={"type": "pat-discuss", "pid": pid},
+                       color="primary", outline=True, size="sm", className="me-1"),
+            dbc.Button("Carry", id={"type": "pat-carry", "pid": pid},
+                       color="secondary", outline=True, size="sm", className="me-1"),
+            dbc.Button("Incorporate", id={"type": "pat-incorporate", "pid": pid},
+                       color="success", size="sm", className="me-1"),
+            dbc.Button("Reject", id={"type": "pat-reject", "pid": pid},
+                       color="danger", outline=True, size="sm"),
+        ]),
+    ]), className="mb-3", style={"border": "1px solid #e3dcf2"}),
+        id={"type": "pat-card", "pid": pid})
 
-    items: ranked suggestions in document order, each {num, text}.
-    cut_markdown: the raw "Considered and cut" block for read-only display.
-    Lenient: splits on the numbered list, leaves the model's prose intact.
-    """
-    marker = md_text.find(DISTILL_MARKER)
-    body = md_text[marker:] if marker != -1 else md_text
-    body = re.sub(r"(?m)^##\s*Distilled suggestions.*$", "", body, count=1)
 
-    cut_md = ""
-    m = re.search(r"(?im)^\s*\**\s*considered and cut\b.*$", body)
-    if m:
-        cut_md = body[m.end():].strip()
-        body = body[:m.start()]
-
-    items = []
-    parts = re.split(r"(?m)^\s*(\d+)\.\s+", body)
-    pairs = iter(parts[1:])
-    for num, text in zip(pairs, pairs):
-        text = text.strip()
-        if text:
-            items.append({"num": num, "text": text})
-    return items, cut_md
+def _render_patterns(conn):
+    patterns = db_interface.get_active_patterns(conn)
+    if not patterns:
+        return [html.Div(
+            "No open patterns. Flag papers in the review feed, then run "
+            "`litcurator profile_analysis` to surface patterns here.",
+            className="text-muted")]
+    return [_pattern_card(conn, p) for p in patterns]
 
 
-def _split_item(text):
-    """Return (title, body). Title = leading bold span, else truncated first line."""
-    mb = re.match(r"\s*\*\*(.+?)\*\*\s*", text)
-    if mb:
-        return mb.group(1).strip(), text[mb.end():].strip()
-    first = (text.splitlines() or [""])[0].strip()
-    return (first if len(first) <= 70 else first[:67] + "..."), text
+def _initial_patterns():
+    conn = db_interface.get_connection()
+    try:
+        return _render_patterns(conn), len(db_interface.get_active_patterns(conn))
+    finally:
+        conn.close()
 
 
-def _items_to_store(items):
-    return {f"sugg::{it['num']}": it["text"] for it in items}
+def _count_label(n):
+    return f"{n} open pattern{'' if n == 1 else 's'}"
+
+
+def _state_value(states, pid):
+    """The value of the pattern-matched State whose id has this pid."""
+    for s in states or []:
+        if s.get("id", {}).get("pid") == pid:
+            return s.get("value")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -144,104 +189,6 @@ def _render_thread(history):
 
 
 # ---------------------------------------------------------------------------
-# Suggestion cards
-# ---------------------------------------------------------------------------
-
-def _card(item):
-    uid = f"sugg::{item['num']}"
-    title, body = _split_item(item["text"])
-    return html.Div(
-        dbc.Card(dbc.CardBody([
-            html.Div([
-                html.Span(f"{item['num']}.", className="fw-bold me-2",
-                          style={"flex": "0 0 auto"}),
-                html.Span(title, className="text-truncate",
-                          style={"flex": "1 1 auto", "minWidth": 0}),
-                html.Span([
-                    dbc.Button("Discuss", id={"type": "discuss-btn", "uid": uid},
-                               color="primary", outline=True, size="sm", className="me-1"),
-                    dbc.Button("Done", id={"type": "done-btn", "uid": uid},
-                               color="success", outline=True, size="sm", className="me-1"),
-                    dbc.Button("Cut", id={"type": "cut-btn", "uid": uid},
-                               color="secondary", outline=True, size="sm"),
-                ], className="ms-2", style={"flex": "0 0 auto", "whiteSpace": "nowrap"}),
-            ], className="d-flex align-items-center mb-2"),
-            dcc.Markdown(body, className="small mb-0"),
-        ]), className="mb-2", style={"border": "1px solid #e3dcf2"}),
-        id={"type": "card-wrap", "uid": uid},
-    )
-
-
-def _render_suggestions(items, cut_md):
-    if not items:
-        return [html.Div("No suggestions parsed from this file.", className="text-muted")]
-    blocks = [_card(it) for it in items]
-    if cut_md:
-        blocks.append(html.Details([
-            html.Summary("Considered and cut (deferred this round)",
-                         className="text-muted small mt-3"),
-            dcc.Markdown(cut_md, className="small text-muted mt-2"),
-        ]))
-    return blocks
-
-
-# ---------------------------------------------------------------------------
-# Flags to retire (per-flag ingestion)
-# ---------------------------------------------------------------------------
-# Retiring a flag stamps ingested_to_profile_id with the currently-active version,
-# so it drops out of future profile_analysis. Un-retired flags carry forward and
-# accumulate -- that accumulation is what grows a sparse pattern into one dense
-# enough for the analyzer to surface. The human picks what they have addressed;
-# nothing is retired automatically.
-
-FLAG_COLUMNS = [
-    {"name": "delta", "id": "delta"},
-    {"name": "you", "id": "your"},
-    {"name": "journal", "id": "journal"},
-    {"name": "title", "id": "title"},
-    {"name": "your note", "id": "note"},
-]
-
-
-def _load_flag_rows():
-    """Un-retired flags as flat table rows (latest flag per paper)."""
-    conn = db_interface.get_connection()
-    try:
-        flags = db_interface.get_flags(conn, only_uningested=True)
-    finally:
-        conn.close()
-    return [{
-        "flag_id": f["id"],
-        "delta": round(f["delta"], 2),
-        "your": f["your_score"],
-        "journal": f.get("journal") or "",
-        "title": f.get("title") or "",
-        "note": f.get("note") or "",
-    } for f in flags]
-
-
-def _filter_flag_rows(rows, term):
-    if not term:
-        return rows
-    t = term.lower()
-    return [r for r in rows if t in f"{r['title']} {r['journal']} {r['note']}".lower()]
-
-
-def _active_profile_id():
-    """Register/get the id of the profile currently active on disk -- the version a
-    retire stamps onto the flag."""
-    conn = db_interface.get_connection()
-    try:
-        return db_interface.get_or_create_profile(conn, profile_interface.read_active_or_empty())
-    finally:
-        conn.close()
-
-
-def _flags_toggle_label(n):
-    return f"Retire flags  ({n} un-retired)"
-
-
-# ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
 
@@ -250,16 +197,7 @@ def _latest_version_note():
     return f"latest version: {v.name}" if v else "no saved versions yet"
 
 
-_files = _suggestion_files()
-_file_options = [{"label": p.name, "value": str(p)} for p in _files]
-_default_file = str(_files[0]) if _files else None
-if _default_file:
-    _initial_items, _initial_cut = _parse_suggestions(
-        Path(_default_file).read_text(encoding="utf-8"))
-else:
-    _initial_items, _initial_cut = [], ""
-
-_initial_flag_rows = _load_flag_rows()
+_initial_pattern_children, _initial_count = _initial_patterns()
 
 _PANE_STYLE = {"height": "56vh", "overflowY": "auto", "padding": "0 14px"}
 
@@ -268,28 +206,25 @@ app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP],
 app.title = "Profile Workbench"
 
 app.layout = dbc.Container([
-    dcc.Store(id="status-store", data={}, storage_type="session"),
     dcc.Store(id="chat-history", data=[], storage_type="session"),
-    dcc.Store(id="suggestions-store", data=_items_to_store(_initial_items)),
-    dcc.Store(id="flag-rows", data=_initial_flag_rows),
     dbc.Row([
         dbc.Col(html.H4("Profile Workbench", className="mb-0"), width="auto"),
-        dbc.Col(dcc.Dropdown(id="file-dropdown", options=_file_options,
-                             value=_default_file, clearable=False,
-                             style={"minWidth": "340px"}),
-                width="auto"),
-        dbc.Col(html.Small(id="cut-summary", className="text-muted"),
-                width="auto", align="center"),
+        dbc.Col(dbc.Button("Refresh patterns", id="refresh-patterns-btn",
+                           color="secondary", outline=True, size="sm"), width="auto"),
+        dbc.Col(html.Small(_count_label(_initial_count), id="pattern-count",
+                           className="text-muted"), width="auto", align="center"),
     ], align="center", className="mt-3 mb-2 g-2"),
 
     PanelGroup(id="panel-group", direction="horizontal", children=[
         Panel(id="left-panel", defaultSizePercentage=50, children=[
             html.Div([
-                html.Div("Suggestions, ranked by importance. Done = folded into the profile, "
-                         "Cut = set aside, Discuss = send to chat.",
+                html.Div("Active patterns from your flags. Edit the wording, then decide each "
+                         "one's fate. To Incorporate: author the edit on the right, Set as active, "
+                         "then Incorporate here (it stamps that version).",
                          className="text-muted small mb-2"),
-                html.Div(id="suggestions-pane",
-                         children=_render_suggestions(_initial_items, _initial_cut)),
+                dbc.Alert(id="pattern-status", is_open=False, duration=4000,
+                          color="success", className="py-1 px-2 small"),
+                html.Div(id="patterns-pane", children=_initial_pattern_children),
             ], style=_PANE_STYLE),
         ]),
         PanelResizeHandle(html.Div(style={
@@ -323,47 +258,6 @@ app.layout = dbc.Container([
         ]),
     ]),
 
-    html.Div([
-        dbc.Button(_flags_toggle_label(len(_initial_flag_rows)), id="flags-toggle",
-                   color="link", size="sm", className="px-0"),
-        dbc.Collapse(id="flags-collapse", is_open=False, children=html.Div([
-            html.Small(
-                "Retire the flags you have folded into the profile this round -- they stop "
-                "feeding profile_analysis. Un-retired flags carry forward and accumulate. "
-                "A retire stamps the CURRENTLY-active version, so Set as active first if this "
-                "round minted a new one.",
-                className="text-muted d-block mb-2"),
-            dbc.Row([
-                dbc.Col(dbc.Input(id="flag-search", size="sm",
-                                  placeholder="filter by title / journal / your note ..."),
-                        width=True),
-                dbc.Col(dbc.Button("Retire selected", id="retire-btn",
-                                   color="danger", size="sm"), width="auto"),
-            ], className="g-2 mb-2"),
-            dbc.Alert(id="retire-status", is_open=False, duration=4000,
-                      color="success", className="py-1 px-2 small"),
-            dash_table.DataTable(
-                id="flag-table",
-                columns=FLAG_COLUMNS,
-                data=_initial_flag_rows,
-                row_selectable="multi",
-                selected_rows=[],
-                sort_action="native",
-                page_action="none",
-                style_table={"maxHeight": "32vh", "overflowY": "auto"},
-                style_header={"fontWeight": "bold"},
-                style_cell={"fontSize": "0.78rem", "textAlign": "left", "padding": "2px 6px",
-                            "maxWidth": 340, "overflow": "hidden", "textOverflow": "ellipsis",
-                            "whiteSpace": "nowrap"},
-                style_cell_conditional=[
-                    {"if": {"column_id": "delta"}, "width": "55px"},
-                    {"if": {"column_id": "your"}, "width": "45px"},
-                    {"if": {"column_id": "journal"}, "width": "150px"},
-                ],
-            ),
-        ], style={"padding": "0 14px"})),
-    ], style={"padding": "0 14px"}),
-
     html.Hr(className="my-2"),
 
     html.Div([
@@ -388,63 +282,88 @@ app.layout = dbc.Container([
 
 
 # ---------------------------------------------------------------------------
-# Callbacks: suggestions
+# Callbacks: pattern lifecycle
 # ---------------------------------------------------------------------------
 
 @callback(
-    Output("suggestions-pane", "children"),
-    Output("status-store", "data", allow_duplicate=True),
-    Output("suggestions-store", "data"),
-    Input("file-dropdown", "value"),
+    Output("patterns-pane", "children", allow_duplicate=True),
+    Output("pattern-count", "children", allow_duplicate=True),
+    Input("refresh-patterns-btn", "n_clicks"),
     prevent_initial_call=True,
 )
-def cb_load_file(path):
-    if not path:
-        return [html.Div("No file selected.", className="text-muted")], {}, {}
-    items, cut_md = _parse_suggestions(Path(path).read_text(encoding="utf-8"))
-    return _render_suggestions(items, cut_md), {}, _items_to_store(items)
-
-
-def _status_style(status):
-    collapsed = {"maxHeight": "54px", "overflow": "hidden"}
-    if status == "cut":
-        return {**collapsed, "opacity": 0.45}
-    if status == "done":
-        return {**collapsed, "opacity": 0.75, "borderLeft": "4px solid #2f7a4f"}
-    return {}
+def cb_refresh_patterns(_n):
+    conn = db_interface.get_connection()
+    try:
+        return _render_patterns(conn), _count_label(len(db_interface.get_active_patterns(conn)))
+    finally:
+        conn.close()
 
 
 @callback(
-    Output({"type": "card-wrap", "uid": ALL}, "style"),
-    Output({"type": "cut-btn", "uid": ALL}, "children"),
-    Output({"type": "done-btn", "uid": ALL}, "children"),
-    Output("status-store", "data"),
-    Output("cut-summary", "children"),
-    Input({"type": "cut-btn", "uid": ALL}, "n_clicks"),
-    Input({"type": "done-btn", "uid": ALL}, "n_clicks"),
-    State("status-store", "data"),
+    Output("patterns-pane", "children", allow_duplicate=True),
+    Output("pattern-count", "children", allow_duplicate=True),
+    Output("pattern-status", "children"),
+    Output("pattern-status", "is_open"),
+    Input({"type": "pat-carry", "pid": ALL}, "n_clicks"),
+    Input({"type": "pat-incorporate", "pid": ALL}, "n_clicks"),
+    Input({"type": "pat-reject", "pid": ALL}, "n_clicks"),
+    State({"type": "pat-reject-note", "pid": ALL}, "value"),
     prevent_initial_call=True,
 )
-def cb_toggle_status(_cut_clicks, _done_clicks, status):
-    status = dict(status or {})
-    triggered = ctx.triggered_id
-    if triggered and triggered.get("type") in ("cut-btn", "done-btn"):
-        uid = triggered["uid"]
-        kind = "cut" if triggered["type"] == "cut-btn" else "done"
-        if status.get(uid) == kind:
-            status.pop(uid, None)
-        else:
-            status[uid] = kind
+def cb_pattern_fate(_carry, _incorp, _reject, _reject_notes):
+    trig = ctx.triggered_id
+    clicks = (_carry or []) + (_incorp or []) + (_reject or [])
+    if not trig or not any(c for c in clicks if c):
+        return no_update, no_update, no_update, no_update
+    pid, typ = trig["pid"], trig["type"]
+    conn = db_interface.get_connection()
+    try:
+        if typ == "pat-carry":
+            db_interface.add_pattern_event(conn, pid, "carried")
+            msg = "Carried forward -- still open for a later round."
+        elif typ == "pat-incorporate":
+            profile_id = db_interface.get_or_create_profile(
+                conn, profile_interface.read_active_or_empty())
+            db_interface.add_pattern_event(conn, pid, "incorporated", profile_id=profile_id)
+            msg = f"Incorporated into active profile {profile_id[:12]}."
+        else:  # pat-reject
+            note = _state_value(ctx.states_list[0], pid)
+            db_interface.add_pattern_event(conn, pid, "rejected", note=note or None)
+            msg = "Rejected -- kept as a tombstone; the suggester will not re-propose it."
+        children = _render_patterns(conn)
+        count = _count_label(len(db_interface.get_active_patterns(conn)))
+    finally:
+        conn.close()
+    return children, count, msg, True
 
-    styles = [_status_style(status.get(o["id"]["uid"])) for o in ctx.outputs_list[0]]
-    cut_labels = ["Restore" if status.get(o["id"]["uid"]) == "cut" else "Cut"
-                  for o in ctx.outputs_list[1]]
-    done_labels = ["Reopen" if status.get(o["id"]["uid"]) == "done" else "Done"
-                   for o in ctx.outputs_list[2]]
-    n_done = sum(1 for v in status.values() if v == "done")
-    n_cut = sum(1 for v in status.values() if v == "cut")
-    parts = [f"{n} {label}" for n, label in [(n_done, "done"), (n_cut, "cut")] if n]
-    return styles, cut_labels, done_labels, status, "  |  ".join(parts)
+
+@callback(
+    Output("pattern-status", "children", allow_duplicate=True),
+    Output("pattern-status", "is_open", allow_duplicate=True),
+    Input({"type": "pat-save", "pid": ALL}, "n_clicks"),
+    State({"type": "pat-name", "pid": ALL}, "value"),
+    State({"type": "pat-dir", "pid": ALL}, "value"),
+    State({"type": "pat-desc", "pid": ALL}, "value"),
+    State({"type": "pat-sugg", "pid": ALL}, "value"),
+    prevent_initial_call=True,
+)
+def cb_pattern_save(clicks, _names, _dirs, _descs, _suggs):
+    trig = ctx.triggered_id
+    if not trig or not any(c for c in (clicks or []) if c):
+        return no_update, no_update
+    pid = trig["pid"]
+    conn = db_interface.get_connection()
+    try:
+        db_interface.update_pattern_content(
+            conn, pid,
+            name=_state_value(ctx.states_list[0], pid),
+            direction=_state_value(ctx.states_list[1], pid),
+            description=_state_value(ctx.states_list[2], pid),
+            suggested_edit=_state_value(ctx.states_list[3], pid),
+        )
+    finally:
+        conn.close()
+    return "Saved pattern edits (content only; the fate log is untouched).", True
 
 
 # ---------------------------------------------------------------------------
@@ -493,7 +412,7 @@ def cb_reload_profile(_n):
 
 @callback(
     Output("version-note", "children"),
-    Input("file-dropdown", "value"),
+    Input("refresh-patterns-btn", "n_clicks"),
 )
 def cb_init_version_note(_v):
     return _latest_version_note()
@@ -526,80 +445,27 @@ def cb_restore_autosave(_n):
 
 
 # ---------------------------------------------------------------------------
-# Callbacks: flags to retire
-# ---------------------------------------------------------------------------
-
-@callback(
-    Output("flags-collapse", "is_open"),
-    Input("flags-toggle", "n_clicks"),
-    State("flags-collapse", "is_open"),
-    prevent_initial_call=True,
-)
-def cb_toggle_flags(_n, is_open):
-    return not is_open
-
-
-@callback(
-    Output("flag-table", "data"),
-    Output("flag-table", "selected_rows"),
-    Input("flag-search", "value"),
-    Input("flag-rows", "data"),
-)
-def cb_filter_flags(term, rows):
-    # Re-fires on the search term OR on the store changing (after a retire) -- both
-    # want the table re-rendered with the selection cleared.
-    return _filter_flag_rows(rows or [], term or ""), []
-
-
-@callback(
-    Output("flag-rows", "data"),
-    Output("retire-status", "children"),
-    Output("retire-status", "is_open"),
-    Output("flags-toggle", "children"),
-    Input("retire-btn", "n_clicks"),
-    State("flag-table", "data"),
-    State("flag-table", "selected_rows"),
-    prevent_initial_call=True,
-)
-def cb_retire(_n, table_data, selected_rows):
-    if not selected_rows:
-        return no_update, "Select one or more flags first.", True, no_update
-    flag_ids = [table_data[i]["flag_id"] for i in selected_rows]
-    profile_id = _active_profile_id()
-    conn = db_interface.get_connection()
-    try:
-        db_interface.mark_flags_ingested(conn, flag_ids, profile_id)
-    finally:
-        conn.close()
-    rows = _load_flag_rows()
-    msg = (f"Retired {len(flag_ids)} flag(s) into version {profile_id[:12]}.  "
-           f"{len(rows)} un-retired remaining.")
-    return rows, msg, True, _flags_toggle_label(len(rows))
-
-
-# ---------------------------------------------------------------------------
 # Callbacks: chat
 # ---------------------------------------------------------------------------
 
 @callback(
     Output("chat-input", "value", allow_duplicate=True),
-    Input({"type": "discuss-btn", "uid": ALL}, "n_clicks"),
-    State("suggestions-store", "data"),
+    Input({"type": "pat-discuss", "pid": ALL}, "n_clicks"),
+    State({"type": "pat-sugg", "pid": ALL}, "value"),
+    State({"type": "pat-name", "pid": ALL}, "value"),
     prevent_initial_call=True,
 )
-def cb_discuss(clicks, store):
-    triggered = ctx.triggered_id
-    if not triggered or triggered.get("type") != "discuss-btn":
+def cb_discuss(clicks, _suggs, _names):
+    trig = ctx.triggered_id
+    if not trig or not any(c for c in (clicks or []) if c):
         return no_update
-    if not any(clicks or []):
-        return no_update
-    text = (store or {}).get(triggered["uid"], "")
-    if not text:
-        return no_update
+    pid = trig["pid"]
+    name = _state_value(ctx.states_list[1], pid) or ""
+    sugg = _state_value(ctx.states_list[0], pid) or ""
     return (
         "Is this suggestion already covered by my current profile, or is it a genuine gap? "
         "Quote the overlapping profile text if it is redundant.\n\n"
-        f"Suggestion:\n{text}"
+        f"Suggestion ({name}):\n{sugg}"
     )
 
 

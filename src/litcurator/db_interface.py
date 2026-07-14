@@ -7,17 +7,24 @@ is a run; re-running adds rows, it never overwrites. So you can always ask "how
 did this paper score under the old seed vs the new one?" -- the convergence study.
 
 Tables:
-  articles        facts retrieved from PubMed (+ pub_date_iso, a normalized date)
-  human_labels    the 1220 hand labels from v1 -- their OWN table, benchmark only.
+  articles        facts retrieved from PubMed. pub_date_iso = epub-preferred
+                  normalized date (sort/display); issue_date_iso = issue-only
+                  normalized date (the epub-contamination-free BUCKETING axis).
+  human_labels    the 2000 hand labels -- their OWN table, benchmark only.
                   NEVER injected into evaluations as fake 'human' scores (v1's
                   worst mistake: it poisoned the model column forever).
   profiles        content-addressed user-profile snapshots: id = SHA256(content),
                   parent_id chains the lineage, the seed is the root (parent_id NULL).
+  prompts         content-addressed judge-prompt snapshots, mirroring profiles --
+                  the other biconvex knob. scoring_runs.judge_prompt_hash == id.
   scoring_runs    one row per scoring session: stage (domain|curation), model,
-                  mode, profile_id, prompt version+hash, date window, cost,
+                  mode, profile_id, judge_prompt_hash, date window, cost,
                   completed_at (NULL = in flight).
   evaluations     one score per (pmid, run_id) -- BOTH stages, unified. Append-only.
   flags           the user's numeric correction on a specific evaluation. Append-only.
+  patterns        consolidation ledger: recurring taste-gap patterns (empty until
+                  the profile-updater big lift fills them).
+  consolidation_runs  one profile-edit round: watermark consumed + doc written.
 
 Authority vs registry: the ACTIVE profile is whatever is in user_profile.md on
 disk (read + SHA256 + get_or_create_profile at run time). The DB is a REGISTRY of
@@ -37,6 +44,7 @@ import json
 import random
 import re
 import sqlite3
+import uuid
 from datetime import date, datetime, timezone
 
 from litcurator.config import (
@@ -62,6 +70,7 @@ CREATE TABLE IF NOT EXISTS articles (
     journal TEXT,
     pub_date TEXT,
     pub_date_iso TEXT,
+    issue_date_iso TEXT,
     epub_date TEXT,
     doi TEXT,
     pub_types_json TEXT,
@@ -120,8 +129,7 @@ CREATE TABLE IF NOT EXISTS scoring_runs (
     model TEXT NOT NULL,
     mode TEXT NOT NULL,                  -- 'benchmark' | 'live'  (explicit, never inferred)
     profile_id TEXT REFERENCES profiles(id),
-    judge_prompt_version TEXT,
-    judge_prompt_hash TEXT,
+    judge_prompt_hash TEXT,             -- sha256 prompts.id; "which prompt scored this", by JOIN
     date_start TEXT,
     date_end TEXT,
     threshold REAL DEFAULT 0.5,
@@ -172,6 +180,65 @@ CREATE TABLE IF NOT EXISTS flags (
 )
 """
 
+# ---------------------------------------------------------------------------
+# Pattern memory -- the subsystem v1 lacked. A PATTERN is a recurring taste gap
+# discovered from the papers the user flagged (e.g. "invertebrate neuroethology is
+# under-scored"). It is the durable, editable unit of memory. Three tables:
+#   patterns        the pattern itself: identity + editable working-draft content
+#   pattern_flags   provenance -- which flags produced it (-> the actual papers)
+#   pattern_events  the fate, APPEND-ONLY -- created/carried/incorporated/rejected
+# Current status = the latest event (most-recent-wins, like evaluations); nothing
+# is ever deleted, so a decision (adopt / set aside / throw out) is never lost and
+# the log is the legible story of how the taste model evolved. The human authors
+# every word of the profile; this memory SURFACES and remembers, it never writes
+# profile prose. See the plan starry-brewing-horizon.md.
+# ---------------------------------------------------------------------------
+
+# direction: over = judge scores this class too high; under = too low;
+# sharpen = a boundary needs resolution; judge-not-applying = already in the
+# profile but the judge is not applying it -- a signal to fix the PROMPT, not to
+# pile on more profile prose. name/description/suggested_edit are editable working
+# drafts (the human tweaks them in place); the fate lives in pattern_events.
+_CREATE_PATTERNS = """
+CREATE TABLE IF NOT EXISTS patterns (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    description TEXT,
+    suggested_edit TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    CHECK (direction IN ('over', 'under', 'sharpen', 'judge-not-applying'))
+)
+"""
+
+# Provenance link (many-to-many): which flags a pattern was built from. A flag is
+# "handled" precisely because it is linked here -- no per-flag retirement needed.
+# Joining pattern_flags -> flags -> articles walks a pattern back to its papers.
+_CREATE_PATTERN_FLAGS = """
+CREATE TABLE IF NOT EXISTS pattern_flags (
+    pattern_id TEXT NOT NULL REFERENCES patterns(id),
+    flag_id INTEGER NOT NULL REFERENCES flags(id),
+    PRIMARY KEY (pattern_id, flag_id)
+)
+"""
+
+# The pattern's fate, APPEND-ONLY. One row per decision; the latest row is the
+# current status. profile_id is set on 'incorporated' -- which profile version
+# absorbed the pattern (so profile -> pattern -> flags -> papers is answerable).
+# note carries the reasoning, especially why a pattern was rejected.
+_CREATE_PATTERN_EVENTS = """
+CREATE TABLE IF NOT EXISTS pattern_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern_id TEXT NOT NULL REFERENCES patterns(id),
+    event TEXT NOT NULL,
+    note TEXT,
+    profile_id TEXT REFERENCES profiles(id),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    CHECK (event IN ('created', 'carried', 'incorporated', 'rejected'))
+)
+"""
+
 _CREATE_STATEMENTS = [
     _CREATE_ARTICLES,
     _CREATE_HUMAN_LABELS,
@@ -180,10 +247,14 @@ _CREATE_STATEMENTS = [
     _CREATE_SCORING_RUNS,
     _CREATE_EVALUATIONS,
     _CREATE_FLAGS,
+    _CREATE_PATTERNS,
+    _CREATE_PATTERN_FLAGS,
+    _CREATE_PATTERN_EVENTS,
 ]
 
 _CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_articles_pub_date_iso ON articles(pub_date_iso)",
+    "CREATE INDEX IF NOT EXISTS idx_articles_issue_date_iso ON articles(issue_date_iso)",
     "CREATE INDEX IF NOT EXISTS idx_human_labels_relevant ON human_labels(relevant)",
     "CREATE INDEX IF NOT EXISTS idx_human_labels_curation ON human_labels(curation_label)",
     "CREATE INDEX IF NOT EXISTS idx_scoring_runs_stage ON scoring_runs(stage, created_at)",
@@ -192,6 +263,10 @@ _CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_evaluations_run ON evaluations(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_flags_evaluation ON flags(evaluation_id)",
     "CREATE INDEX IF NOT EXISTS idx_flags_uningested ON flags(ingested_to_profile_id) WHERE ingested_to_profile_id IS NULL",
+    "CREATE INDEX IF NOT EXISTS idx_flags_flagged_at ON flags(flagged_at)",
+    "CREATE INDEX IF NOT EXISTS idx_pattern_flags_pattern ON pattern_flags(pattern_id)",
+    "CREATE INDEX IF NOT EXISTS idx_pattern_flags_flag ON pattern_flags(flag_id)",
+    "CREATE INDEX IF NOT EXISTS idx_pattern_events_pattern ON pattern_events(pattern_id, created_at)",
 ]
 
 # Columns added to articles after their initial release; add to an existing DB.
@@ -201,6 +276,11 @@ _ARTICLE_MIGRATIONS = [
     "ALTER TABLE articles ADD COLUMN pub_date_iso TEXT",
     "ALTER TABLE articles ADD COLUMN summary TEXT",
     "ALTER TABLE articles ADD COLUMN pages TEXT",
+    # The NLM issue date, normalized issue-ONLY (no epub preference) -- the correct
+    # month-bucketing axis for the benchmark/prequential/seal. pub_date_iso is
+    # epub-preferred and so mis-buckets ~a third of papers whose epub month differs
+    # from their issue month; issue_date_iso fixes that. Both are kept.
+    "ALTER TABLE articles ADD COLUMN issue_date_iso TEXT",
 ]
 
 
@@ -215,6 +295,7 @@ def get_connection(path=None):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    _drop_stale_pattern_tables(conn)   # before CREATE, so the new pattern schema takes effect
     for sql in _CREATE_STATEMENTS:
         conn.execute(sql)
     _migrate(conn)
@@ -222,7 +303,33 @@ def get_connection(path=None):
         conn.execute(sql)
     conn.commit()
     _backfill_pub_date_iso(conn)
+    _backfill_issue_date_iso(conn)
     return conn
+
+
+def _drop_stale_pattern_tables(conn):
+    """The July readiness pass stubbed a watermark-era `patterns` table (columns
+    rounds_seen/evidence_count/fate) and a `consolidation_runs` table. The pattern-
+    memory redesign (starry-brewing-horizon.md) replaces both. They were never
+    populated, so drop the stale shape here -- ONLY if empty -- so the new
+    _CREATE_PATTERNS is created fresh. Idempotent: once migrated the trigger column
+    / table is gone and this is a no-op. Refuses to drop a non-empty table (a guard
+    against ever silently discarding real data)."""
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(patterns)").fetchall()]
+    if "rounds_seen" in cols:   # present only in the old stub, never the new schema
+        n = conn.execute("SELECT COUNT(*) FROM patterns").fetchone()[0]
+        if n:
+            raise RuntimeError(f"refusing to drop legacy patterns table with {n} rows")
+        conn.execute("DROP TABLE patterns")
+    stale = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='consolidation_runs'"
+    ).fetchone()
+    if stale:
+        n = conn.execute("SELECT COUNT(*) FROM consolidation_runs").fetchone()[0]
+        if n:
+            raise RuntimeError(f"refusing to drop consolidation_runs with {n} rows")
+        conn.execute("DROP TABLE consolidation_runs")
+    conn.commit()
 
 
 def _migrate(conn):
@@ -260,6 +367,14 @@ def normalize_pub_date(pub_date, epub_date=None):
         if iso:
             return iso
     return None
+
+
+def normalize_issue_date(pub_date):
+    """Normalize the NLM ISSUE date (pub_date only -- NO epub preference) to a
+    sortable YYYY-MM-DD. This is the correct month-bucketing axis: unlike
+    normalize_pub_date, it never lets an epub-ahead-of-print date override the
+    issue month. Returns None only if pub_date itself does not parse."""
+    return _parse_one_date(pub_date)
 
 
 def _parse_one_date(raw):
@@ -303,25 +418,46 @@ def _backfill_pub_date_iso(conn):
     return updated
 
 
+def _backfill_issue_date_iso(conn):
+    """Fill issue_date_iso from the raw pub_date (issue-only). Idempotent: only
+    touches rows where it is still NULL, so it is a no-op on repeat and cheap on
+    the common path. Returns count updated."""
+    rows = conn.execute(
+        "SELECT pmid, pub_date FROM articles "
+        "WHERE issue_date_iso IS NULL AND pub_date IS NOT NULL"
+    ).fetchall()
+    updated = 0
+    for r in rows:
+        iso = normalize_issue_date(r["pub_date"])
+        if iso:
+            conn.execute("UPDATE articles SET issue_date_iso = ? WHERE pmid = ?", (iso, r["pmid"]))
+            updated += 1
+    if updated:
+        conn.commit()
+    return updated
+
+
 # ---------------------------------------------------------------------------
 # Articles
 # ---------------------------------------------------------------------------
 
 def insert_articles(conn, articles):
     """Insert article dicts (from retrieve.parse_single_article). INSERT OR IGNORE
-    dedups by pmid; normalizes pub_date_iso. Returns count of new rows."""
+    dedups by pmid; normalizes both pub_date_iso (epub-preferred) and issue_date_iso
+    (issue-only). Returns count of new rows."""
     inserted = 0
     for a in articles:
         iso = normalize_pub_date(a.get("pub_date"), a.get("epub_date"))
+        issue_iso = normalize_issue_date(a.get("pub_date"))
         cur = conn.execute("""
             INSERT OR IGNORE INTO articles
                 (pmid, title, abstract, pages, authors_json, journal,
-                 pub_date, pub_date_iso, epub_date, doi, pub_types_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 pub_date, pub_date_iso, issue_date_iso, epub_date, doi, pub_types_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             a["pubmed_id"], a["title"], a.get("abstract"), a.get("pages"),
             json.dumps(a.get("authors")), a.get("journal"),
-            a.get("pub_date"), iso, a.get("epub_date"),
+            a.get("pub_date"), iso, issue_iso, a.get("epub_date"),
             a.get("doi"), json.dumps(a.get("pub_types")),
         ))
         inserted += cur.rowcount
@@ -335,11 +471,13 @@ def get_article(conn, pmid):
 
 
 def articles_in_range(conn, start=None, end=None):
+    """Articles whose ISSUE date falls in the window (issue_date_iso -- the
+    epub-contamination-free bucketing axis)."""
     rows = conn.execute("""
         SELECT * FROM articles
-        WHERE (? IS NULL OR pub_date_iso >= ?)
-          AND (? IS NULL OR pub_date_iso <= ?)
-        ORDER BY pub_date_iso
+        WHERE (? IS NULL OR issue_date_iso >= ?)
+          AND (? IS NULL OR issue_date_iso <= ?)
+        ORDER BY issue_date_iso
     """, (start, start, end, end)).fetchall()
     return [dict(r) for r in rows]
 
@@ -429,7 +567,7 @@ def get_seed_prompt(conn):
 # ---------------------------------------------------------------------------
 
 def find_or_create_scoring_run(conn, stage, model, mode, profile_id=None,
-                               judge_prompt_version=None, judge_prompt_hash=None,
+                               judge_prompt_hash=None,
                                date_start=None, date_end=None, threshold=0.5):
     """Return the run id for this scoring regime -- (stage, model, mode, profile_id,
     judge_prompt_hash, window) -- creating it if none exists. Reusing an existing run
@@ -455,10 +593,10 @@ def find_or_create_scoring_run(conn, stage, model, mode, profile_id=None,
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
     conn.execute("""
         INSERT INTO scoring_runs
-            (id, stage, model, mode, profile_id, judge_prompt_version,
+            (id, stage, model, mode, profile_id,
              judge_prompt_hash, date_start, date_end, threshold)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (run_id, stage, model, mode, profile_id, judge_prompt_version,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (run_id, stage, model, mode, profile_id,
           judge_prompt_hash, date_start, date_end, threshold))
     conn.commit()
     return run_id
@@ -521,9 +659,9 @@ def get_articles_passing_domain_filter(conn, start=None, end=None, threshold=0.5
               WHERE e2.pmid = a.pmid AND r2.stage = 'domain'
               ORDER BY r2.created_at DESC LIMIT 1
           )
-          AND (? IS NULL OR a.pub_date_iso >= ?)
-          AND (? IS NULL OR a.pub_date_iso <= ?)
-        ORDER BY a.pub_date_iso
+          AND (? IS NULL OR a.issue_date_iso >= ?)
+          AND (? IS NULL OR a.issue_date_iso <= ?)
+        ORDER BY a.issue_date_iso
     """, (threshold, start, start, end, end)).fetchall()
     return [dict(r) for r in rows]
 
@@ -561,8 +699,8 @@ def latest_curation(conn, start=None, end=None):
               WHERE e2.pmid = a.pmid AND r2.stage = 'curation'
               ORDER BY r2.created_at DESC LIMIT 1
           )
-          AND (? IS NULL OR a.pub_date_iso >= ?)
-          AND (? IS NULL OR a.pub_date_iso <= ?)
+          AND (? IS NULL OR a.issue_date_iso >= ?)
+          AND (? IS NULL OR a.issue_date_iso <= ?)
         ORDER BY e.score DESC
     """, (start, start, end, end)).fetchall()
     return [dict(r) for r in rows]
@@ -602,15 +740,16 @@ def delete_flag(conn, pmid):
     conn.commit()
 
 
-def get_flags(conn, only_uningested=False, start=None, end=None):
+def get_flags(conn, start=None, end=None):
     """The LATEST flag per paper (flags are append-only; most-recent-wins, so a
     re-flag supersedes without double-counting), joined to its article
-    (title/journal/abstract/pub_date_iso) and the evaluation it corrected
+    (title/journal/abstract/issue_date_iso) and the evaluation it corrected
     (rationale/surface_decision/possible_mismatch) -- what the suggester and the
-    review feed read. Date window filters on the article's pub date; only_uningested
-    restricts to papers whose latest flag is not yet folded into a profile version."""
+    review feed read. start/end filter the article's PUBLICATION window
+    (issue_date_iso). Whether a flag has been "handled" is no longer tracked here:
+    a flag is handled precisely when it is linked into a pattern (pattern_flags)."""
     rows = conn.execute("""
-        SELECT f.*, a.title, a.journal, a.abstract, a.pub_date_iso,
+        SELECT f.*, a.title, a.journal, a.abstract, a.issue_date_iso, a.pub_date_iso,
                e.rationale, e.surface_decision, e.possible_mismatch
         FROM flags f
         JOIN articles a ON a.pmid = f.pmid
@@ -619,23 +758,132 @@ def get_flags(conn, only_uningested=False, start=None, end=None):
             SELECT f2.id FROM flags f2 WHERE f2.pmid = f.pmid
             ORDER BY f2.flagged_at DESC, f2.id DESC LIMIT 1
         )
-          AND (0 = ? OR f.ingested_to_profile_id IS NULL)
-          AND (? IS NULL OR a.pub_date_iso >= ?)
-          AND (? IS NULL OR a.pub_date_iso <= ?)
+          AND (? IS NULL OR a.issue_date_iso >= ?)
+          AND (? IS NULL OR a.issue_date_iso <= ?)
         ORDER BY f.flagged_at
-    """, (1 if only_uningested else 0, start, start, end, end)).fetchall()
+    """, (start, start, end, end)).fetchall()
     return [dict(r) for r in rows]
 
 
-def mark_flags_ingested(conn, flag_ids, profile_id):
-    """Mark flags as folded into a profile version (the learning audit trail)."""
-    placeholders = ",".join("?" * len(flag_ids))
+# ---------------------------------------------------------------------------
+# Pattern memory: patterns + pattern_flags (provenance) + pattern_events (fate).
+# The machinery SURFACES and remembers; the human authors every word of the
+# profile. Current status = a pattern's latest event. See starry-brewing-horizon.md.
+# ---------------------------------------------------------------------------
+
+def create_pattern(conn, name, direction, description=None, suggested_edit=None,
+                   flag_ids=()):
+    """Create a pattern from the flags that produced it, in one transaction: the
+    pattern row, its pattern_flags provenance links, and an initial 'created' event.
+    Returns the new pattern id. direction in {over, under, sharpen, judge-not-applying}."""
+    pattern_id = uuid.uuid4().hex
     conn.execute(
-        f"UPDATE flags SET ingested_to_profile_id = ?, ingested_at = ? "
-        f"WHERE id IN ({placeholders})",
-        [profile_id, _utcnow()] + list(flag_ids),
+        "INSERT INTO patterns (id, name, direction, description, suggested_edit) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (pattern_id, name, direction, description, suggested_edit),
+    )
+    for fid in dict.fromkeys(flag_ids):   # dedup, preserve order
+        conn.execute(
+            "INSERT OR IGNORE INTO pattern_flags (pattern_id, flag_id) VALUES (?, ?)",
+            (pattern_id, fid),
+        )
+    conn.execute(
+        "INSERT INTO pattern_events (pattern_id, event) VALUES (?, 'created')",
+        (pattern_id,),
     )
     conn.commit()
+    return pattern_id
+
+
+def add_pattern_event(conn, pattern_id, event, note=None, profile_id=None):
+    """Append a fate event (created|carried|incorporated|rejected). Append-only: the
+    pattern's current status is its latest event. profile_id is the version that
+    absorbed it, set on 'incorporated'; note carries the reasoning (esp. on reject)."""
+    conn.execute(
+        "INSERT INTO pattern_events (pattern_id, event, note, profile_id) "
+        "VALUES (?, ?, ?, ?)",
+        (pattern_id, event, note, profile_id),
+    )
+    conn.commit()
+
+
+def update_pattern_content(conn, pattern_id, name=None, direction=None,
+                           description=None, suggested_edit=None):
+    """Edit a pattern's working-draft content in place (only non-None fields change);
+    bumps updated_at. The fate log is untouched -- content is a draft you tweak,
+    fate is the append-only memory."""
+    sets, params = [], []
+    for col, val in (("name", name), ("direction", direction),
+                     ("description", description), ("suggested_edit", suggested_edit)):
+        if val is not None:
+            sets.append(f"{col} = ?")
+            params.append(val)
+    if not sets:
+        return
+    sets.append("updated_at = ?")
+    params.extend([_utcnow(), pattern_id])
+    conn.execute(f"UPDATE patterns SET {', '.join(sets)} WHERE id = ?", params)
+    conn.commit()
+
+
+def get_patterns(conn, statuses=None):
+    """Patterns with their CURRENT status (latest event), the flag count, and the
+    latest event's note/profile_id. statuses filters by current status (e.g.
+    ('created','carried') for the active list, ('incorporated','rejected') for
+    tombstones); None returns all. Newest-status-first."""
+    rows = conn.execute("""
+        SELECT p.*,
+               ev.event AS status,
+               ev.created_at AS status_at,
+               ev.note AS status_note,
+               ev.profile_id AS status_profile_id,
+               (SELECT COUNT(*) FROM pattern_flags pf WHERE pf.pattern_id = p.id) AS flag_count
+        FROM patterns p
+        JOIN pattern_events ev ON ev.id = (
+            SELECT e2.id FROM pattern_events e2 WHERE e2.pattern_id = p.id
+            ORDER BY e2.created_at DESC, e2.id DESC LIMIT 1
+        )
+        ORDER BY ev.created_at DESC
+    """).fetchall()
+    result = [dict(r) for r in rows]
+    if statuses is not None:
+        keep = set(statuses)
+        result = [r for r in result if r["status"] in keep]
+    return result
+
+
+def get_active_patterns(conn):
+    """The active list: patterns whose latest event is 'created' or 'carried' --
+    the ones still awaiting a decision."""
+    return get_patterns(conn, statuses=("created", "carried"))
+
+
+def get_pattern(conn, pattern_id):
+    row = conn.execute("SELECT * FROM patterns WHERE id = ?", (pattern_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_pattern_events(conn, pattern_id):
+    """A pattern's full fate log, oldest-first -- the story of how it was handled."""
+    rows = conn.execute(
+        "SELECT * FROM pattern_events WHERE pattern_id = ? ORDER BY created_at, id",
+        (pattern_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_pattern_provenance(conn, pattern_id):
+    """The flags a pattern was built from, joined to their articles -- the papers
+    behind the pattern (pattern_flags -> flags -> articles). Largest |delta| first."""
+    rows = conn.execute("""
+        SELECT f.id AS flag_id, f.pmid, f.judge_score, f.your_score, f.delta, f.note,
+               f.flagged_at, a.title, a.journal, a.issue_date_iso
+        FROM pattern_flags pf
+        JOIN flags f ON f.id = pf.flag_id
+        JOIN articles a ON a.pmid = f.pmid
+        WHERE pf.pattern_id = ?
+        ORDER BY ABS(f.delta) DESC
+    """, (pattern_id,)).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -671,9 +919,9 @@ def labeled_articles(conn, start=None, end=None, relevant=1, final_test=False):
         FROM articles a
         JOIN human_labels hl ON hl.pmid = a.pmid
         WHERE ({'hl.relevant = ?' if relevant is not None else '1 = 1'})
-          AND (? IS NULL OR a.pub_date_iso >= ?)
-          AND (? IS NULL OR a.pub_date_iso <= ?)
-        ORDER BY a.pub_date_iso
+          AND (? IS NULL OR a.issue_date_iso >= ?)
+          AND (? IS NULL OR a.issue_date_iso <= ?)
+        ORDER BY a.issue_date_iso
     """, (([relevant] if relevant is not None else []) + [start, start, end, end])
     ).fetchall()
     result = [dict(r) for r in rows]
@@ -699,34 +947,42 @@ def locked_test_pmids(path=None):
 
 def freeze_locked_test_set(conn, path=None, overwrite=False):
     """Materialize and FREEZE the locked-test pmid set: the labeled pmids whose
-    pub_date_iso falls in the locked window. Written once to a version-stable JSON
-    file; refuses to overwrite an existing seal unless overwrite=True (frozen-once
-    so the held-out set provably cannot drift). Returns the sealed pmid list.
+    ISSUE date (issue_date_iso -- the epub-contamination-free axis) falls in the
+    locked window. Written to a version-stable JSON file; refuses to overwrite an
+    existing seal unless overwrite=True. Returns the sealed pmid list.
 
-    Refinement note: the seal is defined on pub_date_iso today. After NLM issue
-    dates are backfilled, the set may only be EXTENDED with newly-identified
-    true-November pmids (adding is safe; removing risks spending the test set)."""
+    EXTEND-ONLY: the seal may grow but never shrink. Any pmid already in the
+    existing seal file is carried forward (UNIONed) even if the new issue-date
+    window no longer selects it, so re-sealing on a better date axis can only ADD
+    true-November papers, never spend the test set by dropping one. Now that the
+    seal is on issue_date_iso, this catches November papers the old epub-preferred
+    pub_date_iso mis-bucketed into October."""
     path = path or LOCKED_TEST_PMIDS_FILE
     if path.exists() and not overwrite:
         raise FileExistsError(
             f"locked test set already sealed at {path} -- refusing to overwrite. "
-            f"Pass overwrite=True only if development has NOT yet started.")
+            f"Pass overwrite=True only to EXTEND the seal (union-preserving).")
     rows = conn.execute("""
         SELECT hl.pmid FROM human_labels hl
         JOIN articles a ON a.pmid = hl.pmid
-        WHERE a.pub_date_iso >= ? AND a.pub_date_iso <= ?
+        WHERE a.issue_date_iso >= ? AND a.issue_date_iso <= ?
         ORDER BY hl.pmid
     """, (LOCKED_TEST_START, LOCKED_TEST_END)).fetchall()
-    pmids = [r["pmid"] for r in rows]
+    window_pmids = {r["pmid"] for r in rows}
+    prior_pmids = set(locked_test_pmids(path))       # extend-only: never drop a sealed pmid
+    pmids = sorted(window_pmids | prior_pmids)
     payload = {
         "created_at": _utcnow(),
-        "definition": (f"labeled pmids with pub_date_iso in "
-                       f"[{LOCKED_TEST_START}, {LOCKED_TEST_END}]"),
+        "definition": (f"labeled pmids with issue_date_iso in "
+                       f"[{LOCKED_TEST_START}, {LOCKED_TEST_END}], UNION any "
+                       f"previously-sealed pmids (extend-only)"),
         "locked_window": [LOCKED_TEST_START, LOCKED_TEST_END],
         "count": len(pmids),
+        "count_from_issue_window": len(window_pmids),
+        "count_carried_from_prior_seal": len(prior_pmids - window_pmids),
         "pmids": pmids,
-        "note": ("FROZEN held-out test set -- do not regenerate. May be EXTENDED "
-                 "(never trimmed) with true-November pmids after issue-date backfill."),
+        "note": ("FROZEN held-out test set -- do not regenerate destructively. "
+                 "EXTEND-ONLY: re-sealing UNIONs with the prior seal, never trims."),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2))
@@ -758,9 +1014,9 @@ def unlabeled_articles(conn, start=None, end=None):
         FROM articles a
         LEFT JOIN human_labels hl ON hl.pmid = a.pmid
         WHERE hl.pmid IS NULL
-          AND (? IS NULL OR a.pub_date_iso >= ?)
-          AND (? IS NULL OR a.pub_date_iso <= ?)
-        ORDER BY a.pub_date_iso
+          AND (? IS NULL OR a.issue_date_iso >= ?)
+          AND (? IS NULL OR a.issue_date_iso <= ?)
+        ORDER BY a.issue_date_iso
     """, (start, start, end, end)).fetchall()
     return [dict(r) for r in rows]
 
@@ -816,7 +1072,7 @@ def sample_unlabeled_by_month(conn, months, n_per_month, seed=42):
             SELECT a.pmid FROM articles a
             LEFT JOIN human_labels hl ON hl.pmid = a.pmid
             WHERE hl.pmid IS NULL
-              AND a.pub_date_iso >= ? AND a.pub_date_iso <= ?
+              AND a.issue_date_iso >= ? AND a.issue_date_iso <= ?
             ORDER BY RANDOM()
         """, (start, end)).fetchall()
         pmids = [r["pmid"] for r in rows]

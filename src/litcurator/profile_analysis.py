@@ -17,6 +17,13 @@ if you ever validate an edit, do it on a held-out month, not the flag set.
 Reads flags from db_interface.get_flags; reads the active profile from
 profile_interface. Output streams to console and saves to
 ~/.litcurator/suggestions/<range>.md for the human to author edits from.
+
+It ALSO persists each surviving suggestion as a PATTERN (db_interface.create_pattern),
+linked back to the flags that produced it (pattern_flags provenance -> the papers).
+Those patterns are what the human curates in the workbench (carry / incorporate /
+reject); the append-only pattern memory is what stops the same suggestion recurring
+round after round. The distill step is shown the already-decided patterns so it does
+not re-propose them. See starry-brewing-horizon.md.
 """
 
 import math
@@ -140,6 +147,11 @@ HOW MANY: most rounds warrant 2-4 edits. More than 5 means you have not merged o
 treat {max_s} as an almost-never-reached ceiling, not a target.
 
 PRECEDENCE (these rules conflict; apply in this order):
+0. ALREADY DECIDED -> CUT. If a candidate matches a pattern in the "Already-decided patterns" block
+   below (one you previously INCORPORATED or REJECTED, or one still open from a past round), CUT it --
+   the memory has already handled it. Re-proposing a decided pattern is exactly the recurrence failure
+   this whole system exists to prevent. This precedes every rule below. (If a matching pattern was
+   REJECTED, do not resurrect it unless the new flags are a materially stronger case; say so if you do.)
 1. ALREADY IN THE SEED -> CUT. If the seed already clearly states the preference, cut it. A note or
    recurrence does NOT make an existing seed line worth duplicating. If the seed says it and the
    judge ignores it, that is a judge-application problem, not an edit (note it in the cut block).
@@ -218,25 +230,31 @@ def _format_journal_ratings():
     return "\n".join(lines)
 
 def _format_papers(flags):
-    neg = [f for f in flags if f["delta"] < -DELTA_THRESHOLD]
-    pos = [f for f in flags if f["delta"] > DELTA_THRESHOLD]
+    """Render the flags as the numbered papers block, AND return the flags in the
+    SAME order the numbers follow -- so paper number N in the LLM output maps back to
+    ordered[N-1] (and thus its flag id) for provenance. Numbering is deterministic:
+    over-scored (delta asc), then under-scored (delta desc), then roughly-agreed."""
+    neg = sorted([f for f in flags if f["delta"] < -DELTA_THRESHOLD], key=lambda f: f["delta"])
+    pos = sorted([f for f in flags if f["delta"] > DELTA_THRESHOLD], key=lambda f: f["delta"],
+                 reverse=True)
     near = [f for f in flags if abs(f["delta"]) <= DELTA_THRESHOLD]
 
+    ordered = []
     sections = []
-    idx = 1
 
     def render(group, header):
-        nonlocal idx
         if not group:
             return
         lines = [header]
         for f in group:
+            ordered.append(f)
+            num = len(ordered)
             note_line = f"\n   YOUR NOTE: {f['note']}" if f.get("note") else ""
             mismatch_line = (f"\n   POSSIBLE MISMATCH: {f['possible_mismatch']}"
                              if f.get("possible_mismatch") else "")
             abstract = (f.get("abstract") or "")[:500]
             lines.append(
-                f"[{idx}] delta {f['delta']:+.2f}  "
+                f"[{num}] delta {f['delta']:+.2f}  "
                 f"(judge {f['judge_score']:.2f} -> you {f['your_score']:.2f})\n"
                 f"   Title: {f.get('title') or '(no title)'}\n"
                 f"   Journal: {f.get('journal') or ''}  |  {f.get('pub_date_iso') or ''}\n"
@@ -245,17 +263,31 @@ def _format_papers(flags):
                 f"{mismatch_line}"
                 f"{note_line}"
             )
-            idx += 1
         sections.append("\n\n".join(lines))
 
-    render(sorted(neg, key=lambda f: f["delta"]),
-           "## JUDGE SCORED TOO HIGH (you scored lower -- seed over-triggering)")
-    render(sorted(pos, key=lambda f: f["delta"], reverse=True),
-           "## JUDGE SCORED TOO LOW (you scored higher -- seed missing coverage)")
-    render(near,
-           f"## ROUGHLY AGREED (|delta| <= {DELTA_THRESHOLD}) -- provided for context")
+    render(neg, "## JUDGE SCORED TOO HIGH (you scored lower -- seed over-triggering)")
+    render(pos, "## JUDGE SCORED TOO LOW (you scored higher -- seed missing coverage)")
+    render(near, f"## ROUGHLY AGREED (|delta| <= {DELTA_THRESHOLD}) -- provided for context")
 
-    return "\n\n---\n\n".join(sections)
+    return "\n\n---\n\n".join(sections), ordered
+
+
+def _format_existing_patterns(active, tombstones):
+    """The already-decided pattern memory, shown to the distill step so it does not
+    re-propose what has been handled. Empty string when there is no history yet."""
+    if not active and not tombstones:
+        return ""
+    lines = ["## Already-decided patterns (the memory -- do NOT re-propose these)"]
+    if tombstones:
+        lines.append("\nAlready INCORPORATED into the profile, or REJECTED:")
+        for p in tombstones:
+            why = p["status"] + (f": {p['status_note']}" if p.get("status_note") else "")
+            lines.append(f"  - [{why}] {p['name']}: {p.get('description') or ''}")
+    if active:
+        lines.append("\nAlready SURFACED and still open from a past round (do not duplicate):")
+        for p in active:
+            lines.append(f"  - {p['name']}: {p.get('description') or ''}")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -283,8 +315,7 @@ def _stream(client, model, system, user_msg, max_tokens):
     return "".join(parts), _cost(model, final.usage)
 
 
-def run_cluster_step(client, flags, seed_text, max_s, model):
-    papers_block = _format_papers(flags)
+def run_cluster_step(client, papers_block, n_flags, seed_text, max_s, model):
     journal_block = _format_journal_ratings()
     system = CLUSTER_PROMPT.format(max_s=max_s)
     user_msg = (
@@ -292,21 +323,112 @@ def run_cluster_step(client, flags, seed_text, max_s, model):
         f"---\n\n"
         f"{journal_block}\n\n"
         f"---\n\n"
-        f"## Flagged papers ({len(flags)} total)\n\n{papers_block}"
+        f"## Flagged papers ({n_flags} total)\n\n{papers_block}"
     )
     # Step 1 is the generous recall stage and scales with flag count; give it
     # room so it is never truncated mid-pattern. Step 2 then ruthlessly selects.
     return _stream(client, model, system, user_msg, max_tokens=6000)
 
 
-def run_distill_step(client, clusters_text, seed_text, max_s, model):
-    # Step 2 must see the seed so it can cut suggestions already covered by it
-    # (and tell a real seed gap from the judge failing to apply clear seed text).
+def run_distill_step(client, clusters_text, seed_text, existing_block, max_s, model):
+    # Step 2 must see the seed so it can cut suggestions already covered by it (and
+    # tell a real seed gap from the judge failing to apply clear seed text), and the
+    # already-decided pattern memory so it does not re-propose what has been handled.
+    memory = f"{existing_block}\n\n---\n\n" if existing_block else ""
     user_msg = (
         f"{clusters_text}\n\n---\n\n"
+        f"{memory}"
         f"## CURRENT SEED PROFILE (source of truth -- check candidates against this)\n\n{seed_text}"
     )
     return _stream(client, model, DISTILL_PROMPT.format(max_s=max_s), user_msg, max_tokens=4000)
+
+
+# ---------------------------------------------------------------------------
+# Structured extraction + persistence (provenance capture)
+# ---------------------------------------------------------------------------
+
+_EXTRACT_TOOL = {
+    "name": "record_patterns",
+    "description": "Record the FINAL distilled profile-edit suggestions as structured patterns.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "patterns": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "short label, 3-6 words"},
+                        "direction": {"type": "string",
+                                      "enum": ["over", "under", "sharpen", "judge-not-applying"]},
+                        "description": {"type": "string", "description": "one sentence"},
+                        "suggested_edit": {"type": "string",
+                                           "description": "the directive as the user would author it"},
+                        "paper_numbers": {"type": "array", "items": {"type": "integer"},
+                                          "description": "supporting paper numbers from the clusters"},
+                    },
+                    "required": ["name", "direction", "description", "suggested_edit", "paper_numbers"],
+                },
+            }
+        },
+        "required": ["patterns"],
+    },
+}
+
+_EXTRACT_SYSTEM = (
+    "You convert a finalized set of profile-edit suggestions into structured records. You do NOT "
+    "judge, re-rank, add, or drop anything -- you faithfully transcribe ONLY the FINAL distilled "
+    "suggestions (ignore the 'Considered and cut' list entirely). For each final suggestion: "
+    "map direction as under = seed MISSING coverage / ADD; over = seed OVER-triggering / SUPPRESS; "
+    "sharpen = SHARPEN; judge-not-applying only if it is explicitly a 'judge not applying clear seed' "
+    "problem. Recover paper_numbers by finding, in the candidate clusters, the [n] paper references "
+    "behind that suggestion (union across any clusters it merged). description = one sentence; "
+    "suggested_edit = the directive text itself."
+)
+
+
+def run_extract_step(client, clusters_text, distilled_text, model):
+    """Transcribe the final distilled suggestions into structured patterns with their
+    supporting paper numbers. Forced tool-use so the JSON is always valid. Returns
+    (patterns_list, cost)."""
+    resp = client.messages.create(
+        model=model,
+        max_tokens=2000,
+        system=_EXTRACT_SYSTEM,
+        messages=[{"role": "user", "content": (
+            f"## Candidate clusters (with paper numbers)\n\n{clusters_text}\n\n---\n\n"
+            f"## FINAL distilled suggestions (transcribe THESE only)\n\n{distilled_text}"
+        )}],
+        tools=[_EXTRACT_TOOL],
+        tool_choice={"type": "tool", "name": "record_patterns"},
+    )
+    patterns = []
+    for block in resp.content:
+        if block.type == "tool_use":
+            patterns = block.input.get("patterns", [])
+            break
+    return patterns, _cost(model, resp.usage)
+
+
+def _persist_patterns(conn, extracted, ordered_flags):
+    """Write each extracted suggestion as a pattern, linked to the flags behind it
+    (paper number N -> ordered_flags[N-1] -> flag id). Returns the created rows for a
+    summary. Re-runs may create near-duplicates (cross-round auto-matching is
+    deferred); the distill step's memory block minimizes that, the human rejects the
+    rest."""
+    created = []
+    n = len(ordered_flags)
+    for p in extracted:
+        nums = p.get("paper_numbers") or []
+        flag_ids = [ordered_flags[num - 1]["id"] for num in nums
+                    if isinstance(num, int) and 1 <= num <= n]
+        pattern_id = db_interface.create_pattern(
+            conn, name=p["name"], direction=p["direction"],
+            description=p.get("description"), suggested_edit=p.get("suggested_edit"),
+            flag_ids=flag_ids)
+        created.append({"id": pattern_id, "name": p["name"],
+                        "direction": p["direction"], "n_flags": len(flag_ids)})
+    return created
 
 
 # ---------------------------------------------------------------------------
@@ -315,38 +437,59 @@ def run_distill_step(client, clusters_text, seed_text, max_s, model):
 
 def suggest_edits(start=None, end=None, max_patterns=None,
                   cluster_model=DEFAULT_CLUSTER_MODEL, distill_model=DEFAULT_DISTILL_MODEL,
-                  only_uningested=True):
-    """Cluster the flags in [start, end] and surface ranked seed-edit suggestions.
-    Streams to console and saves a dated markdown report. Returns the output path
-    (or None if there are too few flags). Never re-validates on the flag set."""
+                  persist=True):
+    """Cluster the flags in [start, end], surface ranked seed-edit suggestions, and
+    persist each surviving suggestion as a pattern linked to its flags. Streams to
+    console and saves a dated markdown report. Returns the output path (or None if
+    too few flags). Never re-validates on the flag set. persist=False for a dry run
+    (writes the markdown but no patterns)."""
     seed_text = profile_interface.load_active()
 
     conn = db_interface.get_connection()
     try:
-        flags = db_interface.get_flags(conn, only_uningested=only_uningested, start=start, end=end)
+        flags = db_interface.get_flags(conn, start=start, end=end)
+        n = len(flags)
+        if n < MIN_FLAGS:
+            print(f"Only {n} flags in range -- need at least {MIN_FLAGS} to run.")
+            return None
+
+        # The already-decided pattern memory: shown to the distiller so it does not
+        # re-propose what earlier rounds handled.
+        active_patterns = db_interface.get_active_patterns(conn)
+        tombstones = db_interface.get_patterns(conn, statuses=("incorporated", "rejected"))
+        existing_block = _format_existing_patterns(active_patterns, tombstones)
+
+        max_s = max_patterns if max_patterns is not None else math.floor(n / 2)
+        rng = f"{start or 'all'} to {end or 'all'}"
+        print(f"{n} flags ({rng})  |  pattern range 1-{max_s}  |  "
+              f"memory: {len(active_patterns)} open + {len(tombstones)} decided")
+        print(f"Models: cluster={cluster_model}  distill={distill_model}\n")
+
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        papers_block, ordered_flags = _format_papers(flags)
+
+        print("=== Step 1: cluster (recall) ===\n")
+        clusters, cost1 = run_cluster_step(client, papers_block, n, seed_text, max_s, cluster_model)
+        print(f"\n[step 1 cost: ${cost1:.4f}]\n")
+
+        print("=== Step 2: distill (selection) ===\n")
+        distilled, cost2 = run_distill_step(client, clusters, seed_text, existing_block,
+                                            max_s, distill_model)
+        total = cost1 + cost2
+        print(f"\n[step 2 cost: ${cost2:.4f}  |  total: ${total:.4f}]")
+
+        created = []
+        if persist:
+            print("\n=== Step 3: extract + persist patterns ===")
+            extracted, cost3 = run_extract_step(client, clusters, distilled, cluster_model)
+            created = _persist_patterns(conn, extracted, ordered_flags)
+            total += cost3
+            for c in created:
+                print(f"  + pattern [{c['direction']}] {c['name']}  ({c['n_flags']} flags)")
+            print(f"[persisted {len(created)} patterns  |  step 3 cost: ${cost3:.4f}  "
+                  f"|  total: ${total:.4f}]")
     finally:
         conn.close()
-
-    n = len(flags)
-    if n < MIN_FLAGS:
-        print(f"Only {n} flags in range -- need at least {MIN_FLAGS} to run.")
-        return None
-
-    max_s = max_patterns if max_patterns is not None else math.floor(n / 2)
-    rng = f"{start or 'all'} to {end or 'all'}"
-    print(f"{n} flags ({rng})  |  pattern range 1-{max_s}")
-    print(f"Models: cluster={cluster_model}  distill={distill_model}\n")
-
-    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-
-    print("=== Step 1: cluster (recall) ===\n")
-    clusters, cost1 = run_cluster_step(client, flags, seed_text, max_s, cluster_model)
-    print(f"\n[step 1 cost: ${cost1:.4f}]\n")
-
-    print("=== Step 2: distill (selection) ===\n")
-    distilled, cost2 = run_distill_step(client, clusters, seed_text, max_s, distill_model)
-    total = cost1 + cost2
-    print(f"\n[step 2 cost: ${cost2:.4f}  |  total: ${total:.4f}]")
 
     SUGGESTIONS_DIR.mkdir(parents=True, exist_ok=True)
     slug = f"{start or 'all'}_{end or 'all'}"
@@ -358,7 +501,8 @@ def suggest_edits(start=None, end=None, max_patterns=None,
     out.write_text(
         f"# Seed edit suggestions\n\n"
         f"Flags: {n}  |  range: {rng}  |  pattern range 1-{max_s}  |  "
-        f"cluster: {cluster_model}  distill: {distill_model}  |  cost: ${total:.4f}\n\n"
+        f"cluster: {cluster_model}  distill: {distill_model}  |  cost: ${total:.4f}  |  "
+        f"patterns persisted: {len(created)}\n\n"
         f"---\n\n## Raw clusters (step 1)\n\n{clusters}\n\n"
         f"---\n\n## Distilled suggestions (step 2)\n\n{distilled}\n",
         encoding="utf-8",

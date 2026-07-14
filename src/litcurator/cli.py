@@ -92,14 +92,16 @@ def _print_runs(conn, limit=15):
 
 def _print_funnel(conn, start=None, end=None):
     """The pipeline funnel over a window: retrieved -> domain-passed -> judged
-    -> surfaced. Read-only; counts by pub_date_iso. Blank range = all time."""
+    -> surfaced. Read-only; counts by issue_date_iso (the same bucketing axis the
+    domain/curation queries below use, so the funnel stays coherent). Blank range =
+    all time."""
     where = ""
     params = []
     if start:
-        where += " AND pub_date_iso >= ?"
+        where += " AND issue_date_iso >= ?"
         params.append(start)
     if end:
-        where += " AND pub_date_iso <= ?"
+        where += " AND issue_date_iso <= ?"
         params.append(end)
     retrieved = conn.execute(
         "SELECT COUNT(*) FROM articles WHERE 1=1" + where, params).fetchone()[0]
@@ -109,7 +111,7 @@ def _print_funnel(conn, start=None, end=None):
     surfaced = sum(1 for it in judged if it["score"] >= SCORE_THRESHOLD)
     rng = f"{start or 'start'} .. {end or 'end'}"
     rows = [
-        ("retrieved (pub date in range)", retrieved),
+        ("retrieved (issue date in range)", retrieved),
         (f"passed domain filter (>= {DOMAIN_THRESHOLD:.1f})", passed),
         ("judged", len(judged)),
         (f"surfaced (judge score >= {SCORE_THRESHOLD:.1f})", surfaced),
@@ -186,7 +188,7 @@ def _cmd_review(args):
 
 def _cmd_profile_analysis(args):
     from litcurator import profile_analysis
-    profile_analysis.suggest_edits(start=args.start, end=args.end)
+    profile_analysis.suggest_edits(start=args.start, end=args.end, persist=not args.dry_run)
 
 
 def _cmd_profile_workbench(args):
@@ -329,6 +331,8 @@ def main():
                            help="cluster flags -> ranked profile-edit suggestions")
     pa_p.add_argument("--start", default=None, help="scope flags to pub dates >= this (YYYY-MM-DD)")
     pa_p.add_argument("--end", default=None, help="scope flags to pub dates <= this (YYYY-MM-DD)")
+    pa_p.add_argument("--dry-run", action="store_true",
+                      help="write the suggestions markdown but do NOT persist patterns")
     pa_p.set_defaults(func=_cmd_profile_analysis)
 
     pw_p = sub.add_parser("profile_workbench",

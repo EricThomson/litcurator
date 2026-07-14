@@ -39,7 +39,9 @@ def _ascii(text):
 
 
 def _fp(text):
-    return hashlib.sha1((text or "").encode("utf-8")).hexdigest()[:12]
+    # 12-char prefix of SHA256, matching the DB content-address (profiles.id /
+    # prompts.id = SHA256(content)); display only, for the harness report header.
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:12]
 
 
 def _chunks(seq, n):
