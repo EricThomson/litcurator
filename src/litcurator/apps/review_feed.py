@@ -211,9 +211,6 @@ def _render_card(item, rank, total):
         meta_node,
         html.Div(authors_line, className="small text-muted mb-2") if authors_line
         else html.Div(className="mb-2"),
-        html.Div([html.Span("Summary: ", className="small fw-bold text-muted"),
-                  html.Span(item.get("summary"), className="small")],
-                 className="mb-2") if item.get("summary") else None,
         html.Details([
             html.Summary("Abstract", className="small text-muted fw-bold"),
             html.Div(item.get("abstract") or "(no abstract)", className="small mt-1",

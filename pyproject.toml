@@ -28,6 +28,15 @@ analysis = [
     "numpy",
 ]
 
+# Opt-in extras for cross-provider judge comparison (sandbox/multi_model_judge).
+# Native SDKs on purpose -- no LiteLLM/OpenRouter, which would transform the
+# prompt or route the request and confound an experiment about instruction
+# following. `uv sync --group multimodel` to run judge_one with gpt/gemini.
+multimodel = [
+    "openai",
+    "google-genai",
+]
+
 [project.urls]
 Repository = "https://github.com/EricThomson/litcurator"
 

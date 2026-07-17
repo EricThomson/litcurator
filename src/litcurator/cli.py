@@ -129,11 +129,10 @@ def _print_flags(conn, start=None, end=None):
     print(f"\nflags ({len(flags)}, latest per paper, by |delta|):")
     print(f"  {'delta':>6}  {'judge':>5} {'you':>5}  {'pmid':<10} title")
     for f in sorted(flags, key=lambda x: abs(x["delta"]), reverse=True):
-        ing = "  (ingested)" if f.get("ingested_to_profile_id") else ""
         note = f"   note: {f['note']}" if f.get("note") else ""
         title = (f.get("title") or "")[:58]
         print(f"  {f['delta']:>+6.2f}  {f['judge_score']:>5.2f} {f['your_score']:>5.2f}  "
-              f"{f['pmid']:<10} {title}{ing}{note}")
+              f"{f['pmid']:<10} {title}{note}")
 
 
 def _print_profiles(conn):
@@ -203,10 +202,12 @@ def _cmd_prompt_workbench(args):
 
 def _cmd_judge_harness(args):
     from pathlib import Path
-    from litcurator import judge_harness
+    from litcurator import judge_harness, pipeline
     if args.dry_run:
         print(judge_harness.dry_run())
         return
+    # The harness scores under whatever judge.MODEL is -- say so before spending.
+    pipeline.print_model_banner(benchmark=True)
     prompt_text = Path(args.prompt).read_text(encoding="utf-8") if args.prompt else None
     profile_text = Path(args.profile).read_text(encoding="utf-8") if args.profile else None
     results, prompt_fp, profile_fp = judge_harness.run_tests(

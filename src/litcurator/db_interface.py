@@ -64,7 +64,6 @@ CREATE TABLE IF NOT EXISTS articles (
     pmid TEXT PRIMARY KEY,
     title TEXT NOT NULL,
     abstract TEXT,
-    summary TEXT,
     pages TEXT,
     authors_json TEXT,
     journal TEXT,
@@ -161,8 +160,10 @@ CREATE TABLE IF NOT EXISTS evaluations (
 )
 """
 
-# The user's numeric correction on a specific evaluation. Append-only.
-# ingested_to_profile_id marks which seed version absorbed this flag.
+# The user's numeric correction on a specific evaluation. Append-only. A flag is
+# "handled" by being linked into a pattern (pattern_flags), not by per-flag retirement
+# -- so the old ingested_to_profile_id / ingested_at columns are gone (dropped in
+# _drop_dead_columns for existing DBs).
 _CREATE_FLAGS = """
 CREATE TABLE IF NOT EXISTS flags (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -172,9 +173,7 @@ CREATE TABLE IF NOT EXISTS flags (
     your_score REAL NOT NULL,
     delta REAL NOT NULL,
     note TEXT,
-    ingested_to_profile_id TEXT REFERENCES profiles(id),
     flagged_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    ingested_at DATETIME,
     CHECK (judge_score >= 0.0 AND judge_score <= 1.0),
     CHECK (your_score >= 0.0 AND your_score <= 1.0)
 )
@@ -223,10 +222,15 @@ CREATE TABLE IF NOT EXISTS pattern_flags (
 )
 """
 
-# The pattern's fate, APPEND-ONLY. One row per decision; the latest row is the
-# current status. profile_id is set on 'incorporated' -- which profile version
-# absorbed the pattern (so profile -> pattern -> flags -> papers is answerable).
-# note carries the reasoning, especially why a pattern was rejected.
+# The pattern's fate, APPEND-ONLY. The four DECISION events (created/carried/
+# incorporated/rejected) drive status: the latest DECISION row is the current status
+# (get_patterns). 'recurred' is a fifth, NON-decision event -- a tombstoned pattern's
+# taste resurfaced in new flags. It is logged (with a note + fresh provenance) but
+# never becomes status, so a rejected pattern stays rejected while its flag_count
+# grows and it can be surfaced as an alert. profile_id is set on 'incorporated' --
+# which profile version absorbed the pattern (so profile -> pattern -> flags ->
+# papers is answerable). note carries the reasoning, especially why a pattern was
+# rejected.
 _CREATE_PATTERN_EVENTS = """
 CREATE TABLE IF NOT EXISTS pattern_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -235,7 +239,7 @@ CREATE TABLE IF NOT EXISTS pattern_events (
     note TEXT,
     profile_id TEXT REFERENCES profiles(id),
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    CHECK (event IN ('created', 'carried', 'incorporated', 'rejected'))
+    CHECK (event IN ('created', 'carried', 'incorporated', 'rejected', 'recurred'))
 )
 """
 
@@ -262,19 +266,15 @@ _CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_evaluations_pmid ON evaluations(pmid)",
     "CREATE INDEX IF NOT EXISTS idx_evaluations_run ON evaluations(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_flags_evaluation ON flags(evaluation_id)",
-    "CREATE INDEX IF NOT EXISTS idx_flags_uningested ON flags(ingested_to_profile_id) WHERE ingested_to_profile_id IS NULL",
-    "CREATE INDEX IF NOT EXISTS idx_flags_flagged_at ON flags(flagged_at)",
     "CREATE INDEX IF NOT EXISTS idx_pattern_flags_pattern ON pattern_flags(pattern_id)",
     "CREATE INDEX IF NOT EXISTS idx_pattern_flags_flag ON pattern_flags(flag_id)",
     "CREATE INDEX IF NOT EXISTS idx_pattern_events_pattern ON pattern_events(pattern_id, created_at)",
 ]
 
 # Columns added to articles after their initial release; add to an existing DB.
-# Idempotent (_migrate swallows "duplicate column name"). summary is the neutral
-# one-to-two-sentence paper description shown in the review feed.
+# Idempotent (_migrate swallows "duplicate column name").
 _ARTICLE_MIGRATIONS = [
     "ALTER TABLE articles ADD COLUMN pub_date_iso TEXT",
-    "ALTER TABLE articles ADD COLUMN summary TEXT",
     "ALTER TABLE articles ADD COLUMN pages TEXT",
     # The NLM issue date, normalized issue-ONLY (no epub preference) -- the correct
     # month-bucketing axis for the benchmark/prequential/seal. pub_date_iso is
@@ -296,8 +296,10 @@ def get_connection(path=None):
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     _drop_stale_pattern_tables(conn)   # before CREATE, so the new pattern schema takes effect
+    _drop_dead_columns(conn)
     for sql in _CREATE_STATEMENTS:
         conn.execute(sql)
+    _migrate_pattern_events(conn)      # after CREATE (table exists), before indexes (recreated below)
     _migrate(conn)
     for sql in _CREATE_INDEXES:
         conn.execute(sql)
@@ -329,6 +331,65 @@ def _drop_stale_pattern_tables(conn):
         if n:
             raise RuntimeError(f"refusing to drop consolidation_runs with {n} rows")
         conn.execute("DROP TABLE consolidation_runs")
+    conn.commit()
+
+
+def _migrate_pattern_events(conn):
+    """Add the 'recurred' event value to an EXISTING pattern_events table's CHECK.
+    'recurred' is an append-only annotation (a tombstoned pattern's taste resurfaced)
+    that must never become status. SQLite cannot ALTER a CHECK, so rebuild the table
+    preserving every row. Nothing references pattern_events (its FKs are outbound to
+    patterns/profiles), so the drop+rename is safe; the dropped index is recreated by
+    _CREATE_INDEXES right after. Idempotent: a no-op once the CHECK allows 'recurred'
+    (and on a fresh DB, where CREATE already used the new shape)."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='pattern_events'"
+    ).fetchone()
+    if not row or "'recurred'" in row[0]:
+        return
+    conn.execute("""
+        CREATE TABLE pattern_events__new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pattern_id TEXT NOT NULL REFERENCES patterns(id),
+            event TEXT NOT NULL,
+            note TEXT,
+            profile_id TEXT REFERENCES profiles(id),
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            CHECK (event IN ('created', 'carried', 'incorporated', 'rejected', 'recurred'))
+        )
+    """)
+    conn.execute(
+        "INSERT INTO pattern_events__new (id, pattern_id, event, note, profile_id, created_at) "
+        "SELECT id, pattern_id, event, note, profile_id, created_at FROM pattern_events")
+    conn.execute("DROP TABLE pattern_events")
+    conn.execute("ALTER TABLE pattern_events__new RENAME TO pattern_events")
+    conn.commit()
+
+
+def _drop_dead_columns(conn):
+    """Drop columns/indexes for removed features (guarded, idempotent). Runs before
+    CREATE; a no-op once already migrated (and on a fresh DB, where these tables do not
+    exist yet). Needs SQLite >= 3.35 for ALTER TABLE DROP COLUMN.
+
+    - articles.summary: the Haiku review-feed gloss, a display convenience the judge
+      never used and the feed shows the abstract anyway; the summarize stage was cut
+      2026-07-15.
+    - flags.ingested_to_profile_id / ingested_at + their indexes: the per-flag
+      retirement the pattern memory replaced. A flag is now "handled" by being linked
+      into a pattern (pattern_flags), so these are vestigial. Indexes are dropped FIRST
+      because DROP COLUMN fails while a column is used by an index (the partial
+      idx_flags_uningested references ingested_to_profile_id)."""
+    acols = [r[1] for r in conn.execute("PRAGMA table_info(articles)").fetchall()]
+    if "summary" in acols:
+        conn.execute("ALTER TABLE articles DROP COLUMN summary")
+
+    conn.execute("DROP INDEX IF EXISTS idx_flags_uningested")
+    conn.execute("DROP INDEX IF EXISTS idx_flags_flagged_at")
+    fcols = [r[1] for r in conn.execute("PRAGMA table_info(flags)").fetchall()]
+    if "ingested_to_profile_id" in fcols:
+        conn.execute("ALTER TABLE flags DROP COLUMN ingested_to_profile_id")
+    if "ingested_at" in fcols:
+        conn.execute("ALTER TABLE flags DROP COLUMN ingested_at")
     conn.commit()
 
 
@@ -480,14 +541,6 @@ def articles_in_range(conn, start=None, end=None):
         ORDER BY issue_date_iso
     """, (start, start, end, end)).fetchall()
     return [dict(r) for r in rows]
-
-
-def set_article_summary(conn, pmid, summary):
-    """Store the neutral one-to-two-sentence summary for an article. A stable
-    paper fact: generated once over the reviewable survivors, reused across every
-    run and profile version (never re-generated when the seed changes)."""
-    conn.execute("UPDATE articles SET summary = ? WHERE pmid = ?", (summary, pmid))
-    conn.commit()
 
 
 def set_article_pages(conn, pmid, pages):
@@ -682,7 +735,7 @@ def latest_curation(conn, start=None, end=None):
     article (incl. display fields) and any human label -- what the review feed
     shows. curation_label is NULL for live papers (only benchmark months carry one)."""
     rows = conn.execute("""
-        SELECT a.pmid, a.title, a.journal, a.abstract, a.summary, a.pages, a.pub_date_iso,
+        SELECT a.pmid, a.title, a.journal, a.abstract, a.pages, a.pub_date_iso,
                a.doi, a.authors_json,
                e.id AS evaluation_id, e.score, e.surface_decision,
                e.rationale, e.possible_mismatch,
@@ -740,15 +793,24 @@ def delete_flag(conn, pmid):
     conn.commit()
 
 
-def get_flags(conn, start=None, end=None):
+def get_flags(conn, start=None, end=None, exclude_linked=False):
     """The LATEST flag per paper (flags are append-only; most-recent-wins, so a
     re-flag supersedes without double-counting), joined to its article
     (title/journal/abstract/issue_date_iso) and the evaluation it corrected
     (rationale/surface_decision/possible_mismatch) -- what the suggester and the
     review feed read. start/end filter the article's PUBLICATION window
-    (issue_date_iso). Whether a flag has been "handled" is no longer tracked here:
-    a flag is handled precisely when it is linked into a pattern (pattern_flags)."""
-    rows = conn.execute("""
+    (issue_date_iso).
+
+    A flag is "handled" precisely when it is linked into a pattern (pattern_flags).
+    exclude_linked=True drops any paper whose latest flag is already linked -- the
+    LOOSE-flags-only pool the suggester clusters, so handled flags never re-cluster
+    into duplicate candidates (the primary bloat / idempotency control). The review
+    feed keeps the default (exclude_linked=False) so it still shows every flag. If the
+    user re-flags a paper AFTER it was patterned, the new latest flag is loose again
+    and correctly re-enters the pool."""
+    link_clause = ("AND NOT EXISTS (SELECT 1 FROM pattern_flags pf WHERE pf.flag_id = f.id)"
+                   if exclude_linked else "")
+    rows = conn.execute(f"""
         SELECT f.*, a.title, a.journal, a.abstract, a.issue_date_iso, a.pub_date_iso,
                e.rationale, e.surface_decision, e.possible_mismatch
         FROM flags f
@@ -758,6 +820,7 @@ def get_flags(conn, start=None, end=None):
             SELECT f2.id FROM flags f2 WHERE f2.pmid = f.pmid
             ORDER BY f2.flagged_at DESC, f2.id DESC LIMIT 1
         )
+          {link_clause}
           AND (? IS NULL OR a.issue_date_iso >= ?)
           AND (? IS NULL OR a.issue_date_iso <= ?)
         ORDER BY f.flagged_at
@@ -772,10 +835,12 @@ def get_flags(conn, start=None, end=None):
 # ---------------------------------------------------------------------------
 
 def create_pattern(conn, name, direction, description=None, suggested_edit=None,
-                   flag_ids=()):
+                   flag_ids=(), note=None):
     """Create a pattern from the flags that produced it, in one transaction: the
     pattern row, its pattern_flags provenance links, and an initial 'created' event.
-    Returns the new pattern id. direction in {over, under, sharpen, judge-not-applying}."""
+    Returns the new pattern id. direction in {over, under, sharpen, judge-not-applying}.
+    note rides the 'created' event -- the suggester passes the reconcile priority +
+    rationale here so the first event carries why the pattern was minted."""
     pattern_id = uuid.uuid4().hex
     conn.execute(
         "INSERT INTO patterns (id, name, direction, description, suggested_edit) "
@@ -788,17 +853,38 @@ def create_pattern(conn, name, direction, description=None, suggested_edit=None,
             (pattern_id, fid),
         )
     conn.execute(
-        "INSERT INTO pattern_events (pattern_id, event) VALUES (?, 'created')",
-        (pattern_id,),
+        "INSERT INTO pattern_events (pattern_id, event, note) VALUES (?, 'created', ?)",
+        (pattern_id, note),
     )
     conn.commit()
     return pattern_id
 
 
+def link_flags_to_pattern(conn, pattern_id, flag_ids):
+    """Link additional flags to an EXISTING pattern -- the MERGE primitive: a later
+    round's flags attaching to a pattern already tracked (create_pattern only links
+    at creation). Dedups on the pattern_flags primary key; returns the count NEWLY
+    linked (0 if all were already linked). Adds NO fate event on its own -- the caller
+    decides whether new provenance warrants a 'carried'/'recurred' event, and skips it
+    when this returns 0, so re-running an overlapping window never inflates recurrence."""
+    n = 0
+    for fid in dict.fromkeys(flag_ids):
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO pattern_flags (pattern_id, flag_id) VALUES (?, ?)",
+            (pattern_id, fid),
+        )
+        n += cur.rowcount
+    conn.commit()
+    return n
+
+
 def add_pattern_event(conn, pattern_id, event, note=None, profile_id=None):
-    """Append a fate event (created|carried|incorporated|rejected). Append-only: the
-    pattern's current status is its latest event. profile_id is the version that
-    absorbed it, set on 'incorporated'; note carries the reasoning (esp. on reject)."""
+    """Append a fate event. Append-only. The four DECISION events
+    (created|carried|incorporated|rejected) set status = latest decision. 'recurred'
+    is a non-decision annotation (a tombstoned pattern's taste came back); it is
+    logged but get_patterns ignores it for status, so a rejected pattern stays
+    rejected. profile_id is the version that absorbed it, set on 'incorporated'; note
+    carries the reasoning (esp. on reject, or the recurrence rationale)."""
     conn.execute(
         "INSERT INTO pattern_events (pattern_id, event, note, profile_id) "
         "VALUES (?, ?, ?, ?)",
@@ -827,9 +913,13 @@ def update_pattern_content(conn, pattern_id, name=None, direction=None,
 
 
 def get_patterns(conn, statuses=None):
-    """Patterns with their CURRENT status (latest event), the flag count, and the
-    latest event's note/profile_id. statuses filters by current status (e.g.
-    ('created','carried') for the active list, ('incorporated','rejected') for
+    """Patterns with their CURRENT status, the flag count, the recurrence counters,
+    and the deciding event's note/profile_id. status = the latest DECISION event
+    (created|carried|incorporated|rejected); 'recurred' rows are annotations and never
+    become status, so a rejected pattern with later recurrences still reads 'rejected'.
+    carried_count / recurred_count are the derived recurrence signals (how many rounds
+    it was deferred / how often a tombstone resurfaced). statuses filters by current
+    status (('created','carried') for the active list, ('incorporated','rejected') for
     tombstones); None returns all. Newest-status-first."""
     rows = conn.execute("""
         SELECT p.*,
@@ -837,10 +927,15 @@ def get_patterns(conn, statuses=None):
                ev.created_at AS status_at,
                ev.note AS status_note,
                ev.profile_id AS status_profile_id,
-               (SELECT COUNT(*) FROM pattern_flags pf WHERE pf.pattern_id = p.id) AS flag_count
+               (SELECT COUNT(*) FROM pattern_flags pf WHERE pf.pattern_id = p.id) AS flag_count,
+               (SELECT COUNT(*) FROM pattern_events c WHERE c.pattern_id = p.id
+                    AND c.event = 'carried') AS carried_count,
+               (SELECT COUNT(*) FROM pattern_events r WHERE r.pattern_id = p.id
+                    AND r.event = 'recurred') AS recurred_count
         FROM patterns p
         JOIN pattern_events ev ON ev.id = (
             SELECT e2.id FROM pattern_events e2 WHERE e2.pattern_id = p.id
+            AND e2.event IN ('created', 'carried', 'incorporated', 'rejected')
             ORDER BY e2.created_at DESC, e2.id DESC LIMIT 1
         )
         ORDER BY ev.created_at DESC
@@ -884,6 +979,35 @@ def get_pattern_provenance(conn, pattern_id):
         ORDER BY ABS(f.delta) DESC
     """, (pattern_id,)).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_tombstone_recurrences(conn):
+    """Tombstoned patterns (incorporated or rejected) whose taste RESURFACED -- a
+    'recurred' event that came AFTER the current deciding event. These are alerts for
+    the human ('you closed this, but the flags brought it back'), NOT active patterns:
+    they stay off the active list. Returns each pattern row (as get_patterns) with
+    recurrence_count + last_recurred_at, most-recently-resurfaced first. Ordering is by
+    event id, not timestamp -- timestamps are second-resolution and a decision + its
+    recurrence can share one, whereas ids are monotonic."""
+    out = []
+    for p in get_patterns(conn, statuses=("incorporated", "rejected")):
+        decision = conn.execute("""
+            SELECT id FROM pattern_events WHERE pattern_id = ?
+            AND event IN ('created', 'carried', 'incorporated', 'rejected')
+            ORDER BY created_at DESC, id DESC LIMIT 1
+        """, (p["id"],)).fetchone()
+        row = conn.execute("""
+            SELECT COUNT(*) AS n, MAX(created_at) AS last_at
+            FROM pattern_events
+            WHERE pattern_id = ? AND event = 'recurred' AND id > ?
+        """, (p["id"], decision["id"])).fetchone()
+        if row["n"]:
+            p = dict(p)
+            p["recurrence_count"] = row["n"]
+            p["last_recurred_at"] = row["last_at"]
+            out.append(p)
+    out.sort(key=lambda r: r["last_recurred_at"] or "", reverse=True)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1083,7 +1207,7 @@ def sample_unlabeled_by_month(conn, months, n_per_month, seed=42):
 
 _TEST_ARTICLE_COLS = (
     "a.pmid, a.title, a.abstract, a.pages, a.authors_json, a.journal, "
-    "a.pub_date, a.pub_date_iso, a.epub_date, a.doi, a.pub_types_json, a.summary"
+    "a.pub_date, a.pub_date_iso, a.epub_date, a.doi, a.pub_types_json"
 )
 
 
@@ -1146,12 +1270,12 @@ def setup_ui_test_labeler_db(db_path, mode="relevance", n_prelabeled=10, n_unlab
         test_conn.execute("""
             INSERT OR IGNORE INTO articles
                 (pmid, title, abstract, pages, authors_json, journal,
-                 pub_date, pub_date_iso, epub_date, doi, pub_types_json, summary)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 pub_date, pub_date_iso, epub_date, doi, pub_types_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (row["pmid"], row["title"], row.get("abstract"), row.get("pages"),
               row.get("authors_json"), row.get("journal"),
               row.get("pub_date"), row.get("pub_date_iso"), row.get("epub_date"),
-              row.get("doi"), row.get("pub_types_json"), row.get("summary")))
+              row.get("doi"), row.get("pub_types_json")))
 
     # Pre-labeled rows seed their real label. For curation, the unlabeled pool
     # also needs relevant=1 rows (curation_label NULL) so they show up to rate.

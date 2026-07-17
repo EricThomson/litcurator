@@ -1,34 +1,43 @@
 """
-profile_analysis.py -- synthesize flag patterns into user-profile edit suggestions.
+profile_analysis.py -- synthesize flag patterns into the pattern memory.
 
 The offline learning path. It reads the numeric flags (the residuals between the
-judge and the user), clusters them, and surfaces a few high-impact, evidence-backed
-suggestions. It SURFACES; the human authors every word of the actual edit.
+judge and the user) and turns them into tracked PATTERNS -- recurring taste-gaps the
+human curates in the workbench and hand-authors into the profile. It SURFACES and
+REMEMBERS; the human authors every word of the actual edit.
 
-Two steps -- the Tao of litcurator: generate cheap-and-broad, select expensive-and-sharp.
-  Step 1 (cluster, Sonnet): RECALL -- find every candidate preference pattern.
-  Step 2 (distill, Opus): SELECTION -- ruthlessly cut to the few worth acting on,
-    each checked against the current profile, biased hard toward doing nothing.
+The design separates RECORD (permissive: track everything real, into the append-only
+pattern memory) from SELECT (restrictive: which patterns to act on this round, decided
+as a ranking + the human, NOT by discarding). The old middle stage fused the two and
+dumped everything it did not act on into a free-text "Considered and cut" line that no
+code read -- so real-but-not-now patterns, and the whole judge-not-applying (prompt-fix)
+signal, were silently lost and recurrence could never accumulate. Now nothing is
+dumped; every candidate gets a disposition and a home.
+
+Two LLM stages (the Tao of litcurator: generate cheap-and-broad, then decide):
+  Step 1 (cluster, Sonnet): RECALL -- surface every candidate preference pattern from
+    the LOOSE (not-yet-patterned) flags.
+  Step 2 (reconcile, Sonnet, forced tool-use): for EACH candidate emit a structured
+    disposition -- new / merge into an open pattern / recurs against a tombstone /
+    noise-drop -- plus direction, an act-now-vs-defer priority HINT (where the
+    false-negative bias lives, governing the hint only), and its supporting papers.
+Then RECORD (pure code) writes the dispositions into patterns / pattern_flags /
+pattern_events. The reconcile step is shown the open patterns + tombstones WITH ids, so
+it captures the cross-round match the old pipeline already made and threw away: a
+recurring candidate merges into its existing pattern (a 'carried' event, so recurrence
+accumulates) instead of minting a duplicate.
 
 Goodhart guard: this NEVER re-runs the judge on the flags to "validate" an edit --
 that is exactly how v1 taught the LLM to game the score. It surfaces evidence only;
 if you ever validate an edit, do it on a held-out month, not the flag set.
 
-Reads flags from db_interface.get_flags; reads the active profile from
-profile_interface. Output streams to console and saves to
-~/.litcurator/suggestions/<range>.md for the human to author edits from.
-
-It ALSO persists each surviving suggestion as a PATTERN (db_interface.create_pattern),
-linked back to the flags that produced it (pattern_flags provenance -> the papers).
-Those patterns are what the human curates in the workbench (carry / incorporate /
-reject); the append-only pattern memory is what stops the same suggestion recurring
-round after round. The distill step is shown the already-decided patterns so it does
-not re-propose them. See starry-brewing-horizon.md.
+Reads LOOSE flags from db_interface.get_flags(exclude_linked=True); reads the active
+profile from profile_interface. Streams the recall to console and saves a dated
+markdown report to ~/.litcurator/suggestions/. See starry-brewing-horizon.md.
 """
 
-import math
 import os
-from pathlib import Path
+import sys
 
 import anthropic
 from dotenv import load_dotenv
@@ -38,13 +47,12 @@ from litcurator.config import DATA_DIR, USER_JOURNAL_RATINGS
 
 load_dotenv()
 
-# The Tao of litcurator: generate cheap-and-broad, select expensive-and-sharp.
-# Step 1 (recall) is Sonnet's strength -- crisp, broad candidate generation.
-# Step 2 (selection) is a judgment task where Opus is visibly better -- correct
-# root-cause merging and holding the false-negative bias. Same shape as the
-# pipeline itself: Haiku gate -> Sonnet judge.
+# Both stages are Sonnet. Recall is Sonnet's strength (crisp, broad generation).
+# Reconcile is structured tagging with NO prose authorship, so Opus's documented
+# prose-padding liability does not apply and Sonnet is ~5x cheaper; keep Opus as a
+# drop-in fallback only if the duplicate rate on real data proves poor.
 DEFAULT_CLUSTER_MODEL = "claude-sonnet-4-6"
-DEFAULT_DISTILL_MODEL = "claude-opus-4-8"
+DEFAULT_RECONCILE_MODEL = "claude-sonnet-4-6"
 
 # Approximate API prices, ($/M input, $/M output). Update if pricing changes.
 MODEL_COSTS = {
@@ -77,9 +85,8 @@ Over-scored papers show the judge citing interests that do not really apply; und
 show it missing interests absent from the seed.
 
 YOUR JOB HERE IS RECALL. Surface every distinct candidate preference pattern the flags reveal.
-A later stage will ruthlessly select the few worth acting on, so do not self-censor -- but a
-"pattern" is a regularity across MULTIPLE papers, not one paper's quirk. Merge exact duplicates;
-otherwise be thorough.
+A later stage records and ranks these, so do not self-censor -- but a "pattern" is a regularity
+across MULTIPLE papers, not one paper's quirk. Merge exact duplicates; otherwise be thorough.
 
 For each candidate pattern:
 - A short name (3-6 words)
@@ -97,119 +104,6 @@ For each candidate pattern:
 
 Articles are referenced by number; all references are stripped downstream so the researcher is never
 anchored to specific papers. Plain text.
-""".strip()
-
-
-DISTILL_PROMPT = """
-Below are candidate seed-edit patterns distilled from a researcher's flags, each with its supporting
-papers, how pervasive each is, and the direction/magnitude of the mismatch.
-
-Your job is SELECTION, not generation. You may only CUT and MERGE candidates -- never invent new
-ones. You are choosing the few edits actually worth making to the researcher's seed profile.
-
-CHECK EVERY CANDIDATE AGAINST THE CURRENT SEED (appended below the candidates -- it is the source of
-truth for what is already covered). Three cases, only one of which is a seed edit:
-- Seed already clearly states this preference -> CUT it. Adding more prose for something already
-  said is bloat (the v1 failure) and will not help. A preference the seed states CLEARLY but the
-  judge keeps getting wrong is a JUDGE-APPLICATION problem (the judge is not reading its own seed),
-  NOT a seed edit -- cut it and note in "Considered and cut" as "already clear in seed; judge not
-  applying it." Do not recommend adding/broadening prose for it.
-- Seed is genuinely SILENT on the point -> ADD is legitimate.
-- Seed is genuinely VAGUE or internally ambiguous on the point -> SHARPEN is legitimate (but only if
-  the wording is actually unclear, not merely because the judge ignored clear wording).
-
-THE DEFAULT IS TO CHANGE NOTHING. This seed has a documented history of failing from over-editing:
-every added line risks vocabulary bloat and drift that degraded earlier versions. An edit must
-clearly beat the do-nothing default to survive.
-
-PREFER FALSE NEGATIVES. When unsure whether a change earns its place, LEAVE IT OUT. A real pattern
-you omit will resurface in later flags and be caught then -- omission is cheap and self-correcting.
-A marginal one you include risks permanently bloating the seed -- inclusion is expensive and
-compounding. Bias hard toward omission.
-
-THIS IS A SLOW, PATIENT, RECURRING PROCESS -- not a one-time cleanup. You are not fixing everything
-now; you are picking only this round's handful. Anything you pass over is not lost: it resurfaces in
-future flags and gets fixed in a later pass. A steady trickle of a few well-chosen edits, compounding
-over time, is the whole design. Trying to fix it all at once is the failure mode.
-
-EXCEPTION -- cheap, clean specifics. The "it will recur, so omission is cheap" logic assumes the
-pattern recurs at a useful rate AND that encoding it risks bloat. A narrow, unambiguous, NAMED
-disinterest -- a specific method or specific bounded topic the user has clearly flagged (e.g. a
-particular recording modality) -- breaks both assumptions: it is cheap and safe to encode (one
-precise line, near-zero bloat risk) and it may be RARE, not reappearing for a long time. For these,
-deferral is EXPENSIVE, not cheap -- you could lose it for many cycles. KEEP a clean, specific,
-clearly-flagged disinterest even at low coverage or low frequency, ESPECIALLY when the user left an
-explicit note stating it. The false-negative bias is for BROAD, AMBIGUOUS, or hard-to-phrase edits;
-it does NOT apply to narrow named specifics. (This exception is only for genuinely narrow, named
-items -- a broad topic area is still subject to normal ranking, not auto-kept.)
-
-HOW MANY: most rounds warrant 2-4 edits. More than 5 means you have not merged or cut hard enough;
-treat {max_s} as an almost-never-reached ceiling, not a target.
-
-PRECEDENCE (these rules conflict; apply in this order):
-0. ALREADY DECIDED -> CUT. If a candidate matches a pattern in the "Already-decided patterns" block
-   below (one you previously INCORPORATED or REJECTED, or one still open from a past round), CUT it --
-   the memory has already handled it. Re-proposing a decided pattern is exactly the recurrence failure
-   this whole system exists to prevent. This precedes every rule below. (If a matching pattern was
-   REJECTED, do not resurrect it unless the new flags are a materially stronger case; say so if you do.)
-1. ALREADY IN THE SEED -> CUT. If the seed already clearly states the preference, cut it. A note or
-   recurrence does NOT make an existing seed line worth duplicating. If the seed says it and the
-   judge ignores it, that is a judge-application problem, not an edit (note it in the cut block).
-   This overrides every keep-pressure below -- note-weight and the cheap-specific exception NEVER
-   resurrect an already-covered preference.
-2. NOT A GENUINE GAP -> CUT.
-3. Among genuine gaps, KEEP only the few highest-impact that clearly beat the do-nothing default.
-   The note-weight and cheap-clean-specific exception are BOOSTS WITHIN this step -- they can lift a
-   borderline, seed-SILENT gap over the bar (this is what rescues a rare, note-backed disinterest the
-   seed does not yet name). They are NOT auto-keeps. In particular: a single data point does not
-   overturn a deliberate existing seed rule -- defer it, even if note-backed.
-
-Process:
-1. MERGE: candidates a single seed edit would satisfy are one candidate. Collapse shared root causes
-   (several topic/method complaints that are really one "X over Y" principle become one).
-2. RANK BY REASONING, not a formula. Ask of each cluster: does it reveal a real, generalizable taste
-   the seed gets wrong -- one that would correctly re-rank papers the user has not yet flagged? Weigh
-   three signals TOGETHER, and let NONE of them trump the others:
-     - PERVASIVENESS -- how many papers, and what share of the corpus the cluster spans. A small
-       average delta is no reason to dismiss a pattern that shows up almost everywhere: a ~0.1 bias
-       across most papers is a systematic profile error well worth surfacing, and outweighs a large
-       delta on a lone idiosyncratic paper.
-     - MAGNITUDE -- how badly the seed mishandles these papers (delta), and which way.
-     - CLARITY -- how unambiguously the flags name a real taste. A single sharply-flagged case can
-       justify an edit when it reveals a clean, nameable preference -- e.g. a specific method or
-       topic that belongs in the active-disinterest list -- especially when a user note states it
-       outright. Frequency is not required here; clarity carries it.
-   Pervasive-but-mild, sharp-but-rare, and large-and-recurring are all legitimate ways to earn a
-   place. Reason about which one the cluster is; do not collapse the signals into a single score.
-   NOTE WEIGHT: an explicit user note is a deliberate, selective act -- the user writes few, so a
-   note is a strong signal of real taste, stronger than the delta alone. Let it lift a clear,
-   seed-silent pattern over the bar (subject to the precedence above), not as a trump card. Do NOT
-   transcribe the note's wording -- state a general principle; the user authors the seed line from it.
-3. CUT everything that does not clearly beat the do-nothing default, applying the false-negative bias.
-
-Output:
-- A single list, ranked by impact (1 = highest). For each survivor, give:
-    - THE DIRECTIVE: one clear action, tagged ADD / SUPPRESS / SHARPEN. State the preference itself,
-      in plain self-contained terms, the way the researcher would describe their own taste. Do NOT
-      phrase it as an instruction to modify existing seed wording, and do NOT adopt the judge's
-      framing or vocabulary (its reasoning may be the error). Name the taste that is mis-scored; do
-      not draft the edit, pick the clause, or assume how the researcher categorizes things.
-    - A SHORT EXPOSITION: 2-3 sentences on the reasoning -- what the flags reveal, why this taste
-      holds, and how it generalizes beyond the specific papers. Enough for the researcher to think
-      with, not just a verdict. Substantive, not filler: earn every sentence, no padding or restating.
-      Cut first, expound second: being able to write a justification is NEVER a reason to keep an
-      item. Only write exposition for things that already survived the precedence and ranking above.
-    - SUPPORT: (N papers; note whether it is pervasive across the corpus or a sharp isolated case).
-    - Strip ALL paper-specific references from BOTH the directive and the exposition (numbers, titles,
-      journals, paradigms named only in those papers). State general principles.
-- Then a final line "Considered and cut:" naming the strongest candidates you rejected and why in a
-  few words each (redundant / idiosyncratic, does not generalize / low-impact / does not beat
-  do-nothing / already in seed).
-
-Output ONLY the final ranked list followed by the single "Considered and cut:" block. Do NOT show
-drafts, working, or revisions; do NOT restate or echo these instructions; do NOT write any preamble
-or transition lines. If you reconsider while composing, emit only the final result -- never both a
-draft and a final. ASCII only.
 """.strip()
 
 
@@ -273,20 +167,24 @@ def _format_papers(flags):
 
 
 def _format_existing_patterns(active, tombstones):
-    """The already-decided pattern memory, shown to the distill step so it does not
-    re-propose what has been handled. Empty string when there is no history yet."""
+    """The pattern memory, shown to the reconcile step WITH ids so it can name the
+    exact pattern a candidate merges into (open) or recurs against (tombstone). Empty
+    string when there is no history yet."""
     if not active and not tombstones:
         return ""
-    lines = ["## Already-decided patterns (the memory -- do NOT re-propose these)"]
+    lines = ["## Existing pattern memory (match candidates against these by MEANING, using the id)"]
+    if active:
+        lines.append("\nOPEN patterns (still awaiting a decision) -- a candidate that is the same "
+                     "taste is merge_into_open with that id:")
+        for p in active:
+            lines.append(f"  - id={p['id']}  [{p['direction']}] {p['name']}: "
+                         f"{p.get('description') or ''}")
     if tombstones:
-        lines.append("\nAlready INCORPORATED into the profile, or REJECTED:")
+        lines.append("\nTOMBSTONES (already INCORPORATED or REJECTED) -- a candidate that matches is "
+                     "recurs_tombstone with that id (logs the recurrence, does NOT reopen):")
         for p in tombstones:
             why = p["status"] + (f": {p['status_note']}" if p.get("status_note") else "")
-            lines.append(f"  - [{why}] {p['name']}: {p.get('description') or ''}")
-    if active:
-        lines.append("\nAlready SURFACED and still open from a past round (do not duplicate):")
-        for p in active:
-            lines.append(f"  - {p['name']}: {p.get('description') or ''}")
+            lines.append(f"  - id={p['id']}  [{why}] {p['name']}: {p.get('description') or ''}")
     return "\n".join(lines)
 
 
@@ -299,6 +197,18 @@ def _cost(model, usage):
     return (usage.input_tokens * cin + usage.output_tokens * cout) / 1_000_000
 
 
+def _echo(text):
+    """Print a streamed chunk to the console without ever crashing on a character the
+    console encoding cannot represent (Windows cp1252 vs the model's unicode minus /
+    em-dash / smart quotes). The returned text keeps the real characters; only the live
+    echo is degraded, and only for the rare unencodable char."""
+    try:
+        print(text, end="", flush=True)
+    except UnicodeEncodeError:
+        enc = sys.stdout.encoding or "utf-8"
+        print(text.encode(enc, errors="replace").decode(enc), end="", flush=True)
+
+
 def _stream(client, model, system, user_msg, max_tokens):
     parts = []
     with client.messages.stream(
@@ -308,186 +218,325 @@ def _stream(client, model, system, user_msg, max_tokens):
         messages=[{"role": "user", "content": user_msg}],
     ) as stream:
         for text in stream.text_stream:
-            print(text, end="", flush=True)
+            _echo(text)
             parts.append(text)
         final = stream.get_final_message()
     print()
     return "".join(parts), _cost(model, final.usage)
 
 
-def run_cluster_step(client, papers_block, n_flags, seed_text, max_s, model):
+def run_cluster_step(client, papers_block, n_flags, seed_text, model):
     journal_block = _format_journal_ratings()
-    system = CLUSTER_PROMPT.format(max_s=max_s)
     user_msg = (
-        f"## Current seed profile\n\n{seed_text}\n\n"
+        f"## Current profile\n\n{seed_text}\n\n"
         f"---\n\n"
         f"{journal_block}\n\n"
         f"---\n\n"
         f"## Flagged papers ({n_flags} total)\n\n{papers_block}"
     )
-    # Step 1 is the generous recall stage and scales with flag count; give it
-    # room so it is never truncated mid-pattern. Step 2 then ruthlessly selects.
-    return _stream(client, model, system, user_msg, max_tokens=6000)
-
-
-def run_distill_step(client, clusters_text, seed_text, existing_block, max_s, model):
-    # Step 2 must see the seed so it can cut suggestions already covered by it (and
-    # tell a real seed gap from the judge failing to apply clear seed text), and the
-    # already-decided pattern memory so it does not re-propose what has been handled.
-    memory = f"{existing_block}\n\n---\n\n" if existing_block else ""
-    user_msg = (
-        f"{clusters_text}\n\n---\n\n"
-        f"{memory}"
-        f"## CURRENT SEED PROFILE (source of truth -- check candidates against this)\n\n{seed_text}"
-    )
-    return _stream(client, model, DISTILL_PROMPT.format(max_s=max_s), user_msg, max_tokens=4000)
+    # Recall scales with flag count; give it room so it is never truncated mid-pattern.
+    return _stream(client, model, CLUSTER_PROMPT, user_msg, max_tokens=6000)
 
 
 # ---------------------------------------------------------------------------
-# Structured extraction + persistence (provenance capture)
+# Reconcile: assign every candidate a disposition, then RECORD (structured)
 # ---------------------------------------------------------------------------
 
-_EXTRACT_TOOL = {
-    "name": "record_patterns",
-    "description": "Record the FINAL distilled profile-edit suggestions as structured patterns.",
+_RECONCILE_SYSTEM = """
+You are reconciling candidate preference patterns (distilled from a researcher's flags) against the
+researcher's profile and their EXISTING pattern memory. You do NOT author profile prose and you do
+NOT discard real signal. You assign EVERY candidate a disposition and record it via the tool.
+
+This is a MEMORY step, not a selection step. The bar for recording is low and objective: a candidate
+is real if it is a regularity the flags actually show. The ONLY true drop is noise -- a lone
+one-paper quirk that would not generalize. Everything else is recorded; whether to ACT on it this
+round is a separate ranking the human does later, carried by the `priority` hint, never by dropping.
+
+MERGE FIRST. Before assigning dispositions, collapse candidates that a single profile edit would
+satisfy, or that are facets of ONE underlying taste, into ONE pattern (union their paper_numbers).
+Several sub-themes of the same taste -- distinct topics that all express one interest ("I value
+theoretical/computational work"), or distinct methods that all express one disinterest ("scalp EEG
+is uninteresting") -- are ONE pattern, not several. This is CONSOLIDATION, not dropping: every
+supporting paper stays linked to the merged pattern, so no signal is lost. Aim for the FEWEST
+patterns that capture the genuinely DISTINCT tastes; a proliferation of narrow near-duplicates is the
+failure mode. Recording everything real means not losing a distinct taste -- it does NOT mean
+recording every fine-grained slice of one taste as its own pattern.
+
+For each candidate choose a disposition:
+- new: a real taste-gap not already tracked. Give name, direction, description, suggested_edit,
+  priority, paper_numbers.
+- merge_into_open: essentially one of the OPEN patterns shown below (the same taste). Give its
+  existing_pattern_id and the paper_numbers of the NEW supporting flags -- this is how recurrence
+  accumulates on a pattern instead of spawning a duplicate.
+- recurs_tombstone: it matches a pattern already INCORPORATED or REJECTED (a tombstone). Give the
+  existing_pattern_id. This LOGS that the taste came back; it does NOT reopen the decision. Say so in
+  `rationale` ONLY if the new flags are a materially stronger case than when it was decided -- the
+  human decides whether to reopen.
+- noise_drop: a lone one-paper quirk that does not generalize. Give a one-line rationale; nothing is
+  persisted.
+
+MATCHING: match against the shown patterns by MEANING, using their ids. Bias toward `new` when
+identity is UNCERTAIN -- a duplicate is cheap for the human to reject, but an over-merge is sticky and
+hard to undo. Only merge/recurs when it is clearly the same taste.
+
+DIRECTION:
+- under: the profile is MISSING coverage the flags show (judge scored too low).
+- over: the profile OVER-triggers on something (judge scored too high).
+- sharpen: the profile is genuinely vague/ambiguous on a boundary that needs resolution.
+- judge-not-applying: the profile ALREADY states this preference clearly, yet the judge is not
+  applying it. This is NOT a drop and NOT "already covered so ignore" -- it is a first-class signal to
+  fix the PROMPT (the other tuning knob), so RECORD it as its own pattern. Use it whenever a flagged
+  mismatch is the judge failing to honor clear existing profile text, rather than a profile gap.
+
+PRIORITY (governs the act-now HINT only, never record-vs-drop):
+- act_now: reserve for the FEW candidates that clearly beat the do-nothing default -- a real,
+  generalizable taste worth a profile edit this round.
+- defer: everything else real. Deferral is cheap here: the pattern is recorded and accumulates
+  recurrence until it earns action. Bias toward defer.
+
+THE NOTE WALL: in suggested_edit, state a GENERAL principle in the researcher's own voice -- never
+transcribe a user's private note verbatim, and do not adopt the judge's framing or vocabulary (its
+reasoning may be the error). Name the taste; do not draft the final profile line.
+
+paper_numbers are the [N] references from the candidate clusters (union across any candidates you
+merge). Record EVERY candidate exactly once. Output only via the record_reconciliation tool.
+""".strip()
+
+_RECONCILE_TOOL = {
+    "name": "record_reconciliation",
+    "description": "Record a disposition for EVERY candidate pattern (new / merge / recurs / drop).",
     "input_schema": {
         "type": "object",
         "properties": {
-            "patterns": {
+            "candidates": {
                 "type": "array",
                 "items": {
                     "type": "object",
                     "properties": {
-                        "name": {"type": "string", "description": "short label, 3-6 words"},
+                        "disposition": {"type": "string",
+                            "enum": ["new", "merge_into_open", "recurs_tombstone", "noise_drop"]},
+                        "existing_pattern_id": {"type": "string",
+                            "description": "id of the open pattern (merge_into_open) or tombstone "
+                                           "(recurs_tombstone) this matches; omit for new / noise_drop"},
+                        "name": {"type": "string", "description": "short label, 3-6 words (for new)"},
                         "direction": {"type": "string",
-                                      "enum": ["over", "under", "sharpen", "judge-not-applying"]},
-                        "description": {"type": "string", "description": "one sentence"},
+                            "enum": ["over", "under", "sharpen", "judge-not-applying"]},
+                        "description": {"type": "string", "description": "one sentence (for new)"},
                         "suggested_edit": {"type": "string",
-                                           "description": "the directive as the user would author it"},
+                            "description": "the directive as the researcher would author it (for new)"},
+                        "priority": {"type": "string", "enum": ["act_now", "defer"],
+                            "description": "act_now only if it clearly beats do-nothing; else defer"},
                         "paper_numbers": {"type": "array", "items": {"type": "integer"},
-                                          "description": "supporting paper numbers from the clusters"},
+                            "description": "supporting [N] paper numbers from the clusters"},
+                        "rationale": {"type": "string",
+                            "description": "one line: why this disposition/priority"},
                     },
-                    "required": ["name", "direction", "description", "suggested_edit", "paper_numbers"],
+                    "required": ["disposition", "paper_numbers", "rationale"],
                 },
             }
         },
-        "required": ["patterns"],
+        "required": ["candidates"],
     },
 }
 
-_EXTRACT_SYSTEM = (
-    "You convert a finalized set of profile-edit suggestions into structured records. You do NOT "
-    "judge, re-rank, add, or drop anything -- you faithfully transcribe ONLY the FINAL distilled "
-    "suggestions (ignore the 'Considered and cut' list entirely). For each final suggestion: "
-    "map direction as under = seed MISSING coverage / ADD; over = seed OVER-triggering / SUPPRESS; "
-    "sharpen = SHARPEN; judge-not-applying only if it is explicitly a 'judge not applying clear seed' "
-    "problem. Recover paper_numbers by finding, in the candidate clusters, the [n] paper references "
-    "behind that suggestion (union across any clusters it merged). description = one sentence; "
-    "suggested_edit = the directive text itself."
-)
 
-
-def run_extract_step(client, clusters_text, distilled_text, model):
-    """Transcribe the final distilled suggestions into structured patterns with their
-    supporting paper numbers. Forced tool-use so the JSON is always valid. Returns
-    (patterns_list, cost)."""
+def run_reconcile_step(client, clusters_text, seed_text, existing_block, model):
+    """Assign every candidate a disposition via forced tool-use (so the JSON is always
+    valid). Shown the clusters, the profile (to tell a real gap from the judge ignoring
+    clear text -> judge-not-applying), and the existing patterns + tombstones WITH ids
+    (to capture the cross-round match). Returns (candidates, cost)."""
+    memory = f"{existing_block}\n\n---\n\n" if existing_block else ""
+    user_msg = (
+        f"## Candidate patterns (with [N] paper numbers)\n\n{clusters_text}\n\n---\n\n"
+        f"{memory}"
+        f"## CURRENT PROFILE (source of truth -- a preference already clear here that the judge "
+        f"still gets wrong is judge-not-applying, not a gap)\n\n{seed_text}"
+    )
     resp = client.messages.create(
         model=model,
-        max_tokens=2000,
-        system=_EXTRACT_SYSTEM,
-        messages=[{"role": "user", "content": (
-            f"## Candidate clusters (with paper numbers)\n\n{clusters_text}\n\n---\n\n"
-            f"## FINAL distilled suggestions (transcribe THESE only)\n\n{distilled_text}"
-        )}],
-        tools=[_EXTRACT_TOOL],
-        tool_choice={"type": "tool", "name": "record_patterns"},
+        max_tokens=4000,
+        system=_RECONCILE_SYSTEM,
+        messages=[{"role": "user", "content": user_msg}],
+        tools=[_RECONCILE_TOOL],
+        tool_choice={"type": "tool", "name": "record_reconciliation"},
     )
-    patterns = []
+    candidates = []
     for block in resp.content:
         if block.type == "tool_use":
-            patterns = block.input.get("patterns", [])
+            candidates = block.input.get("candidates", [])
             break
-    return patterns, _cost(model, resp.usage)
+    return candidates, _cost(model, resp.usage)
 
 
-def _persist_patterns(conn, extracted, ordered_flags):
-    """Write each extracted suggestion as a pattern, linked to the flags behind it
-    (paper number N -> ordered_flags[N-1] -> flag id). Returns the created rows for a
-    summary. Re-runs may create near-duplicates (cross-round auto-matching is
-    deferred); the distill step's memory block minimizes that, the human rejects the
-    rest."""
-    created = []
+def _record_reconciliation(conn, candidates, ordered_flags):
+    """Write each candidate's disposition into the pattern memory. Provenance: paper
+    number N -> ordered_flags[N-1] -> flag id. The event attached to a merge/recurs is
+    driven by the TARGET pattern's REAL status, not the LLM's label -- so a mislabeled id
+    can never resurrect a tombstone (open target -> 'carried', tombstone target ->
+    'recurred'), and the event is skipped when no NEW flags were actually linked, so
+    re-running an overlapping window never inflates recurrence. Returns a summary dict."""
     n = len(ordered_flags)
-    for p in extracted:
-        nums = p.get("paper_numbers") or []
-        flag_ids = [ordered_flags[num - 1]["id"] for num in nums
-                    if isinstance(num, int) and 1 <= num <= n]
-        pattern_id = db_interface.create_pattern(
-            conn, name=p["name"], direction=p["direction"],
-            description=p.get("description"), suggested_edit=p.get("suggested_edit"),
-            flag_ids=flag_ids)
-        created.append({"id": pattern_id, "name": p["name"],
-                        "direction": p["direction"], "n_flags": len(flag_ids)})
-    return created
+    summary = {"new": [], "merged": [], "recurred": [], "dropped": [], "skipped": []}
+
+    def flag_ids_for(c):
+        nums = c.get("paper_numbers") or []
+        return [ordered_flags[i - 1]["id"] for i in nums
+                if isinstance(i, int) and 1 <= i <= n]
+
+    def status_of(pid):
+        row = conn.execute(
+            "SELECT event FROM pattern_events WHERE pattern_id = ? "
+            "AND event IN ('created','carried','incorporated','rejected') "
+            "ORDER BY created_at DESC, id DESC LIMIT 1", (pid,)).fetchone()
+        return row["event"] if row else None
+
+    def _create(c, flag_ids, extra_note=""):
+        note = f"{c.get('priority', 'defer')}: {c.get('rationale', '')}{extra_note}".strip()
+        return db_interface.create_pattern(
+            conn, name=(c.get("name") or "(unnamed)"),
+            direction=(c.get("direction") or "under"),
+            description=c.get("description"), suggested_edit=c.get("suggested_edit"),
+            flag_ids=flag_ids, note=note or None)
+
+    for c in candidates:
+        disp = c.get("disposition")
+        flag_ids = flag_ids_for(c)
+        if disp == "new":
+            pid = _create(c, flag_ids)
+            summary["new"].append({"id": pid, "name": c.get("name"),
+                                   "direction": c.get("direction"),
+                                   "priority": c.get("priority"), "n_flags": len(flag_ids)})
+        elif disp in ("merge_into_open", "recurs_tombstone"):
+            eid = c.get("existing_pattern_id")
+            st = status_of(eid) if eid else None
+            if st is None:   # missing / hallucinated target id -- do not lose the signal
+                if c.get("name"):
+                    pid = _create(c, flag_ids,
+                                  extra_note=" (reconcile named a missing merge target; recorded new)")
+                    summary["new"].append({"id": pid, "name": c.get("name"),
+                                           "direction": c.get("direction"),
+                                           "priority": c.get("priority"),
+                                           "n_flags": len(flag_ids), "recovered": True})
+                else:
+                    summary["skipped"].append({"why": "merge target not found, no name to recover"})
+                continue
+            added = db_interface.link_flags_to_pattern(conn, eid, flag_ids)
+            if not added:
+                summary["skipped"].append({"id": eid, "why": "no new flags to link"})
+                continue
+            if st in ("incorporated", "rejected"):
+                db_interface.add_pattern_event(conn, eid, "recurred", note=c.get("rationale"))
+                summary["recurred"].append({"id": eid, "name": c.get("name"), "added": added})
+            else:
+                db_interface.add_pattern_event(conn, eid, "carried",
+                                               note=f"recurred: {c.get('rationale', '')}")
+                summary["merged"].append({"id": eid, "name": c.get("name"), "added": added})
+        else:   # noise_drop or an unrecognized disposition
+            summary["dropped"].append({"name": c.get("name"), "rationale": c.get("rationale")})
+    return summary
+
+
+def _format_reconciliation_md(candidates):
+    """Render the reconcile decisions as a readable markdown list -- ALL dispositions,
+    noise-drops included (transparency, not a discard sink)."""
+    if not candidates:
+        return "(no candidates)"
+    lines = []
+    for c in candidates:
+        head = f"- **{c.get('disposition', '?')}**"
+        if c.get("name"):
+            head += f" -- {c['name']}"
+        if c.get("direction"):
+            head += f" ({c['direction']})"
+        if c.get("priority"):
+            head += f" [{c['priority']}]"
+        if c.get("existing_pattern_id"):
+            head += f"  -> {c['existing_pattern_id'][:12]}"
+        lines.append(head)
+        if c.get("suggested_edit"):
+            lines.append(f"    - edit: {c['suggested_edit']}")
+        if c.get("rationale"):
+            lines.append(f"    - why: {c['rationale']}")
+        if c.get("paper_numbers"):
+            lines.append(f"    - papers: {c['paper_numbers']}")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
-def suggest_edits(start=None, end=None, max_patterns=None,
-                  cluster_model=DEFAULT_CLUSTER_MODEL, distill_model=DEFAULT_DISTILL_MODEL,
+def _summary_line(summary):
+    if not summary:
+        return "recorded nothing"
+    return (f"recorded {len(summary['new'])} new, {len(summary['merged'])} merged, "
+            f"{len(summary['recurred'])} recurred; {len(summary['dropped'])} noise-dropped")
+
+
+def suggest_edits(start=None, end=None,
+                  cluster_model=DEFAULT_CLUSTER_MODEL, reconcile_model=DEFAULT_RECONCILE_MODEL,
                   persist=True):
-    """Cluster the flags in [start, end], surface ranked seed-edit suggestions, and
-    persist each surviving suggestion as a pattern linked to its flags. Streams to
-    console and saves a dated markdown report. Returns the output path (or None if
-    too few flags). Never re-validates on the flag set. persist=False for a dry run
-    (writes the markdown but no patterns)."""
+    """Cluster the LOOSE (not-yet-patterned) flags in [start, end], reconcile each
+    candidate against the pattern memory, and RECORD every real one (new / merge into an
+    open pattern / recurs against a tombstone); only genuine one-paper noise is dropped.
+    Streams the recall to console and saves a dated markdown report. Returns the output
+    path (or None if too few flags). Never re-validates on the flag set. persist=False is
+    a dry run (writes the markdown, records nothing)."""
     seed_text = profile_interface.load_active()
 
     conn = db_interface.get_connection()
     try:
-        flags = db_interface.get_flags(conn, start=start, end=end)
+        # LOOSE flags only: a flag already linked into a pattern is "handled" and must
+        # not re-cluster into a duplicate candidate. This is the bloat/idempotency bound.
+        flags = db_interface.get_flags(conn, start=start, end=end, exclude_linked=True)
         n = len(flags)
         if n < MIN_FLAGS:
-            print(f"Only {n} flags in range -- need at least {MIN_FLAGS} to run.")
+            print(f"Only {n} loose (not-yet-patterned) flags in range -- need at least "
+                  f"{MIN_FLAGS} to run.")
             return None
 
-        # The already-decided pattern memory: shown to the distiller so it does not
-        # re-propose what earlier rounds handled.
+        # The pattern memory, shown to reconcile WITH ids so it captures cross-round
+        # matches (merge into an open pattern / recurs against a tombstone).
         active_patterns = db_interface.get_active_patterns(conn)
         tombstones = db_interface.get_patterns(conn, statuses=("incorporated", "rejected"))
         existing_block = _format_existing_patterns(active_patterns, tombstones)
 
-        max_s = max_patterns if max_patterns is not None else math.floor(n / 2)
         rng = f"{start or 'all'} to {end or 'all'}"
-        print(f"{n} flags ({rng})  |  pattern range 1-{max_s}  |  "
-              f"memory: {len(active_patterns)} open + {len(tombstones)} decided")
-        print(f"Models: cluster={cluster_model}  distill={distill_model}\n")
+        print(f"{n} loose flags ({rng})  |  memory: {len(active_patterns)} open + "
+              f"{len(tombstones)} decided")
+        print(f"Models: cluster={cluster_model}  reconcile={reconcile_model}\n")
 
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         papers_block, ordered_flags = _format_papers(flags)
 
         print("=== Step 1: cluster (recall) ===\n")
-        clusters, cost1 = run_cluster_step(client, papers_block, n, seed_text, max_s, cluster_model)
+        clusters, cost1 = run_cluster_step(client, papers_block, n, seed_text, cluster_model)
         print(f"\n[step 1 cost: ${cost1:.4f}]\n")
 
-        print("=== Step 2: distill (selection) ===\n")
-        distilled, cost2 = run_distill_step(client, clusters, seed_text, existing_block,
-                                            max_s, distill_model)
+        print("=== Step 2: reconcile (disposition) ===")
+        candidates, cost2 = run_reconcile_step(client, clusters, seed_text, existing_block,
+                                               reconcile_model)
         total = cost1 + cost2
-        print(f"\n[step 2 cost: ${cost2:.4f}  |  total: ${total:.4f}]")
 
-        created = []
+        summary = None
         if persist:
-            print("\n=== Step 3: extract + persist patterns ===")
-            extracted, cost3 = run_extract_step(client, clusters, distilled, cluster_model)
-            created = _persist_patterns(conn, extracted, ordered_flags)
-            total += cost3
-            for c in created:
-                print(f"  + pattern [{c['direction']}] {c['name']}  ({c['n_flags']} flags)")
-            print(f"[persisted {len(created)} patterns  |  step 3 cost: ${cost3:.4f}  "
-                  f"|  total: ${total:.4f}]")
+            summary = _record_reconciliation(conn, candidates, ordered_flags)
+            for c in summary["new"]:
+                tag = " [act_now]" if c.get("priority") == "act_now" else ""
+                rec = " (recovered)" if c.get("recovered") else ""
+                print(f"  + new [{c['direction']}] {c['name']}{tag}{rec}  ({c['n_flags']} flags)")
+            for c in summary["merged"]:
+                print(f"  ~ merged into {c['id'][:12]} (+{c['added']} flags -> carried)")
+            for c in summary["recurred"]:
+                print(f"  ! tombstone {c['id'][:12]} recurred (+{c['added']} flags)")
+            for c in summary["dropped"]:
+                print(f"  . dropped (noise): {c.get('name') or c.get('rationale')}")
+            for c in summary["skipped"]:
+                print(f"  x skipped: {c.get('why')}")
+            print(f"[{_summary_line(summary)}  |  total cost: ${total:.4f}]")
+        else:
+            print(f"[dry run: {len(candidates)} candidates reconciled, nothing recorded  "
+                  f"|  total cost: ${total:.4f}]")
     finally:
         conn.close()
 
@@ -497,14 +546,14 @@ def suggest_edits(start=None, end=None, max_patterns=None,
     def _short(model_id):
         return model_id.replace("claude-", "").replace("/", "-")
 
-    out = SUGGESTIONS_DIR / f"seed_suggestions_{slug}_{_short(cluster_model)}__{_short(distill_model)}.md"
+    tail = "DRY RUN (nothing recorded)" if not persist else _summary_line(summary)
+    out = SUGGESTIONS_DIR / f"pattern_suggestions_{slug}_{_short(cluster_model)}.md"
     out.write_text(
-        f"# Seed edit suggestions\n\n"
-        f"Flags: {n}  |  range: {rng}  |  pattern range 1-{max_s}  |  "
-        f"cluster: {cluster_model}  distill: {distill_model}  |  cost: ${total:.4f}  |  "
-        f"patterns persisted: {len(created)}\n\n"
-        f"---\n\n## Raw clusters (step 1)\n\n{clusters}\n\n"
-        f"---\n\n## Distilled suggestions (step 2)\n\n{distilled}\n",
+        f"# Pattern suggestions\n\n"
+        f"Loose flags: {n}  |  range: {rng}  |  cluster: {cluster_model}  "
+        f"reconcile: {reconcile_model}  |  cost: ${total:.4f}  |  {tail}\n\n"
+        f"---\n\n## Raw clusters (recall)\n\n{clusters}\n\n"
+        f"---\n\n## Reconciliation (dispositions)\n\n{_format_reconciliation_md(candidates)}\n",
         encoding="utf-8",
     )
     print(f"\nSaved to {out}")

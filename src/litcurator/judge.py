@@ -26,6 +26,8 @@ def _fingerprint(text):
     persisted provenance is the full sha256 judge_prompt_hash on the scoring_run."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
+# Must track MODEL. Sonnet 4.6 is 3/15; Opus 4.8 is 15/75; Haiku 4.5 is 1/5. A
+# stale pair here makes scoring_runs.cost_usd silently wrong by 5x.
 COST_PER_M_INPUT = 3.0
 COST_PER_M_OUTPUT = 15.0
 

@@ -22,7 +22,7 @@ plotting -- is built on top of what this produces and lives in other modules
 import hashlib
 import time
 
-from litcurator import (retrieve, domain_filter, judge, summarize, db_interface,
+from litcurator import (retrieve, domain_filter, judge, db_interface,
                         profile_interface, prompt_interface)
 from litcurator.config import DOMAIN_THRESHOLD, LOCKED_TEST_START, LOCKED_TEST_END
 
@@ -31,6 +31,24 @@ JUDGE_BATCH_SIZE = 5
 
 class LockedTestSetError(RuntimeError):
     """Raised when a run would judge the held-out November 2025 test set."""
+
+
+def print_model_banner(benchmark=False):
+    """Say LOUDLY, before any scoring, which models are about to run.
+
+    The DB has always stamped the model on every scoring_run, but provenance is
+    not visibility: nothing ever PRINTED it, so for months the judge was believed
+    to be Opus when it was Sonnet, and a week was spent prompt-patching around a
+    tier that had never been revisited since v3. A stamp you have to write SQL to
+    see is not a stamp you check. This is that fix.
+    """
+    print("+" + "-" * 64 + "+")
+    print(f"|  JUDGE (curation):  {judge.MODEL.upper():<42} |")
+    if benchmark:
+        print(f"|  DOMAIN FILTER:     {'SKIPPED (benchmark mode)':<42} |")
+    else:
+        print(f"|  DOMAIN FILTER:     {domain_filter.DOMAIN_FILTER_MODEL.upper():<42} |")
+    print("+" + "-" * 64 + "+")
 
 
 def _overlaps_locked_test(start, end):
@@ -57,6 +75,7 @@ def run(start, end, benchmark=False, final_test=False, domain_threshold=DOMAIN_T
     profile_text = profile_interface.load_active()   # raises if no active profile
     mode = "benchmark" if benchmark else "live"
     print(f"=== litcurator pipeline [{start} .. {end}] mode={mode} ===")
+    print_model_banner(benchmark)
 
     if not benchmark:
         _retrieve_stage(start, end)
@@ -78,7 +97,6 @@ def run(start, end, benchmark=False, final_test=False, domain_threshold=DOMAIN_T
                 conn, start, end, domain_threshold)
             print(f"domain survivors: {len(survivors)}")
 
-        _summarize_stage(conn, survivors)
         _pagination_stage(conn, survivors)
 
         judged, cost = _judge_stage(conn, survivors, profile_text, profile_id, mode,
@@ -127,33 +145,6 @@ def _domain_stage(conn, start, end, mode, threshold):
         for art, (score, reasoning) in zip(batch, results):
             db_interface.insert_evaluation(conn, art["pmid"], run_id, score, rationale=reasoning)
     db_interface.complete_scoring_run(conn, run_id, in_tok, out_tok, cost)
-
-
-def _summarize_stage(conn, survivors):
-    """Generate the neutral review-feed summary for any survivor that lacks one.
-    Idempotent: a summary is a stable paper fact, so already-summarized papers are
-    skipped and a re-run never re-pays. Non-critical -- a batch that fails to parse
-    is logged and skipped, never aborting the run. Runs over survivors in both
-    modes (it is keyed to the article, independent of profile/run)."""
-    todo = [a for a in survivors if not a.get("summary")]
-    if not todo:
-        return
-    print(f"[summarize] summarizing {len(todo)} papers...", flush=True)
-    cost = 0.0
-    done = 0
-    for batch in _chunks(todo, summarize.BATCH_SIZE):
-        try:
-            summaries, usage = summarize.summarize_batch(batch)
-        except ValueError as e:
-            print(f"  [summarize] batch of {len(batch)} failed to parse ({e}); skipping", flush=True)
-            continue
-        cost += (usage.input_tokens * summarize.COST_PER_M_INPUT
-                 + usage.output_tokens * summarize.COST_PER_M_OUTPUT) / 1_000_000
-        for art, summary in zip(batch, summaries):
-            db_interface.set_article_summary(conn, art["pmid"], summary)
-            done += 1
-        print(f"  summarized {done}/{len(todo)}  (${cost:.4f})", flush=True)
-    print(f"[summarize] done: {done} summarized | est. cost ${cost:.4f}")
 
 
 def backfill_pages(conn, articles):
