@@ -131,7 +131,7 @@ def _print_flags(conn, start=None, end=None):
     for f in sorted(flags, key=lambda x: abs(x["delta"]), reverse=True):
         note = f"   note: {f['note']}" if f.get("note") else ""
         title = (f.get("title") or "")[:58]
-        print(f"  {f['delta']:>+6.2f}  {f['judge_score']:>5.2f} {f['your_score']:>5.2f}  "
+        print(f"  {f['delta']:>+6.2f}  {f['judge_score']:>5.2f} {f['user_score']:>5.2f}  "
               f"{f['pmid']:<10} {title}{note}")
 
 
@@ -187,7 +187,11 @@ def _cmd_review(args):
 
 def _cmd_profile_analysis(args):
     from litcurator import profile_analysis
-    profile_analysis.suggest_edits(start=args.start, end=args.end, persist=not args.dry_run)
+    # Only pass overrides that were given, so profile_analysis keeps its own defaults.
+    overrides = {k: v for k, v in (("cluster_model", args.cluster_model),
+                                   ("reconcile_model", args.reconcile_model)) if v}
+    profile_analysis.suggest_edits(start=args.start, end=args.end,
+                                   persist=not args.dry_run, **overrides)
 
 
 def _cmd_profile_workbench(args):
@@ -334,6 +338,10 @@ def main():
     pa_p.add_argument("--end", default=None, help="scope flags to pub dates <= this (YYYY-MM-DD)")
     pa_p.add_argument("--dry-run", action="store_true",
                       help="write the suggestions markdown but do NOT persist patterns")
+    pa_p.add_argument("--cluster-model", default=None,
+                      help="override the cluster (recall) model")
+    pa_p.add_argument("--reconcile-model", default=None,
+                      help="override the reconcile (disposition) model, e.g. claude-opus-4-8")
     pa_p.set_defaults(func=_cmd_profile_analysis)
 
     pw_p = sub.add_parser("profile_workbench",

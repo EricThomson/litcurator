@@ -2,14 +2,14 @@
 review_feed.py -- review the judge's output and flag papers.
 
 Reads the most-recent curation evaluation per paper (db_interface.latest_curation),
-shows one score-sorted card each, and lets you enter your_score (your own estimated
+shows one score-sorted card each, and lets you enter user_score (your own estimated
 interest) plus an optional private note. Saving appends a flag via
 db_interface.insert_flag, keyed to the evaluation it corrects.
 
 Flags are append-only: re-saving a paper appends a new flag and the latest wins,
 so there is no "clear" -- to correct a number, just save the right one.
 
-The delta (your_score - judge_score) is the residual: large |delta| clusters are
+The delta (user_score - judge_score) is the residual: large |delta| clusters are
 where the profile is most wrong. Flags are discovery data; they never feed the judge.
 
 Launch:  litcurator review        (or)  python -m litcurator.apps.review_feed
@@ -103,7 +103,7 @@ def _flag_badge(flag):
     delete fills/empties it surgically instead of rebuilding the card."""
     if not flag:
         return None
-    return html.Span(f"you: {flag['your_score']:.2f}  (delta {flag['delta']:+.2f})",
+    return html.Span(f"you: {flag['user_score']:.2f}  (delta {flag['delta']:+.2f})",
                      className="badge bg-danger")
 
 
@@ -185,7 +185,7 @@ def _render_card(item, rank, total):
                 dbc.Col(dbc.Input(
                     id={"type": "flag-score", "pmid": pmid},
                     type="text",
-                    value=pre.get("your_score", None),
+                    value=pre.get("user_score", None),
                     placeholder="0.0 - 1.0", size="sm"), width=3),
                 dbc.Col(dbc.Button("Save", id={"type": "flag-save", "pmid": pmid,
                                                "eid": item["evaluation_id"]},
@@ -345,27 +345,27 @@ def cb_save_flag(n_clicks_list, scores, notes, start, end, min_score):
     pmid = triggered["pmid"]
     evaluation_id = triggered["eid"]
 
-    your_score = None
+    user_score = None
     note = ""
     for sid, s in zip(ctx.states_list[0], scores):
         if sid["id"]["pmid"] == pmid:
-            your_score = s
+            user_score = s
     for nid, n in zip(ctx.states_list[1], notes):
         if nid["id"]["pmid"] == pmid:
             note = n or ""
 
-    if your_score is None or str(your_score).strip() == "":
+    if user_score is None or str(user_score).strip() == "":
         return fail(pmid, "Enter a score (0.0 - 1.0) before saving.")
     try:
-        your_score = float(str(your_score).strip())
+        user_score = float(str(user_score).strip())
     except ValueError:
-        return fail(pmid, f"'{your_score}' is not a number -- enter a value 0.0 - 1.0.")
-    if not (0.0 <= your_score <= 1.0):
+        return fail(pmid, f"'{user_score}' is not a number -- enter a value 0.0 - 1.0.")
+    if not (0.0 <= user_score <= 1.0):
         return fail(pmid, "Score must be between 0.0 and 1.0.")
 
     conn = db_interface.get_connection()
     try:
-        flag_id = db_interface.insert_flag(conn, evaluation_id, your_score, note or None)
+        flag_id = db_interface.insert_flag(conn, evaluation_id, user_score, note or None)
         flag = db_interface.get_flag(conn, flag_id)
     finally:
         conn.close()

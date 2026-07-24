@@ -149,7 +149,7 @@ def _format_papers(flags):
             abstract = (f.get("abstract") or "")[:500]
             lines.append(
                 f"[{num}] delta {f['delta']:+.2f}  "
-                f"(judge {f['judge_score']:.2f} -> you {f['your_score']:.2f})\n"
+                f"(judge {f['judge_score']:.2f} -> you {f['user_score']:.2f})\n"
                 f"   Title: {f.get('title') or '(no title)'}\n"
                 f"   Journal: {f.get('journal') or ''}  |  {f.get('pub_date_iso') or ''}\n"
                 f"   Abstract: {abstract}\n"
@@ -374,7 +374,14 @@ def _record_reconciliation(conn, candidates, ordered_flags):
     driven by the TARGET pattern's REAL status, not the LLM's label -- so a mislabeled id
     can never resurrect a tombstone (open target -> 'carried', tombstone target ->
     'recurred'), and the event is skipped when no NEW flags were actually linked, so
-    re-running an overlapping window never inflates recurrence. Returns a summary dict."""
+    re-running an overlapping window never inflates recurrence.
+
+    LOSSLESS by construction: the ONLY candidate that is not recorded is an explicit
+    noise_drop (or one with no content and no papers at all). A malformed candidate --
+    a merge naming a pattern id that does not exist, a missing name, an unrecognized
+    disposition -- is recovered as a new pattern rather than discarded, because a
+    silently dropped candidate is exactly the signal-into-the-void failure this redesign
+    exists to prevent. Returns a summary dict."""
     n = len(ordered_flags)
     summary = {"new": [], "merged": [], "recurred": [], "dropped": [], "skipped": []}
 
@@ -390,49 +397,69 @@ def _record_reconciliation(conn, candidates, ordered_flags):
             "ORDER BY created_at DESC, id DESC LIMIT 1", (pid,)).fetchone()
         return row["event"] if row else None
 
+    def _fallback_name(c):
+        """A usable name for a candidate the model left unnamed -- walk the other prose
+        fields so a missing `name` never costs us the candidate. None only if the
+        candidate carries no prose at all."""
+        for key in ("name", "description", "suggested_edit", "rationale"):
+            val = (c.get(key) or "").strip()
+            if val:
+                return val[:60]
+        return None
+
     def _create(c, flag_ids, extra_note=""):
         note = f"{c.get('priority', 'defer')}: {c.get('rationale', '')}{extra_note}".strip()
         return db_interface.create_pattern(
-            conn, name=(c.get("name") or "(unnamed)"),
+            conn, name=(_fallback_name(c) or "(unnamed pattern)"),
             direction=(c.get("direction") or "under"),
             description=c.get("description"), suggested_edit=c.get("suggested_edit"),
             flag_ids=flag_ids, note=note or None)
+
+    def _record_new(c, flag_ids, extra_note="", recovered=False):
+        entry = {"id": _create(c, flag_ids, extra_note), "name": _fallback_name(c),
+                 "direction": c.get("direction"), "priority": c.get("priority"),
+                 "n_flags": len(flag_ids)}
+        if recovered:
+            entry["recovered"] = True
+        summary["new"].append(entry)
 
     for c in candidates:
         disp = c.get("disposition")
         flag_ids = flag_ids_for(c)
         if disp == "new":
-            pid = _create(c, flag_ids)
-            summary["new"].append({"id": pid, "name": c.get("name"),
-                                   "direction": c.get("direction"),
-                                   "priority": c.get("priority"), "n_flags": len(flag_ids)})
+            _record_new(c, flag_ids)
         elif disp in ("merge_into_open", "recurs_tombstone"):
             eid = c.get("existing_pattern_id")
             st = status_of(eid) if eid else None
-            if st is None:   # missing / hallucinated target id -- do not lose the signal
-                if c.get("name"):
-                    pid = _create(c, flag_ids,
-                                  extra_note=" (reconcile named a missing merge target; recorded new)")
-                    summary["new"].append({"id": pid, "name": c.get("name"),
-                                           "direction": c.get("direction"),
-                                           "priority": c.get("priority"),
-                                           "n_flags": len(flag_ids), "recovered": True})
+            if st is None:
+                # Missing / hallucinated target id (e.g. the model puts a direction in the
+                # id field, which happens when the memory is empty and nothing can be
+                # merged). Recover as a new pattern; only a wholly empty candidate is skipped.
+                if _fallback_name(c) or flag_ids:
+                    _record_new(c, flag_ids, recovered=True,
+                                extra_note=" (merge target not found; recorded as new)")
                 else:
-                    summary["skipped"].append({"why": "merge target not found, no name to recover"})
+                    summary["skipped"].append({"why": "empty candidate -- nothing to record"})
                 continue
             added = db_interface.link_flags_to_pattern(conn, eid, flag_ids)
             if not added:
+                # Target already holds every one of these flags: nothing new, so no event.
+                # This is the re-run idempotency guard, not a lost candidate.
                 summary["skipped"].append({"id": eid, "why": "no new flags to link"})
                 continue
             if st in ("incorporated", "rejected"):
                 db_interface.add_pattern_event(conn, eid, "recurred", note=c.get("rationale"))
-                summary["recurred"].append({"id": eid, "name": c.get("name"), "added": added})
+                summary["recurred"].append({"id": eid, "name": _fallback_name(c), "added": added})
             else:
                 db_interface.add_pattern_event(conn, eid, "carried",
                                                note=f"recurred: {c.get('rationale', '')}")
-                summary["merged"].append({"id": eid, "name": c.get("name"), "added": added})
-        else:   # noise_drop or an unrecognized disposition
-            summary["dropped"].append({"name": c.get("name"), "rationale": c.get("rationale")})
+                summary["merged"].append({"id": eid, "name": _fallback_name(c), "added": added})
+        elif disp == "noise_drop":
+            summary["dropped"].append({"name": _fallback_name(c), "rationale": c.get("rationale")})
+        else:
+            # Unrecognized disposition -- record rather than lose it; the human can reject.
+            _record_new(c, flag_ids, recovered=True,
+                        extra_note=f" (unrecognized disposition {disp!r}; recorded as new)")
     return summary
 
 
@@ -547,7 +574,10 @@ def suggest_edits(start=None, end=None,
         return model_id.replace("claude-", "").replace("/", "-")
 
     tail = "DRY RUN (nothing recorded)" if not persist else _summary_line(summary)
-    out = SUGGESTIONS_DIR / f"pattern_suggestions_{slug}_{_short(cluster_model)}.md"
+    # Both models in the name: swapping only the reconcile model must not clobber the
+    # previous report, or a model A/B is unreadable.
+    out = (SUGGESTIONS_DIR /
+           f"pattern_suggestions_{slug}_{_short(cluster_model)}__{_short(reconcile_model)}.md")
     out.write_text(
         f"# Pattern suggestions\n\n"
         f"Loose flags: {n}  |  range: {rng}  |  cluster: {cluster_model}  "

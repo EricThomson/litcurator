@@ -170,12 +170,12 @@ CREATE TABLE IF NOT EXISTS flags (
     evaluation_id INTEGER NOT NULL REFERENCES evaluations(id),
     pmid TEXT NOT NULL REFERENCES articles(pmid),
     judge_score REAL NOT NULL,
-    your_score REAL NOT NULL,
+    user_score REAL NOT NULL,
     delta REAL NOT NULL,
     note TEXT,
     flagged_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     CHECK (judge_score >= 0.0 AND judge_score <= 1.0),
-    CHECK (your_score >= 0.0 AND your_score <= 1.0)
+    CHECK (user_score >= 0.0 AND user_score <= 1.0)
 )
 """
 
@@ -390,6 +390,11 @@ def _drop_dead_columns(conn):
         conn.execute("ALTER TABLE flags DROP COLUMN ingested_to_profile_id")
     if "ingested_at" in fcols:
         conn.execute("ALTER TABLE flags DROP COLUMN ingested_at")
+    if "your_score" in fcols:
+        # Rename for clarity: "your" was second-person and ambiguous; the human's score
+        # is the user's (pairs with judge_score). SQLite updates the column's CHECK
+        # constraint automatically on rename.
+        conn.execute("ALTER TABLE flags RENAME COLUMN your_score TO user_score")
     conn.commit()
 
 
@@ -763,20 +768,20 @@ def latest_curation(conn, start=None, end=None):
 # Flags (append-only numeric corrections)
 # ---------------------------------------------------------------------------
 
-def insert_flag(conn, evaluation_id, your_score, note=None):
+def insert_flag(conn, evaluation_id, user_score, note=None):
     """Record the user's numeric flag against a specific evaluation. judge_score is
-    snapshotted from that evaluation; delta = your_score - judge_score. Returns id."""
+    snapshotted from that evaluation; delta = user_score - judge_score. Returns id."""
     ev = conn.execute("SELECT pmid, score FROM evaluations WHERE id = ?",
                       (evaluation_id,)).fetchone()
     if ev is None:
         raise ValueError(f"no evaluation with id {evaluation_id}")
     judge_score = ev["score"]
-    delta = round(your_score - judge_score, 6)
+    delta = round(user_score - judge_score, 6)
     cur = conn.execute("""
         INSERT INTO flags
-            (evaluation_id, pmid, judge_score, your_score, delta, note)
+            (evaluation_id, pmid, judge_score, user_score, delta, note)
         VALUES (?, ?, ?, ?, ?, ?)
-    """, (evaluation_id, ev["pmid"], judge_score, your_score, delta, note))
+    """, (evaluation_id, ev["pmid"], judge_score, user_score, delta, note))
     conn.commit()
     return cur.lastrowid
 
@@ -970,7 +975,7 @@ def get_pattern_provenance(conn, pattern_id):
     """The flags a pattern was built from, joined to their articles -- the papers
     behind the pattern (pattern_flags -> flags -> articles). Largest |delta| first."""
     rows = conn.execute("""
-        SELECT f.id AS flag_id, f.pmid, f.judge_score, f.your_score, f.delta, f.note,
+        SELECT f.id AS flag_id, f.pmid, f.judge_score, f.user_score, f.delta, f.note,
                f.flagged_at, a.title, a.journal, a.issue_date_iso
         FROM pattern_flags pf
         JOIN flags f ON f.id = pf.flag_id

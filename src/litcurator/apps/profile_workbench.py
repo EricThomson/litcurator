@@ -60,7 +60,7 @@ def _render_provenance(prov):
         note = f"  -- {f['note']}" if f.get("note") else ""
         out.append(html.Div(
             f"delta {f['delta']:+.2f} (judge {f['judge_score']:.2f} -> you "
-            f"{f['your_score']:.2f})  {f.get('journal') or ''}: {f.get('title') or ''}{note}",
+            f"{f['user_score']:.2f})  {f.get('journal') or ''}: {f.get('title') or ''}{note}",
             className="small text-muted"))
     return out
 
