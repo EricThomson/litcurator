@@ -189,7 +189,7 @@ def _cmd_profile_analysis(args):
     from litcurator import profile_analysis
     # Only pass overrides that were given, so profile_analysis keeps its own defaults.
     overrides = {k: v for k, v in (("cluster_model", args.cluster_model),
-                                   ("reconcile_model", args.reconcile_model)) if v}
+                                   ("consolidate_model", args.consolidate_model)) if v}
     profile_analysis.suggest_edits(start=args.start, end=args.end,
                                    persist=not args.dry_run, **overrides)
 
@@ -340,8 +340,8 @@ def main():
                       help="write the suggestions markdown but do NOT persist patterns")
     pa_p.add_argument("--cluster-model", default=None,
                       help="override the cluster (recall) model")
-    pa_p.add_argument("--reconcile-model", default=None,
-                      help="override the reconcile (disposition) model, e.g. claude-opus-4-8")
+    pa_p.add_argument("--consolidate-model", default=None,
+                      help="override the consolidate (disposition) model, e.g. claude-opus-4-8")
     pa_p.set_defaults(func=_cmd_profile_analysis)
 
     pw_p = sub.add_parser("profile_workbench",

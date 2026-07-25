@@ -17,12 +17,12 @@ dumped; every candidate gets a disposition and a home.
 Two LLM stages (the Tao of litcurator: generate cheap-and-broad, then decide):
   Step 1 (cluster, Sonnet): RECALL -- surface every candidate preference pattern from
     the LOOSE (not-yet-patterned) flags.
-  Step 2 (reconcile, Sonnet, forced tool-use): for EACH candidate emit a structured
-    disposition -- new / merge into an open pattern / recurs against a tombstone /
+  Step 2 (consolidate, Sonnet, forced tool-use): for EACH candidate emit a structured
+    disposition -- new / merge into an open pattern / recurs against a closed pattern /
     noise-drop -- plus direction, an act-now-vs-defer priority HINT (where the
     false-negative bias lives, governing the hint only), and its supporting papers.
 Then RECORD (pure code) writes the dispositions into patterns / pattern_flags /
-pattern_events. The reconcile step is shown the open patterns + tombstones WITH ids, so
+pattern_events. The consolidate step is shown the open patterns + closed patterns WITH ids, so
 it captures the cross-round match the old pipeline already made and threw away: a
 recurring candidate merges into its existing pattern (a 'carried' event, so recurrence
 accumulates) instead of minting a duplicate.
@@ -48,11 +48,11 @@ from litcurator.config import DATA_DIR, USER_JOURNAL_RATINGS
 load_dotenv()
 
 # Both stages are Sonnet. Recall is Sonnet's strength (crisp, broad generation).
-# Reconcile is structured tagging with NO prose authorship, so Opus's documented
+# Consolidate is structured tagging with NO prose authorship, so Opus's documented
 # prose-padding liability does not apply and Sonnet is ~5x cheaper; keep Opus as a
 # drop-in fallback only if the duplicate rate on real data proves poor.
 DEFAULT_CLUSTER_MODEL = "claude-sonnet-4-6"
-DEFAULT_RECONCILE_MODEL = "claude-sonnet-4-6"
+DEFAULT_CONSOLIDATE_MODEL = "claude-sonnet-4-6"
 
 # Approximate API prices, ($/M input, $/M output). Update if pricing changes.
 MODEL_COSTS = {
@@ -166,23 +166,23 @@ def _format_papers(flags):
     return "\n\n---\n\n".join(sections), ordered
 
 
-def _format_existing_patterns(active, tombstones):
-    """The pattern memory, shown to the reconcile step WITH ids so it can name the
-    exact pattern a candidate merges into (open) or recurs against (tombstone). Empty
-    string when there is no history yet."""
-    if not active and not tombstones:
+def _format_existing_patterns(active, closed_patterns):
+    """The pattern memory, shown to the consolidate step WITH ids so it can name the exact
+    pattern a candidate merges into (open) or recurs against (closed). Empty string when
+    there is no history yet."""
+    if not active and not closed_patterns:
         return ""
     lines = ["## Existing pattern memory (match candidates against these by MEANING, using the id)"]
     if active:
         lines.append("\nOPEN patterns (still awaiting a decision) -- a candidate that is the same "
-                     "taste is merge_into_open with that id:")
+                     "gap is merge_into_open with that id:")
         for p in active:
             lines.append(f"  - id={p['id']}  [{p['direction']}] {p['name']}: "
                          f"{p.get('description') or ''}")
-    if tombstones:
-        lines.append("\nTOMBSTONES (already INCORPORATED or REJECTED) -- a candidate that matches is "
-                     "recurs_tombstone with that id (logs the recurrence, does NOT reopen):")
-        for p in tombstones:
+    if closed_patterns:
+        lines.append("\nCLOSED patterns (already INCORPORATED or REJECTED) -- a candidate that matches "
+                     "is recurs_closed with that id (logs the recurrence, does NOT reopen):")
+        for p in closed_patterns:
             why = p["status"] + (f": {p['status_note']}" if p.get("status_note") else "")
             lines.append(f"  - id={p['id']}  [{why}] {p['name']}: {p.get('description') or ''}")
     return "\n".join(lines)
@@ -239,11 +239,11 @@ def run_cluster_step(client, papers_block, n_flags, seed_text, model):
 
 
 # ---------------------------------------------------------------------------
-# Reconcile: assign every candidate a disposition, then RECORD (structured)
+# Consolidate: assign every candidate a disposition, then RECORD (structured)
 # ---------------------------------------------------------------------------
 
-_RECONCILE_SYSTEM = """
-You are reconciling candidate preference patterns (distilled from a researcher's flags) against the
+_CONSOLIDATE_SYSTEM = """
+You are consolidating candidate preference patterns (distilled from a researcher's flags) against the
 researcher's profile and their EXISTING pattern memory. You do NOT author profile prose and you do
 NOT discard real signal. You assign EVERY candidate a disposition and record it via the tool.
 
@@ -268,7 +268,7 @@ For each candidate choose a disposition:
 - merge_into_open: essentially one of the OPEN patterns shown below (the same taste). Give its
   existing_pattern_id and the paper_numbers of the NEW supporting flags -- this is how recurrence
   accumulates on a pattern instead of spawning a duplicate.
-- recurs_tombstone: it matches a pattern already INCORPORATED or REJECTED (a tombstone). Give the
+- recurs_closed: it matches a pattern already INCORPORATED or REJECTED (a closed pattern). Give the
   existing_pattern_id. This LOGS that the taste came back; it does NOT reopen the decision. Say so in
   `rationale` ONLY if the new flags are a materially stronger case than when it was decided -- the
   human decides whether to reopen.
@@ -299,11 +299,11 @@ transcribe a user's private note verbatim, and do not adopt the judge's framing 
 reasoning may be the error). Name the taste; do not draft the final profile line.
 
 paper_numbers are the [N] references from the candidate clusters (union across any candidates you
-merge). Record EVERY candidate exactly once. Output only via the record_reconciliation tool.
+merge). Record EVERY candidate exactly once. Output only via the record_consolidation tool.
 """.strip()
 
-_RECONCILE_TOOL = {
-    "name": "record_reconciliation",
+_CONSOLIDATE_TOOL = {
+    "name": "record_consolidation",
     "description": "Record a disposition for EVERY candidate pattern (new / merge / recurs / drop).",
     "input_schema": {
         "type": "object",
@@ -314,10 +314,10 @@ _RECONCILE_TOOL = {
                     "type": "object",
                     "properties": {
                         "disposition": {"type": "string",
-                            "enum": ["new", "merge_into_open", "recurs_tombstone", "noise_drop"]},
+                            "enum": ["new", "merge_into_open", "recurs_closed", "noise_drop"]},
                         "existing_pattern_id": {"type": "string",
-                            "description": "id of the open pattern (merge_into_open) or tombstone "
-                                           "(recurs_tombstone) this matches; omit for new / noise_drop"},
+                            "description": "id of the open pattern (merge_into_open) or closed pattern "
+                                           "(recurs_closed) this matches; omit for new / noise_drop"},
                         "name": {"type": "string", "description": "short label, 3-6 words (for new)"},
                         "direction": {"type": "string",
                             "enum": ["over", "under", "sharpen", "judge-not-applying"]},
@@ -340,10 +340,10 @@ _RECONCILE_TOOL = {
 }
 
 
-def run_reconcile_step(client, clusters_text, seed_text, existing_block, model):
+def run_consolidate_step(client, clusters_text, seed_text, existing_block, model):
     """Assign every candidate a disposition via forced tool-use (so the JSON is always
     valid). Shown the clusters, the profile (to tell a real gap from the judge ignoring
-    clear text -> judge-not-applying), and the existing patterns + tombstones WITH ids
+    clear text -> judge-not-applying), and the existing patterns + closed patterns WITH ids
     (to capture the cross-round match). Returns (candidates, cost)."""
     memory = f"{existing_block}\n\n---\n\n" if existing_block else ""
     user_msg = (
@@ -355,10 +355,10 @@ def run_reconcile_step(client, clusters_text, seed_text, existing_block, model):
     resp = client.messages.create(
         model=model,
         max_tokens=4000,
-        system=_RECONCILE_SYSTEM,
+        system=_CONSOLIDATE_SYSTEM,
         messages=[{"role": "user", "content": user_msg}],
-        tools=[_RECONCILE_TOOL],
-        tool_choice={"type": "tool", "name": "record_reconciliation"},
+        tools=[_CONSOLIDATE_TOOL],
+        tool_choice={"type": "tool", "name": "record_consolidation"},
     )
     candidates = []
     for block in resp.content:
@@ -368,11 +368,11 @@ def run_reconcile_step(client, clusters_text, seed_text, existing_block, model):
     return candidates, _cost(model, resp.usage)
 
 
-def _record_reconciliation(conn, candidates, ordered_flags):
+def _record_consolidation(conn, candidates, ordered_flags):
     """Write each candidate's disposition into the pattern memory. Provenance: paper
     number N -> ordered_flags[N-1] -> flag id. The event attached to a merge/recurs is
     driven by the TARGET pattern's REAL status, not the LLM's label -- so a mislabeled id
-    can never resurrect a tombstone (open target -> 'carried', tombstone target ->
+    can never resurrect a closed pattern (open target -> 'carried', closed pattern target ->
     'recurred'), and the event is skipped when no NEW flags were actually linked, so
     re-running an overlapping window never inflates recurrence.
 
@@ -428,7 +428,7 @@ def _record_reconciliation(conn, candidates, ordered_flags):
         flag_ids = flag_ids_for(c)
         if disp == "new":
             _record_new(c, flag_ids)
-        elif disp in ("merge_into_open", "recurs_tombstone"):
+        elif disp in ("merge_into_open", "recurs_closed"):
             eid = c.get("existing_pattern_id")
             st = status_of(eid) if eid else None
             if st is None:
@@ -463,8 +463,8 @@ def _record_reconciliation(conn, candidates, ordered_flags):
     return summary
 
 
-def _format_reconciliation_md(candidates):
-    """Render the reconcile decisions as a readable markdown list -- ALL dispositions,
+def _format_consolidation_md(candidates):
+    """Render the consolidate decisions as a readable markdown list -- ALL dispositions,
     noise-drops included (transparency, not a discard sink)."""
     if not candidates:
         return "(no candidates)"
@@ -501,11 +501,11 @@ def _summary_line(summary):
 
 
 def suggest_edits(start=None, end=None,
-                  cluster_model=DEFAULT_CLUSTER_MODEL, reconcile_model=DEFAULT_RECONCILE_MODEL,
+                  cluster_model=DEFAULT_CLUSTER_MODEL, consolidate_model=DEFAULT_CONSOLIDATE_MODEL,
                   persist=True):
-    """Cluster the LOOSE (not-yet-patterned) flags in [start, end], reconcile each
+    """Cluster the LOOSE (not-yet-patterned) flags in [start, end], consolidate each
     candidate against the pattern memory, and RECORD every real one (new / merge into an
-    open pattern / recurs against a tombstone); only genuine one-paper noise is dropped.
+    open pattern / recurs against a closed pattern); only genuine one-paper noise is dropped.
     Streams the recall to console and saves a dated markdown report. Returns the output
     path (or None if too few flags). Never re-validates on the flag set. persist=False is
     a dry run (writes the markdown, records nothing)."""
@@ -522,16 +522,16 @@ def suggest_edits(start=None, end=None,
                   f"{MIN_FLAGS} to run.")
             return None
 
-        # The pattern memory, shown to reconcile WITH ids so it captures cross-round
-        # matches (merge into an open pattern / recurs against a tombstone).
+        # The pattern memory, shown to consolidate WITH ids so it captures cross-round
+        # matches (merge into an open pattern / recurs against a closed pattern).
         active_patterns = db_interface.get_active_patterns(conn)
-        tombstones = db_interface.get_patterns(conn, statuses=("incorporated", "rejected"))
-        existing_block = _format_existing_patterns(active_patterns, tombstones)
+        closed_patterns = db_interface.get_patterns(conn, statuses=("incorporated", "rejected"))
+        existing_block = _format_existing_patterns(active_patterns, closed_patterns)
 
         rng = f"{start or 'all'} to {end or 'all'}"
         print(f"{n} loose flags ({rng})  |  memory: {len(active_patterns)} open + "
-              f"{len(tombstones)} decided")
-        print(f"Models: cluster={cluster_model}  reconcile={reconcile_model}\n")
+              f"{len(closed_patterns)} decided")
+        print(f"Models: cluster={cluster_model}  consolidate={consolidate_model}\n")
 
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         papers_block, ordered_flags = _format_papers(flags)
@@ -540,14 +540,14 @@ def suggest_edits(start=None, end=None,
         clusters, cost1 = run_cluster_step(client, papers_block, n, seed_text, cluster_model)
         print(f"\n[step 1 cost: ${cost1:.4f}]\n")
 
-        print("=== Step 2: reconcile (disposition) ===")
-        candidates, cost2 = run_reconcile_step(client, clusters, seed_text, existing_block,
-                                               reconcile_model)
+        print("=== Step 2: consolidate (disposition) ===")
+        candidates, cost2 = run_consolidate_step(client, clusters, seed_text, existing_block,
+                                               consolidate_model)
         total = cost1 + cost2
 
         summary = None
         if persist:
-            summary = _record_reconciliation(conn, candidates, ordered_flags)
+            summary = _record_consolidation(conn, candidates, ordered_flags)
             for c in summary["new"]:
                 tag = " [act_now]" if c.get("priority") == "act_now" else ""
                 rec = " (recovered)" if c.get("recovered") else ""
@@ -555,14 +555,14 @@ def suggest_edits(start=None, end=None,
             for c in summary["merged"]:
                 print(f"  ~ merged into {c['id'][:12]} (+{c['added']} flags -> carried)")
             for c in summary["recurred"]:
-                print(f"  ! tombstone {c['id'][:12]} recurred (+{c['added']} flags)")
+                print(f"  ! closed pattern {c['id'][:12]} recurred (+{c['added']} flags)")
             for c in summary["dropped"]:
                 print(f"  . dropped (noise): {c.get('name') or c.get('rationale')}")
             for c in summary["skipped"]:
                 print(f"  x skipped: {c.get('why')}")
             print(f"[{_summary_line(summary)}  |  total cost: ${total:.4f}]")
         else:
-            print(f"[dry run: {len(candidates)} candidates reconciled, nothing recorded  "
+            print(f"[dry run: {len(candidates)} candidates consolidated, nothing recorded  "
                   f"|  total cost: ${total:.4f}]")
     finally:
         conn.close()
@@ -574,16 +574,16 @@ def suggest_edits(start=None, end=None,
         return model_id.replace("claude-", "").replace("/", "-")
 
     tail = "DRY RUN (nothing recorded)" if not persist else _summary_line(summary)
-    # Both models in the name: swapping only the reconcile model must not clobber the
+    # Both models in the name: swapping only the consolidate model must not clobber the
     # previous report, or a model A/B is unreadable.
     out = (SUGGESTIONS_DIR /
-           f"pattern_suggestions_{slug}_{_short(cluster_model)}__{_short(reconcile_model)}.md")
+           f"pattern_suggestions_{slug}_{_short(cluster_model)}__{_short(consolidate_model)}.md")
     out.write_text(
         f"# Pattern suggestions\n\n"
         f"Loose flags: {n}  |  range: {rng}  |  cluster: {cluster_model}  "
-        f"reconcile: {reconcile_model}  |  cost: ${total:.4f}  |  {tail}\n\n"
+        f"consolidate: {consolidate_model}  |  cost: ${total:.4f}  |  {tail}\n\n"
         f"---\n\n## Raw clusters (recall)\n\n{clusters}\n\n"
-        f"---\n\n## Reconciliation (dispositions)\n\n{_format_reconciliation_md(candidates)}\n",
+        f"---\n\n## Consolidation (dispositions)\n\n{_format_consolidation_md(candidates)}\n",
         encoding="utf-8",
     )
     print(f"\nSaved to {out}")

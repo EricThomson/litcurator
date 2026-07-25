@@ -224,7 +224,7 @@ CREATE TABLE IF NOT EXISTS pattern_flags (
 
 # The pattern's fate, APPEND-ONLY. The four DECISION events (created/carried/
 # incorporated/rejected) drive status: the latest DECISION row is the current status
-# (get_patterns). 'recurred' is a fifth, NON-decision event -- a tombstoned pattern's
+# (get_patterns). 'recurred' is a fifth, NON-decision event -- a closed pattern's
 # taste resurfaced in new flags. It is logged (with a note + fresh provenance) but
 # never becomes status, so a rejected pattern stays rejected while its flag_count
 # grows and it can be surfaced as an alert. profile_id is set on 'incorporated' --
@@ -336,7 +336,7 @@ def _drop_stale_pattern_tables(conn):
 
 def _migrate_pattern_events(conn):
     """Add the 'recurred' event value to an EXISTING pattern_events table's CHECK.
-    'recurred' is an append-only annotation (a tombstoned pattern's taste resurfaced)
+    'recurred' is an append-only annotation (a closed pattern's taste resurfaced)
     that must never become status. SQLite cannot ALTER a CHECK, so rebuild the table
     preserving every row. Nothing references pattern_events (its FKs are outbound to
     patterns/profiles), so the drop+rename is safe; the dropped index is recreated by
@@ -844,7 +844,7 @@ def create_pattern(conn, name, direction, description=None, suggested_edit=None,
     """Create a pattern from the flags that produced it, in one transaction: the
     pattern row, its pattern_flags provenance links, and an initial 'created' event.
     Returns the new pattern id. direction in {over, under, sharpen, judge-not-applying}.
-    note rides the 'created' event -- the suggester passes the reconcile priority +
+    note rides the 'created' event -- the suggester passes the consolidate priority +
     rationale here so the first event carries why the pattern was minted."""
     pattern_id = uuid.uuid4().hex
     conn.execute(
@@ -886,7 +886,7 @@ def link_flags_to_pattern(conn, pattern_id, flag_ids):
 def add_pattern_event(conn, pattern_id, event, note=None, profile_id=None):
     """Append a fate event. Append-only. The four DECISION events
     (created|carried|incorporated|rejected) set status = latest decision. 'recurred'
-    is a non-decision annotation (a tombstoned pattern's taste came back); it is
+    is a non-decision annotation (a closed pattern's taste came back); it is
     logged but get_patterns ignores it for status, so a rejected pattern stays
     rejected. profile_id is the version that absorbed it, set on 'incorporated'; note
     carries the reasoning (esp. on reject, or the recurrence rationale)."""
@@ -923,9 +923,9 @@ def get_patterns(conn, statuses=None):
     (created|carried|incorporated|rejected); 'recurred' rows are annotations and never
     become status, so a rejected pattern with later recurrences still reads 'rejected'.
     carried_count / recurred_count are the derived recurrence signals (how many rounds
-    it was deferred / how often a tombstone resurfaced). statuses filters by current
+    it was deferred / how often a closed pattern resurfaced). statuses filters by current
     status (('created','carried') for the active list, ('incorporated','rejected') for
-    tombstones); None returns all. Newest-status-first."""
+    closed patterns); None returns all. Newest-status-first."""
     rows = conn.execute("""
         SELECT p.*,
                ev.event AS status,
@@ -986,8 +986,8 @@ def get_pattern_provenance(conn, pattern_id):
     return [dict(r) for r in rows]
 
 
-def get_tombstone_recurrences(conn):
-    """Tombstoned patterns (incorporated or rejected) whose taste RESURFACED -- a
+def get_closed_recurrences(conn):
+    """Closed patterns (incorporated or rejected) whose gap RESURFACED -- a
     'recurred' event that came AFTER the current deciding event. These are alerts for
     the human ('you closed this, but the flags brought it back'), NOT active patterns:
     they stay off the active list. Returns each pattern row (as get_patterns) with

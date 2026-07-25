@@ -9,7 +9,7 @@ which is written to the append-only pattern_events log (nothing is ever deleted)
     profile version, drops the pattern off the active list.
   - Carry: not yet -- keep it open for a later round.
   - Reject (with a reason): not a real gap. Drops off the active list, kept as a
-    tombstone so the suggester will not re-propose it.
+    closed pattern so the suggester will not re-propose it.
 
 Right panel: the live active profile, editable. Never overwritten silently:
   - "Save version" writes a timestamped copy to versions/.
@@ -329,7 +329,7 @@ def cb_pattern_fate(_carry, _incorp, _reject, _reject_notes):
         else:  # pat-reject
             note = _state_value(ctx.states_list[0], pid)
             db_interface.add_pattern_event(conn, pid, "rejected", note=note or None)
-            msg = "Rejected -- kept as a tombstone; the suggester will not re-propose it."
+            msg = "Rejected -- kept as a closed pattern; the suggester will not re-propose it."
         children = _render_patterns(conn)
         count = _count_label(len(db_interface.get_active_patterns(conn)))
     finally:
