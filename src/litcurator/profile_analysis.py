@@ -19,7 +19,7 @@ Two LLM stages (the Tao of litcurator: generate cheap-and-broad, then decide):
     the LOOSE (not-yet-patterned) flags.
   Step 2 (consolidate, Sonnet, forced tool-use): for EACH candidate emit a structured
     disposition -- new / merge into an open pattern / recurs against a closed pattern /
-    noise-drop -- plus direction, an act-now-vs-defer priority HINT (where the
+    hold -- plus direction, an act-now-vs-defer priority HINT (where the
     false-negative bias lives, governing the hint only), and its supporting papers.
 Then RECORD (pure code) writes the dispositions into patterns / pattern_flags /
 pattern_events. The consolidate step is shown the open patterns + closed patterns WITH ids, so
@@ -248,9 +248,10 @@ researcher's profile and their EXISTING pattern memory. You do NOT author profil
 NOT discard real signal. You assign EVERY candidate a disposition and record it via the tool.
 
 This is a MEMORY step, not a selection step. The bar for recording is low and objective: a candidate
-is real if it is a regularity the flags actually show. The ONLY true drop is noise -- a lone
-one-paper quirk that would not generalize. Everything else is recorded; whether to ACT on it this
-round is a separate ranking the human does later, carried by the `priority` hint, never by dropping.
+is real if it is a regularity the flags actually show. The ONLY candidate not recorded is a HOLD -- a
+lone one-paper correction too early to act on, kept loose so it returns and can accumulate. Everything
+else is recorded; whether to ACT on it this round is a separate ranking the human does later, carried
+by the `priority` hint, never by dropping.
 
 MERGE FIRST. Before assigning dispositions, collapse candidates that a single profile edit would
 satisfy, or that are facets of ONE underlying taste, into ONE pattern (union their paper_numbers).
@@ -272,8 +273,8 @@ For each candidate choose a disposition:
   existing_pattern_id. This LOGS that the taste came back; it does NOT reopen the decision. Say so in
   `rationale` ONLY if the new flags are a materially stronger case than when it was decided -- the
   human decides whether to reopen.
-- noise_drop: a lone one-paper quirk that does not generalize. Give a one-line rationale; nothing is
-  persisted.
+- hold: a real correction too lonely to act on yet -- NOT dropped. Record nothing to a pattern; the
+  flag stays loose and returns next round until enough copies accumulate. Give a one-line rationale.
 
 MATCHING: match against the shown patterns by MEANING, using their ids. Bias toward `new` when
 identity is UNCERTAIN -- a duplicate is cheap for the human to reject, but an over-merge is sticky and
@@ -304,7 +305,7 @@ merge). Record EVERY candidate exactly once. Output only via the record_consolid
 
 _CONSOLIDATE_TOOL = {
     "name": "record_consolidation",
-    "description": "Record a disposition for EVERY candidate pattern (new / merge / recurs / drop).",
+    "description": "Record a disposition for EVERY candidate pattern (new / merge / recurs / hold).",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -314,10 +315,10 @@ _CONSOLIDATE_TOOL = {
                     "type": "object",
                     "properties": {
                         "disposition": {"type": "string",
-                            "enum": ["new", "merge_into_open", "recurs_closed", "noise_drop"]},
+                            "enum": ["new", "merge_into_open", "recurs_closed", "hold"]},
                         "existing_pattern_id": {"type": "string",
                             "description": "id of the open pattern (merge_into_open) or closed pattern "
-                                           "(recurs_closed) this matches; omit for new / noise_drop"},
+                                           "(recurs_closed) this matches; omit for new / hold"},
                         "name": {"type": "string", "description": "short label, 3-6 words (for new)"},
                         "direction": {"type": "string",
                             "enum": ["over", "under", "sharpen", "judge-not-applying"]},
@@ -377,13 +378,13 @@ def _record_consolidation(conn, candidates, ordered_flags):
     re-running an overlapping window never inflates recurrence.
 
     LOSSLESS by construction: the ONLY candidate that is not recorded is an explicit
-    noise_drop (or one with no content and no papers at all). A malformed candidate --
+    hold (or one with no content and no papers at all). A malformed candidate --
     a merge naming a pattern id that does not exist, a missing name, an unrecognized
     disposition -- is recovered as a new pattern rather than discarded, because a
     silently dropped candidate is exactly the signal-into-the-void failure this redesign
     exists to prevent. Returns a summary dict."""
     n = len(ordered_flags)
-    summary = {"new": [], "merged": [], "recurred": [], "dropped": [], "skipped": []}
+    summary = {"new": [], "merged": [], "recurred": [], "held": [], "skipped": []}
 
     def flag_ids_for(c):
         nums = c.get("paper_numbers") or []
@@ -454,8 +455,8 @@ def _record_consolidation(conn, candidates, ordered_flags):
                 db_interface.add_pattern_event(conn, eid, "carried",
                                                note=f"recurred: {c.get('rationale', '')}")
                 summary["merged"].append({"id": eid, "name": _fallback_name(c), "added": added})
-        elif disp == "noise_drop":
-            summary["dropped"].append({"name": _fallback_name(c), "rationale": c.get("rationale")})
+        elif disp == "hold":
+            summary["held"].append({"name": _fallback_name(c), "rationale": c.get("rationale")})
         else:
             # Unrecognized disposition -- record rather than lose it; the human can reject.
             _record_new(c, flag_ids, recovered=True,
@@ -465,7 +466,7 @@ def _record_consolidation(conn, candidates, ordered_flags):
 
 def _format_consolidation_md(candidates):
     """Render the consolidate decisions as a readable markdown list -- ALL dispositions,
-    noise-drops included (transparency, not a discard sink)."""
+    holds included (transparency, not a discard sink)."""
     if not candidates:
         return "(no candidates)"
     lines = []
@@ -497,7 +498,7 @@ def _summary_line(summary):
     if not summary:
         return "recorded nothing"
     return (f"recorded {len(summary['new'])} new, {len(summary['merged'])} merged, "
-            f"{len(summary['recurred'])} recurred; {len(summary['dropped'])} noise-dropped")
+            f"{len(summary['recurred'])} recurred; {len(summary['held'])} held")
 
 
 def suggest_edits(start=None, end=None,
@@ -505,7 +506,7 @@ def suggest_edits(start=None, end=None,
                   persist=True):
     """Cluster the LOOSE (not-yet-patterned) flags in [start, end], consolidate each
     candidate against the pattern memory, and RECORD every real one (new / merge into an
-    open pattern / recurs against a closed pattern); only genuine one-paper noise is dropped.
+    open pattern / recurs against a closed pattern); a genuine one-paper hold is kept loose, not recorded.
     Streams the recall to console and saves a dated markdown report. Returns the output
     path (or None if too few flags). Never re-validates on the flag set. persist=False is
     a dry run (writes the markdown, records nothing)."""
@@ -556,8 +557,8 @@ def suggest_edits(start=None, end=None,
                 print(f"  ~ merged into {c['id'][:12]} (+{c['added']} flags -> carried)")
             for c in summary["recurred"]:
                 print(f"  ! closed pattern {c['id'][:12]} recurred (+{c['added']} flags)")
-            for c in summary["dropped"]:
-                print(f"  . dropped (noise): {c.get('name') or c.get('rationale')}")
+            for c in summary["held"]:
+                print(f"  . held (loose): {c.get('name') or c.get('rationale')}")
             for c in summary["skipped"]:
                 print(f"  x skipped: {c.get('why')}")
             print(f"[{_summary_line(summary)}  |  total cost: ${total:.4f}]")
