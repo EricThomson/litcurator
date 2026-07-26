@@ -12,16 +12,16 @@ as a ranking + the human, NOT by discarding). The old middle stage fused the two
 dumped everything it did not act on into a free-text "Considered and cut" line that no
 code read -- so real-but-not-now patterns, and the whole judge-not-applying (prompt-fix)
 signal, were silently lost and recurrence could never accumulate. Now nothing is
-dumped; every candidate gets a disposition and a home.
+dumped; every candidate gets a choice and a home.
 
 Two LLM stages (the Tao of litcurator: generate cheap-and-broad, then decide):
   Step 1 (cluster, Sonnet): RECALL -- surface every candidate preference pattern from
     the LOOSE (not-yet-patterned) flags.
   Step 2 (consolidate, Sonnet, forced tool-use): for EACH candidate emit a structured
-    disposition -- new / merge into an open pattern / recurs against a closed pattern /
+    choice -- new / merge into an open pattern / recurs against a closed pattern /
     hold -- plus direction, an act-now-vs-defer priority HINT (where the
     false-negative bias lives, governing the hint only), and its supporting papers.
-Then RECORD (pure code) writes the dispositions into patterns / pattern_flags /
+Then RECORD (pure code) writes the choices into patterns / pattern_flags /
 pattern_events. The consolidate step is shown the open patterns + closed patterns WITH ids, so
 it captures the cross-round match the old pipeline already made and threw away: a
 recurring candidate merges into its existing pattern (a 'carried' event, so recurrence
@@ -239,13 +239,13 @@ def run_cluster_step(client, papers_block, n_flags, seed_text, model):
 
 
 # ---------------------------------------------------------------------------
-# Consolidate: assign every candidate a disposition, then RECORD (structured)
+# Consolidate: assign every candidate a choice, then RECORD (structured)
 # ---------------------------------------------------------------------------
 
 _CONSOLIDATE_SYSTEM = """
 You are consolidating candidate preference patterns (distilled from a researcher's flags) against the
 researcher's profile and their EXISTING pattern memory. You do NOT author profile prose and you do
-NOT discard real signal. You assign EVERY candidate a disposition and record it via the tool.
+NOT discard real signal. You assign EVERY candidate a choice and record it via the tool.
 
 This is a MEMORY step, not a selection step. The bar for recording is low and objective: a candidate
 is real if it is a regularity the flags actually show. The ONLY candidate not recorded is a HOLD -- a
@@ -253,7 +253,7 @@ lone one-paper correction too early to act on, kept loose so it returns and can 
 else is recorded; whether to ACT on it this round is a separate ranking the human does later, carried
 by the `priority` hint, never by dropping.
 
-MERGE FIRST. Before assigning dispositions, collapse candidates that a single profile edit would
+MERGE FIRST. Before assigning choices, collapse candidates that a single profile edit would
 satisfy, or that are facets of ONE underlying taste, into ONE pattern (union their paper_numbers).
 Several sub-themes of the same taste -- distinct topics that all express one interest ("I value
 theoretical/computational work"), or distinct methods that all express one disinterest ("scalp EEG
@@ -263,7 +263,7 @@ patterns that capture the genuinely DISTINCT tastes; a proliferation of narrow n
 failure mode. Recording everything real means not losing a distinct taste -- it does NOT mean
 recording every fine-grained slice of one taste as its own pattern.
 
-For each candidate choose a disposition:
+For each candidate choose a choice:
 - new: a real taste-gap not already tracked. Give name, direction, description, suggested_edit,
   priority, paper_numbers.
 - merge_into_open: essentially one of the OPEN patterns shown below (the same taste). Give its
@@ -305,7 +305,7 @@ merge). Record EVERY candidate exactly once. Output only via the record_consolid
 
 _CONSOLIDATE_TOOL = {
     "name": "record_consolidation",
-    "description": "Record a disposition for EVERY candidate pattern (new / merge / recurs / hold).",
+    "description": "Record a choice for EVERY candidate pattern (new / merge / recurs / hold).",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -314,7 +314,7 @@ _CONSOLIDATE_TOOL = {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "disposition": {"type": "string",
+                        "choice": {"type": "string",
                             "enum": ["new", "merge_into_open", "recurs_closed", "hold"]},
                         "existing_pattern_id": {"type": "string",
                             "description": "id of the open pattern (merge_into_open) or closed pattern "
@@ -330,9 +330,9 @@ _CONSOLIDATE_TOOL = {
                         "paper_numbers": {"type": "array", "items": {"type": "integer"},
                             "description": "supporting [N] paper numbers from the clusters"},
                         "rationale": {"type": "string",
-                            "description": "one line: why this disposition/priority"},
+                            "description": "one line: why this choice/priority"},
                     },
-                    "required": ["disposition", "paper_numbers", "rationale"],
+                    "required": ["choice", "paper_numbers", "rationale"],
                 },
             }
         },
@@ -342,7 +342,7 @@ _CONSOLIDATE_TOOL = {
 
 
 def run_consolidate_step(client, clusters_text, seed_text, existing_block, model):
-    """Assign every candidate a disposition via forced tool-use (so the JSON is always
+    """Assign every candidate a choice via forced tool-use (so the JSON is always
     valid). Shown the clusters, the profile (to tell a real gap from the judge ignoring
     clear text -> judge-not-applying), and the existing patterns + closed patterns WITH ids
     (to capture the cross-round match). Returns (candidates, cost)."""
@@ -370,7 +370,7 @@ def run_consolidate_step(client, clusters_text, seed_text, existing_block, model
 
 
 def _record_consolidation(conn, candidates, ordered_flags):
-    """Write each candidate's disposition into the pattern memory. Provenance: paper
+    """Write each candidate's choice into the pattern memory. Provenance: paper
     number N -> ordered_flags[N-1] -> flag id. The event attached to a merge/recurs is
     driven by the TARGET pattern's REAL status, not the LLM's label -- so a mislabeled id
     can never resurrect a closed pattern (open target -> 'carried', closed pattern target ->
@@ -380,7 +380,7 @@ def _record_consolidation(conn, candidates, ordered_flags):
     LOSSLESS by construction: the ONLY candidate that is not recorded is an explicit
     hold (or one with no content and no papers at all). A malformed candidate --
     a merge naming a pattern id that does not exist, a missing name, an unrecognized
-    disposition -- is recovered as a new pattern rather than discarded, because a
+    choice -- is recovered as a new pattern rather than discarded, because a
     silently dropped candidate is exactly the signal-into-the-void failure this redesign
     exists to prevent. Returns a summary dict."""
     n = len(ordered_flags)
@@ -425,11 +425,11 @@ def _record_consolidation(conn, candidates, ordered_flags):
         summary["new"].append(entry)
 
     for c in candidates:
-        disp = c.get("disposition")
+        choice = c.get("choice")
         flag_ids = flag_ids_for(c)
-        if disp == "new":
+        if choice == "new":
             _record_new(c, flag_ids)
-        elif disp in ("merge_into_open", "recurs_closed"):
+        elif choice in ("merge_into_open", "recurs_closed"):
             eid = c.get("existing_pattern_id")
             st = status_of(eid) if eid else None
             if st is None:
@@ -455,23 +455,23 @@ def _record_consolidation(conn, candidates, ordered_flags):
                 db_interface.add_pattern_event(conn, eid, "carried",
                                                note=f"recurred: {c.get('rationale', '')}")
                 summary["merged"].append({"id": eid, "name": _fallback_name(c), "added": added})
-        elif disp == "hold":
+        elif choice == "hold":
             summary["held"].append({"name": _fallback_name(c), "rationale": c.get("rationale")})
         else:
-            # Unrecognized disposition -- record rather than lose it; the human can reject.
+            # Unrecognized choice -- record rather than lose it; the human can reject.
             _record_new(c, flag_ids, recovered=True,
-                        extra_note=f" (unrecognized disposition {disp!r}; recorded as new)")
+                        extra_note=f" (unrecognized choice {choice!r}; recorded as new)")
     return summary
 
 
 def _format_consolidation_md(candidates):
-    """Render the consolidate decisions as a readable markdown list -- ALL dispositions,
+    """Render the consolidate decisions as a readable markdown list -- ALL choices,
     holds included (transparency, not a discard sink)."""
     if not candidates:
         return "(no candidates)"
     lines = []
     for c in candidates:
-        head = f"- **{c.get('disposition', '?')}**"
+        head = f"- **{c.get('choice', '?')}**"
         if c.get("name"):
             head += f" -- {c['name']}"
         if c.get("direction"):
@@ -541,7 +541,7 @@ def suggest_edits(start=None, end=None,
         clusters, cost1 = run_cluster_step(client, papers_block, n, seed_text, cluster_model)
         print(f"\n[step 1 cost: ${cost1:.4f}]\n")
 
-        print("=== Step 2: consolidate (disposition) ===")
+        print("=== Step 2: consolidate (choice) ===")
         candidates, cost2 = run_consolidate_step(client, clusters, seed_text, existing_block,
                                                consolidate_model)
         total = cost1 + cost2
@@ -584,7 +584,7 @@ def suggest_edits(start=None, end=None,
         f"Loose flags: {n}  |  range: {rng}  |  cluster: {cluster_model}  "
         f"consolidate: {consolidate_model}  |  cost: ${total:.4f}  |  {tail}\n\n"
         f"---\n\n## Raw clusters (recall)\n\n{clusters}\n\n"
-        f"---\n\n## Consolidation (dispositions)\n\n{_format_consolidation_md(candidates)}\n",
+        f"---\n\n## Consolidation (choices)\n\n{_format_consolidation_md(candidates)}\n",
         encoding="utf-8",
     )
     print(f"\nSaved to {out}")

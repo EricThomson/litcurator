@@ -341,7 +341,7 @@ def main():
     pa_p.add_argument("--cluster-model", default=None,
                       help="override the cluster (recall) model")
     pa_p.add_argument("--consolidate-model", default=None,
-                      help="override the consolidate (disposition) model, e.g. claude-opus-4-8")
+                      help="override the consolidate (choice) model, e.g. claude-opus-4-8")
     pa_p.set_defaults(func=_cmd_profile_analysis)
 
     pw_p = sub.add_parser("profile_workbench",
