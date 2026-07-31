@@ -54,7 +54,7 @@ _DIR_COLOR = {"over": "danger", "under": "success",
 def _render_provenance(prov):
     """The papers behind a pattern, read-only. Largest |delta| first."""
     if not prov:
-        return [html.Div("(no linked papers)", className="text-muted small")]
+        return [html.Div("(no papers)", className="text-muted small")]
     out = []
     for f in prov:
         note = f"  -- {f['note']}" if f.get("note") else ""

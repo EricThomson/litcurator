@@ -16,7 +16,7 @@ dumped; every candidate gets a choice and a home.
 
 Two LLM stages (the Tao of litcurator: generate cheap-and-broad, then decide):
   Step 1 (cluster, Sonnet): RECALL -- surface every candidate preference pattern from
-    the LOOSE (not-yet-patterned) flags.
+    the UNASSIGNED (not-yet-patterned) flags.
   Step 2 (consolidate, Sonnet, forced tool-use): for EACH candidate emit a structured
     choice -- new / merge into an open pattern / recurs against a closed pattern /
     hold -- plus direction, an act-now-vs-defer priority HINT (where the
@@ -31,7 +31,7 @@ Goodhart guard: this NEVER re-runs the judge on the flags to "validate" an edit 
 that is exactly how v1 taught the LLM to game the score. It surfaces evidence only;
 if you ever validate an edit, do it on a held-out month, not the flag set.
 
-Reads LOOSE flags from db_interface.get_flags(exclude_linked=True); reads the active
+Reads UNASSIGNED flags from db_interface.get_flags(exclude_assigned=True); reads the active
 profile from profile_interface. Streams the recall to console and saves a dated
 markdown report to ~/.litcurator/suggestions/. See starry-brewing-horizon.md.
 """
@@ -249,7 +249,7 @@ NOT discard real signal. You assign EVERY candidate a choice and record it via t
 
 This is a MEMORY step, not a selection step. The bar for recording is low and objective: a candidate
 is real if it is a regularity the flags actually show. The ONLY candidate not recorded is a HOLD -- a
-lone one-paper correction too early to act on, kept loose so it returns and can accumulate. Everything
+lone one-paper correction too early to act on, kept unassigned so it returns and can accumulate. Everything
 else is recorded; whether to ACT on it this round is a separate ranking the human does later, carried
 by the `priority` hint, never by dropping.
 
@@ -258,7 +258,7 @@ satisfy, or that are facets of ONE underlying taste, into ONE pattern (union the
 Several sub-themes of the same taste -- distinct topics that all express one interest ("I value
 theoretical/computational work"), or distinct methods that all express one disinterest ("scalp EEG
 is uninteresting") -- are ONE pattern, not several. This is CONSOLIDATION, not dropping: every
-supporting paper stays linked to the merged pattern, so no signal is lost. Aim for the FEWEST
+supporting paper stays assigned to the merged pattern, so no signal is lost. Aim for the FEWEST
 patterns that capture the genuinely DISTINCT tastes; a proliferation of narrow near-duplicates is the
 failure mode. Recording everything real means not losing a distinct taste -- it does NOT mean
 recording every fine-grained slice of one taste as its own pattern.
@@ -274,7 +274,7 @@ For each candidate choose a choice:
   `rationale` ONLY if the new flags are a materially stronger case than when it was decided -- the
   human decides whether to reopen.
 - hold: a real correction too lonely to act on yet -- NOT dropped. Record nothing to a pattern; the
-  flag stays loose and returns next round until enough copies accumulate. Give a one-line rationale.
+  flag stays unassigned and returns next round until enough copies accumulate. Give a one-line rationale.
 
 MATCHING: match against the shown patterns by MEANING, using their ids. Bias toward `new` when
 identity is UNCERTAIN -- a duplicate is cheap for the human to reject, but an over-merge is sticky and
@@ -374,7 +374,7 @@ def _record_consolidation(conn, candidates, ordered_flags):
     number N -> ordered_flags[N-1] -> flag id. The event attached to a merge/recurs is
     driven by the TARGET pattern's REAL status, not the LLM's label -- so a mislabeled id
     can never resurrect a closed pattern (open target -> 'carried', closed pattern target ->
-    'recurred'), and the event is skipped when no NEW flags were actually linked, so
+    'recurred'), and the event is skipped when no NEW flags were actually assigned, so
     re-running an overlapping window never inflates recurrence.
 
     LOSSLESS by construction: the ONLY candidate that is not recorded is an explicit
@@ -442,7 +442,7 @@ def _record_consolidation(conn, candidates, ordered_flags):
                 else:
                     summary["skipped"].append({"why": "empty candidate -- nothing to record"})
                 continue
-            added = db_interface.link_flags_to_pattern(conn, eid, flag_ids)
+            added = db_interface.assign_flags_to_pattern(conn, eid, flag_ids)
             if not added:
                 # Target already holds every one of these flags: nothing new, so no event.
                 # This is the re-run idempotency guard, not a lost candidate.
@@ -504,9 +504,9 @@ def _summary_line(summary):
 def suggest_edits(start=None, end=None,
                   cluster_model=DEFAULT_CLUSTER_MODEL, consolidate_model=DEFAULT_CONSOLIDATE_MODEL,
                   persist=True):
-    """Cluster the LOOSE (not-yet-patterned) flags in [start, end], consolidate each
+    """Cluster the UNASSIGNED (not-yet-patterned) flags in [start, end], consolidate each
     candidate against the pattern memory, and RECORD every real one (new / merge into an
-    open pattern / recurs against a closed pattern); a genuine one-paper hold is kept loose, not recorded.
+    open pattern / recurs against a closed pattern); a genuine one-paper hold is kept unassigned, not recorded.
     Streams the recall to console and saves a dated markdown report. Returns the output
     path (or None if too few flags). Never re-validates on the flag set. persist=False is
     a dry run (writes the markdown, records nothing)."""
@@ -514,12 +514,12 @@ def suggest_edits(start=None, end=None,
 
     conn = db_interface.get_connection()
     try:
-        # LOOSE flags only: a flag already linked into a pattern is "handled" and must
+        # UNASSIGNED flags only: a flag already assigned into a pattern is "handled" and must
         # not re-cluster into a duplicate candidate. This is the bloat/idempotency bound.
-        flags = db_interface.get_flags(conn, start=start, end=end, exclude_linked=True)
+        flags = db_interface.get_flags(conn, start=start, end=end, exclude_assigned=True)
         n = len(flags)
         if n < MIN_FLAGS:
-            print(f"Only {n} loose (not-yet-patterned) flags in range -- need at least "
+            print(f"Only {n} unassigned (not-yet-patterned) flags in range -- need at least "
                   f"{MIN_FLAGS} to run.")
             return None
 
@@ -530,7 +530,7 @@ def suggest_edits(start=None, end=None,
         existing_block = _format_existing_patterns(active_patterns, closed_patterns)
 
         rng = f"{start or 'all'} to {end or 'all'}"
-        print(f"{n} loose flags ({rng})  |  memory: {len(active_patterns)} open + "
+        print(f"{n} unassigned flags ({rng})  |  memory: {len(active_patterns)} open + "
               f"{len(closed_patterns)} decided")
         print(f"Models: cluster={cluster_model}  consolidate={consolidate_model}\n")
 
@@ -558,7 +558,7 @@ def suggest_edits(start=None, end=None,
             for c in summary["recurred"]:
                 print(f"  ! closed pattern {c['id'][:12]} recurred (+{c['added']} flags)")
             for c in summary["held"]:
-                print(f"  . held (loose): {c.get('name') or c.get('rationale')}")
+                print(f"  . held (unassigned): {c.get('name') or c.get('rationale')}")
             for c in summary["skipped"]:
                 print(f"  x skipped: {c.get('why')}")
             print(f"[{_summary_line(summary)}  |  total cost: ${total:.4f}]")
@@ -581,7 +581,7 @@ def suggest_edits(start=None, end=None,
            f"pattern_suggestions_{slug}_{_short(cluster_model)}__{_short(consolidate_model)}.md")
     out.write_text(
         f"# Pattern suggestions\n\n"
-        f"Loose flags: {n}  |  range: {rng}  |  cluster: {cluster_model}  "
+        f"Unassigned flags: {n}  |  range: {rng}  |  cluster: {cluster_model}  "
         f"consolidate: {consolidate_model}  |  cost: ${total:.4f}  |  {tail}\n\n"
         f"---\n\n## Raw clusters (recall)\n\n{clusters}\n\n"
         f"---\n\n## Consolidation (choices)\n\n{_format_consolidation_md(candidates)}\n",
