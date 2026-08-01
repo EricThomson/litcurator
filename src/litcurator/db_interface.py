@@ -161,7 +161,7 @@ CREATE TABLE IF NOT EXISTS evaluations (
 """
 
 # The user's numeric correction on a specific evaluation. Append-only. A flag is
-# "handled" by being assigned to a pattern (pattern_flags), not by per-flag retirement
+# "handled" by being attached to a pattern (pattern_flags), not by per-flag retirement
 # -- so the old ingested_to_profile_id / ingested_at columns are gone (dropped in
 # _drop_dead_columns for existing DBs).
 _CREATE_FLAGS = """
@@ -212,7 +212,7 @@ CREATE TABLE IF NOT EXISTS patterns (
 """
 
 # Provenance join (many-to-many): which flags a pattern was built from. A flag is
-# "handled" precisely because it is assigned here -- no per-flag retirement needed.
+# "handled" precisely because it is attached here -- no per-flag retirement needed.
 # Joining pattern_flags -> flags -> articles walks a pattern back to its papers.
 _CREATE_PATTERN_FLAGS = """
 CREATE TABLE IF NOT EXISTS pattern_flags (
@@ -375,7 +375,7 @@ def _drop_dead_columns(conn):
       never used and the feed shows the abstract anyway; the summarize stage was cut
       2026-07-15.
     - flags.ingested_to_profile_id / ingested_at + their indexes: the per-flag
-      retirement the pattern memory replaced. A flag is now "handled" by being assigned
+      retirement the pattern memory replaced. A flag is now "handled" by being attached
       to a pattern (pattern_flags), so these are vestigial. Indexes are dropped FIRST
       because DROP COLUMN fails while a column is used by an index (the partial
       idx_flags_uningested references ingested_to_profile_id)."""
@@ -798,7 +798,7 @@ def delete_flag(conn, pmid):
     conn.commit()
 
 
-def get_flags(conn, start=None, end=None, exclude_assigned=False):
+def get_flags(conn, start=None, end=None, exclude_attached=False):
     """The LATEST flag per paper (flags are append-only; most-recent-wins, so a
     re-flag supersedes without double-counting), joined to its article
     (title/journal/abstract/issue_date_iso) and the evaluation it corrected
@@ -806,16 +806,16 @@ def get_flags(conn, start=None, end=None, exclude_assigned=False):
     review feed read. start/end filter the article's PUBLICATION window
     (issue_date_iso).
 
-    A flag is "handled" precisely when it is assigned to a pattern (pattern_flags).
-    exclude_assigned=True drops any paper whose latest flag is already assigned -- the
-    unassigned-flags-only pool the suggester clusters, so handled flags never re-cluster
+    A flag is "handled" precisely when it is attached to a pattern (pattern_flags).
+    exclude_attached=True drops any paper whose latest flag is already attached -- the
+    unattached-flags-only pool the suggester clusters, so handled flags never re-cluster
     into duplicate candidates (the primary bloat / idempotency control). The review
-    feed keeps the default (exclude_assigned=False) so it still shows every flag. If the
-    user re-flags a paper AFTER it was patterned, the new latest flag is unassigned again
+    feed keeps the default (exclude_attached=False) so it still shows every flag. If the
+    user re-flags a paper AFTER it was patterned, the new latest flag is unattached again
     and correctly re-enters the pool."""
-    unassigned_only = (
+    unattached_only = (
         "AND NOT EXISTS (SELECT 1 FROM pattern_flags pf WHERE pf.flag_id = f.id)"
-        if exclude_assigned else "")
+        if exclude_attached else "")
     rows = conn.execute(f"""
         SELECT f.*, a.title, a.journal, a.abstract, a.issue_date_iso, a.pub_date_iso,
                e.rationale, e.surface_decision, e.possible_mismatch
@@ -826,7 +826,7 @@ def get_flags(conn, start=None, end=None, exclude_assigned=False):
             SELECT f2.id FROM flags f2 WHERE f2.pmid = f.pmid
             ORDER BY f2.flagged_at DESC, f2.id DESC LIMIT 1
         )
-          {unassigned_only}
+          {unattached_only}
           AND (? IS NULL OR a.issue_date_iso >= ?)
           AND (? IS NULL OR a.issue_date_iso <= ?)
         ORDER BY f.flagged_at
@@ -866,11 +866,11 @@ def create_pattern(conn, name, direction, description=None, suggested_edit=None,
     return pattern_id
 
 
-def assign_flags_to_pattern(conn, pattern_id, flag_ids):
-    """Assign additional flags to an EXISTING pattern -- the MERGE primitive: a later
-    round's flags attaching to a pattern already tracked (create_pattern only assigns
+def attach_flags_to_pattern(conn, pattern_id, flag_ids):
+    """Attach additional flags to an EXISTING pattern -- the MERGE primitive: a later
+    round's flags attaching to a pattern already tracked (create_pattern only attaches
     at creation). Dedups on the pattern_flags primary key; returns the count NEWLY
-    assigned (0 if all were already assigned). Adds NO fate event on its own -- the caller
+    attached (0 if all were already attached). Adds NO fate event on its own -- the caller
     decides whether new provenance warrants a 'carried'/'recurred' event, and skips it
     when this returns 0, so re-running an overlapping window never inflates recurrence."""
     n = 0

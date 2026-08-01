@@ -5,8 +5,9 @@ cli.py -- litcurator command line.
     litcurator status [--runs] [--flags] [--profiles] [--all] [--start ...] [--end ...]
     litcurator review
 
-Thin dispatch over pipeline.run, a DB summary, and the review feed. The
-consolidation commands (suggest, edit) are added as their modules graduate.
+Thin dispatch over the pipeline (run), DB summaries (status), the Dash apps (review,
+profile_workbench, prompt_workbench, the labelers), the offline profile_analysis
+suggester, and the judge harness. Each subcommand is a thin wrapper over its module.
 """
 
 import argparse
@@ -333,7 +334,7 @@ def main():
     review_p.set_defaults(func=_cmd_review)
 
     pa_p = sub.add_parser("profile_analysis",
-                           help="cluster flags -> ranked profile-edit suggestions")
+                           help="cluster flags -> consolidate into tracked profile patterns")
     pa_p.add_argument("--start", default=None, help="scope flags to pub dates >= this (YYYY-MM-DD)")
     pa_p.add_argument("--end", default=None, help="scope flags to pub dates <= this (YYYY-MM-DD)")
     pa_p.add_argument("--dry-run", action="store_true",
@@ -345,7 +346,7 @@ def main():
     pa_p.set_defaults(func=_cmd_profile_analysis)
 
     pw_p = sub.add_parser("profile_workbench",
-                           help="launch the profile workbench (review suggestions, edit, set active)")
+                           help="launch the profile workbench (review patterns, edit the profile, set active)")
     pw_p.set_defaults(func=_cmd_profile_workbench)
 
     ptw_p = sub.add_parser("prompt_workbench",
