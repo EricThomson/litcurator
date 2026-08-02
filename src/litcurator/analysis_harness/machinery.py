@@ -10,6 +10,7 @@ reporting, so this module stays reusable.
 """
 
 import hashlib
+import os
 from collections import Counter
 from dataclasses import dataclass
 
@@ -45,9 +46,15 @@ class GateContext:
 
 
 def scratch_db_path(name):
-    """A throwaway database beside the user's data, named for the gate using it.
-    Follows the convention the pattern-memory gates already use."""
-    return config.DATA_DIR / f"_scratch_analysis_{name}.db"
+    """A throwaway database beside the user's data, named for the gate using it AND for this
+    process.
+
+    The pid is what makes two harness runs able to coexist. Without it every scenario driven by
+    long_horizon shared one path, and build_db deletes the file on entry, so a second run would
+    delete the first one's database mid-run -- which bites exactly when you want to try an
+    experiment while a long sweep is going. Gates within one process still run sequentially and
+    share the path harmlessly."""
+    return config.DATA_DIR / f"_scratch_analysis_{name}_{os.getpid()}.db"
 
 
 def cached_cluster(client, papers_block, n_flags, profile, model, use_cache):

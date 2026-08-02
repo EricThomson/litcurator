@@ -46,17 +46,24 @@ class SyntheticPaper:
 
 
 @dataclass
-class IntendedPatternPapers:
-    """A taste-gap intended pattern: the intended-pattern label plus the material to synthesize its flags.
-    `direction` fixes the delta sign; `delta_band` fixes |delta| magnitude (the knob the
-    weak-signal experiment sweeps)."""
+class IntendedPatternPool:
+    """The supply a scenario draws from for ONE intended pattern: the papers to emit, plus the
+    shape their flags should take. `direction` fixes the delta sign; `delta_band` fixes the
+    |delta| magnitude (the knob the weak-signal experiment sweeps).
+
+    `rationale_templates` matters on long runs. `papers` is cycled, so a twelve-session scenario
+    drawing on four papers emits each one three times -- identical title, abstract and rationale,
+    differing only in pmid and a little score jitter. Handing the cluster step literal duplicates
+    makes grouping easier than reality. These are extra meaning-equal restatements of the same
+    complaint, rotated across emissions so the repeats are not verbatim. Mind the arithmetic: the
+    paper index is `seq % len(papers)` and the rationale index `seq % (1 + len(templates))`, so if
+    those periods share a factor a given paper always draws the same rationale and rotating buys
+    nothing."""
     label: str
     direction: str                       # "under" | "over"
     delta_band: tuple                    # (lo, hi) magnitude of |delta|, both in (0, 1)
     papers: list                           # list[SyntheticPaper] -- cycled to emit flags
     rationale_templates: list = field(default_factory=list)   # extra meaning-equal rationales
-    note_rate: float = 0.0               # fraction of emitted flags that carry a note
-    note_bank: list = field(default_factory=list)
 
 
 @dataclass
@@ -82,7 +89,7 @@ class ScenarioSpec:
     name: str
     n_sessions: int
     profile: str
-    papers_by_intended_pattern: dict = field(default_factory=dict)          # label -> IntendedPatternPapers
+    pools_by_intended_pattern: dict = field(default_factory=dict)          # label -> IntendedPatternPool
     explicit: dict = field(default_factory=dict)         # session_idx -> list[paper dict]
     streams: list = field(default_factory=list)          # list[Stream]
     then_rules: dict = field(default_factory=dict)       # session_idx -> list[(action, label)]
@@ -115,20 +122,15 @@ def _scores(direction, delta_mag, rng):
     return clamp(judge), clamp(user)
 
 
-def _emit(pattern_papers, rng, seq):
-    """Synthesize one flag dict for an intended pattern. Cycles the papers and rotates the rationale so a
-    high count does not emit identical duplicates; keeps the intended pattern's meaning constant."""
-    stub = pattern_papers.papers[seq % len(pattern_papers.papers)]
-    rationales = [stub.rationale, *pattern_papers.rationale_templates]
-    rationale = rationales[seq % len(rationales)]
-    if pattern_papers.note_bank and rng.random() < pattern_papers.note_rate:
-        note = pattern_papers.note_bank[seq % len(pattern_papers.note_bank)]
-    else:
-        note = stub.note
-    judge, user = _scores(pattern_papers.direction, rng.uniform(*pattern_papers.delta_band), rng)
-    return {"intended": pattern_papers.label, "title": stub.title, "abstract": stub.abstract,
+def _emit(pool, rng, seq):
+    """Synthesize one flag dict from a pool. Cycles the papers and rotates the rationale, so a long
+    run does not emit identical duplicates, while the intended pattern's meaning stays constant."""
+    stub = pool.papers[seq % len(pool.papers)]
+    rationales = [stub.rationale, *pool.rationale_templates]
+    judge, user = _scores(pool.direction, rng.uniform(*pool.delta_band), rng)
+    return {"intended": pool.label, "title": stub.title, "abstract": stub.abstract,
             "journal": stub.journal, "judge_score": judge, "user_score": user,
-            "rationale": rationale, "note": note}
+            "rationale": rationales[seq % len(rationales)], "note": stub.note}
 
 
 def build_rounds(spec, rng):
@@ -146,11 +148,11 @@ def build_rounds(spec, rng):
             papers.append({**p, "pmid": f"SYN{next(ids):07d}"})
         for stream in spec.streams:
             if s in stream.sessions:
-                pattern_papers = spec.papers_by_intended_pattern[stream.label]
+                pool = spec.pools_by_intended_pattern[stream.label]
                 for _ in range(stream.count_per_session):
                     i = seq.get(stream.label, 0)
                     seq[stream.label] = i + 1
-                    papers.append({**_emit(pattern_papers, rng, i), "pmid": f"SYN{next(ids):07d}"})
+                    papers.append({**_emit(pool, rng, i), "pmid": f"SYN{next(ids):07d}"})
         rounds.append({
             "name": spec.session_names.get(s, f"session {s + 1}"),
             "papers": papers,

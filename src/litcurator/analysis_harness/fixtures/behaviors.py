@@ -1,26 +1,33 @@
 """
 behaviors.py -- the named scenarios the long-horizon gate can run.
 
-Each is a function returning a ScenarioSpec built from the banks. SCENARIOS at the bottom
-maps a name to its CONSTRUCTOR, so every run gets a fresh spec whose expectations match its
-own session count.
+Each is a function returning a ScenarioSpec, drawing its papers from paper_pools. SCENARIOS at
+the bottom maps a name to its CONSTRUCTOR, so every run gets a fresh spec whose expectations
+match its own session count.
 
   pattern_lifecycle -- a pattern's life with the human deciding in between (carry, incorporate,
                        reject) and gaps coming back afterwards
-  accumulation      -- a weak same-direction trickle must coalesce into ONE pattern
-  robustness        -- that trickle survives a growing pool of unrelated one-offs
+  accumulation      -- a weak same-direction trickle must coalesce into ONE pattern, and keep
+                       absorbing flags rather than being recognised once and ignored
   dual_nature       -- one paper instantiating TWO tastes lands in a pattern for each
   named_disinterest -- a gap the profile already states is recorded, not dropped as covered
 
 Every case here should be an EASY call. These are unit tests: a borderline fixture produces a
 coin flip rather than a verdict, and a gate that flickers gets ignored. When one goes red, the
-first question is whether the papers are genuinely unambiguous -- see the note in robustness on
-why its two strong signals now point in opposite directions.
+first question is whether the papers are genuinely unambiguous.
+
+Two traps when writing a new one, both learned by falling into them. An intended pattern's papers
+must share exactly ONE salient property and vary on everything else -- sharing more makes it MORE
+ambiguous, because every shared property is another defensible grouping. And if you want to check
+that two tastes stay SEPARATE, give them opposite directions: two under-scored groups can always
+be joined by a statement that is true ("the profile is too narrow"), so such a check asks the
+model not to notice something real, and it will flicker forever. That is what removed the
+`robustness` scenario -- see the note at the bottom of gates_llm/__init__.py.
 """
 
 from . import scenarios as SC
 from . import scenario_gen as GEN
-from . import banks
+from . import paper_pools
 
 
 def accumulation(delta_band=(0.16, 0.22), n_sessions=12):
@@ -34,11 +41,16 @@ def accumulation(delta_band=(0.16, 0.22), n_sessions=12):
     'judge scored too low' bucket; below, in the 'roughly agreed / context' bucket the cluster
     prompt is told not to pattern -- so the sweep finds where stateless accumulation breaks.
 
-    TWELVE SESSIONS IS THE LONG-HORIZON TEST BED, and it is meant to grow. With `robustness` cut
-    this is the only scenario emulating a long history at all -- everything else runs one to four
-    sessions -- and emulating many months is the thing litcurator is actually for. The intended
-    direction is MORE checks riding on these sessions, and more sessions if a question needs them,
-    not fewer.
+    Two checks ride on it. `coalesces_to_one` grades the END STATE and `pool_drains` grades the
+    RAMP, because the end state alone is satisfied by a run that mints the pattern early and then
+    holds every later flag: one pure pattern in the right window, with ten flags left on the floor.
+    The unattached count is the tell -- flat when flags are being absorbed, climbing when they are
+    not -- and it costs no model calls, being the number already handed to each session.
+
+    TWELVE SESSIONS IS THE LONG-HORIZON TEST BED, and it is meant to grow. This is the only
+    scenario emulating a long history at all -- everything else runs one to four sessions -- and
+    emulating many months is the thing litcurator is actually for. The intended direction is MORE
+    checks riding on these sessions, and more sessions if a question needs them, not fewer.
 
     So do not shrink it to save model calls. That has been proposed twice, both times on the
     arithmetic that this is 12 of the suite's 24 calls for one check. The arithmetic is right and
@@ -50,16 +62,14 @@ def accumulation(delta_band=(0.16, 0.22), n_sessions=12):
     duplicate" can only appear late, and that is drift and bloat setting in over time: the exact v1
     failure this project exists to prevent.
 
-    The obvious next thing to add here costs no model calls. This currently grades only the END
-    STATE -- one pattern, right window, pure -- and asserts nothing about the ramp, such as the
-    pattern having kept absorbing flags rather than spawning a sibling at session 9. The per-session
-    history is already collected and handed to the terminal grader, so that is a new check over data
-    already in hand."""
+    Anything else you want to know about a long history goes here, and the per-session record the
+    terminal grader already receives (new patterns, open count, unattached count) is probably
+    enough to grade it without spending anything more."""
     return GEN.ScenarioSpec(
         name=f"accumulation(delta={delta_band[0]:.2f}-{delta_band[1]:.2f})",
         n_sessions=n_sessions,
         profile=SC.PROFILE,
-        papers_by_intended_pattern={"CONNECTOME": banks.connectome_paper_set(delta_band)},
+        pools_by_intended_pattern={"CONNECTOME": paper_pools.connectome_pool(delta_band)},
         streams=[GEN.Stream("CONNECTOME", range(0, n_sessions), count_per_session=1)],
         terminal_expect={
             "coalesces_to_one": [
@@ -70,71 +80,6 @@ def accumulation(delta_band=(0.16, 0.22), n_sessions=12):
             # window, and ten flags left on the floor. Measured over the last third of the run,
             # since the early sessions legitimately hold while the signal is still accumulating.
             "pool_drains": [{"over_last_sessions": max(2, n_sessions // 3), "max_growth": 0}],
-        },
-    )
-
-
-def robustness(n_sessions=8, weak_band=(0.08, 0.12), one_offs_per_session=1):
-    """Strong signal + a weak trickle must survive a growing pool of diffuse ONE-OFFS.
-
-    Each session emits: 1 B (computational theory, strong under), 1 C (invertebrate, strong under),
-    1 CONNECTOME (WEAK under -- the competition test the pure trickle couldn't do), and
-    `one_offs_per_session` ONE_OFF flags (diverse single corrections). Only the one-offs never get
-    attached, so the unattached pool grows monotonically -- the stressor.
-
-    Grades: B, C and CONNECTOME all surface, and CONNECTOME still coalesces into one pure pattern
-    despite competing signal AND a sub-threshold delta (the real DELTA_THRESHOLD test -- if a cliff
-    exists it shows here). The one-offs are pure stressor: whether unrelated one-offs spuriously
-    group together is a separate question no scenario currently tests.
-
-    THIS SCENARIO NO LONGER GRADES "B AND C STAY SEPARATE", and the reason is worth keeping.
-    It did, on the grounds that they are adjacent and same-sign. It flickered about one run in
-    three, and the cause was structural rather than sloppy wording in the papers: any two
-    UNDER-scored groups are joined by a statement that is actually TRUE ("the profile is too
-    narrow"), so an honest pattern spanning them always exists and the check was asking the model
-    not to notice something correct. The observed failure was a pattern named "Organism and Journal
-    Agnosticism" holding two B flags and two C flags -- a real insight, graded as a chimera only
-    because its direction came out `under` rather than `sharpen`.
-
-    Separation is tested properly by dual_nature, which pairs B against C inside ONE session with a
-    paper that is honestly both, and grades the split directly. One scenario carries that case
-    deliberately; a stress test should not carry it by accident.
-
-    Two rejected fixes, recorded because both looked obviously right and both made things worse.
-    Grading separation on an opposite-direction pair instead (B under vs D over) does remove the
-    ambiguity -- a pattern carries one direction, so no single taste pattern can hold both
-    complaints -- but changing the pool to get that pair broke the weak-signal test: with the mix
-    altered, CONNECTOME stopped having to compete, minted a pattern in session 0, and failed its
-    min_session floor. Swapping C for D did it (coalesce 1/2), and so did adding D alongside C
-    (coalesce 2/3), where the original mix had been 12/12. The pool composition is load-bearing,
-    so the right move was to delete the bad check rather than reshape the scenario around keeping
-    it.
-
-    A gate is meant to be an easy call. When one is borderline, ask whether the check is asking the
-    model to be wrong before reaching for the fixture."""
-    papers_by_intended_pattern = {
-        "B": banks.PAPERS_BY_INTENDED_PATTERN["B"],
-        "C": banks.PAPERS_BY_INTENDED_PATTERN["C"],
-        "CONNECTOME": banks.connectome_paper_set(weak_band),
-        "ONE_OFF": banks.one_off_paper_set(),
-    }
-    streams = [
-        GEN.Stream("B", range(0, n_sessions), 1),
-        GEN.Stream("C", range(0, n_sessions), 1),
-        GEN.Stream("CONNECTOME", range(0, n_sessions), 1),
-        GEN.Stream("ONE_OFF", range(0, n_sessions), one_offs_per_session),
-    ]
-    return GEN.ScenarioSpec(
-        name=f"robustness(weak={weak_band[0]:.2f}-{weak_band[1]:.2f}, "
-             f"oneoffs={one_offs_per_session}/s)",
-        n_sessions=n_sessions,
-        profile=SC.PROFILE,
-        papers_by_intended_pattern=papers_by_intended_pattern,
-        streams=streams,
-        terminal_expect={
-            "intended_patterns_surface": ["B", "C", "CONNECTOME"],
-            "coalesces_to_one": [{"label": "CONNECTOME", "min_session": 1,
-                                  "max_session": n_sessions - 2, "min_purity": 0.7}],
         },
     )
 
@@ -182,7 +127,7 @@ def dual_nature():
         name="dual_nature(one paper, two tastes)",
         n_sessions=1,
         profile=SC.PROFILE,
-        papers_by_intended_pattern={"B": banks.PAPERS_BY_INTENDED_PATTERN["B"], "C": banks.PAPERS_BY_INTENDED_PATTERN["C"]},
+        pools_by_intended_pattern={"B": paper_pools.POOLS_BY_INTENDED_PATTERN["B"], "C": paper_pools.POOLS_BY_INTENDED_PATTERN["C"]},
         streams=[GEN.Stream("B", [0], count_per_session=3),
                  GEN.Stream("C", [0], count_per_session=3)],
         explicit={0: [_DUAL_PAPER]},
@@ -249,7 +194,7 @@ def named_disinterest():
         name="named_disinterest(profile says it, judge ignores it)",
         n_sessions=1,
         profile=SC.PROFILE + _DISINTEREST_LINE,
-        papers_by_intended_pattern={"A": banks.PAPERS_BY_INTENDED_PATTERN["A"]},
+        pools_by_intended_pattern={"A": paper_pools.POOLS_BY_INTENDED_PATTERN["A"]},
         streams=[GEN.Stream("A", [0], count_per_session=5)],
         terminal_expect={"named_disinterest_not_dropped": [
             {"label": "A", "directions": ["judge-not-applying", "over"]}]},
@@ -265,7 +210,6 @@ def named_disinterest():
 SCENARIOS = {
     "pattern_lifecycle": pattern_lifecycle,
     "accumulation": accumulation,
-    "robustness": robustness,
     "dual_nature": dual_nature,
     "named_disinterest": named_disinterest,
 }

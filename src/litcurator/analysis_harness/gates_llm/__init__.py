@@ -9,7 +9,7 @@ principle that a gate whose pass threshold you can turn down until it goes green
 The practical effect is that money can only be spent through `litcurator analysis_harness`.
 """
 
-from . import bank_calibration, long_horizon
+from . import pool_calibration, long_horizon
 
 # scenario name -> (reps, the share of reps a check must win).
 #
@@ -45,11 +45,11 @@ COLD_CACHE_GATES = {"accumulation"}
 # `when_red` is printed ONLY when the gate fails. An alarm with no interpretation is noise,
 # and these strings cost nothing until something is actually broken.
 PAID_GATES = {
-    "bank-calibration": (
-        2, bank_calibration.run,
-        "the synthetic PAPERS are miscalibrated, not the machinery. A paper set that shattered has "
-        "papers too varied; two paper sets that fused have papers too alike. Fix fixtures/banks.py, "
-        "and do not read the layer 3 and 4 results until this is green.",
+    "pool-calibration": (
+        2, pool_calibration.run,
+        "the synthetic PAPERS are miscalibrated, not the machinery. A pool that shattered has "
+        "papers too varied; two pools that fused have papers too alike. Fix "
+        "fixtures/paper_pools.py, and do not read the layer 3 and 4 results until this is green.",
         2),
     "pattern-lifecycle": (
         3, _scenario_runner(*_SCENARIOS["pattern-lifecycle"]),
@@ -78,24 +78,39 @@ PAID_GATES = {
         12),
 }
 
-# `robustness` was cut from the gate run on 2026-08-01. The scenario itself is still built and
-# still runnable (fixtures/behaviors.py, and sandbox/consolidate_prompt_ab/run_ab.py drives it);
-# only its GATE registration is gone.
+# ---------------------------------------------------------------------------
+# DELETED SCENARIO: `robustness` (removed 2026-08-02; last present at commit 00affcd)
+# ---------------------------------------------------------------------------
+# Kept as a note because the QUESTION is still real and nothing else here tests it. The code is
+# gone; `git show 00affcd:src/litcurator/analysis_harness/fixtures/behaviors.py` has it, along
+# with the ONE_OFF clutter pool it needed, which was deleted from paper_pools.py at the same time.
 #
-# Why it was cut. A sabotage prompt -- deliberately written to wreck consolidation -- scored 4/4
-# on it, while a good prompt scored 3/4. Anti-correlated with prompt quality, which makes it worse
-# than no gate. The cause: its one substantive check rewards HOLDING a weak signal back before
-# gathering it, and the sabotage's headline instruction was to hold everything, so being bad at the
-# job scored well. Its other three checks only ask whether a label produced a pattern anywhere
-# across eight sessions, which is nearly free when a stream feeds that label every session.
-# Meanwhile the thing it is named for -- a growing pile of unfiled clutter -- was never graded at
-# all. Full reasoning in sandbox/docs/analysis_harness.md.
+# WHAT IT ASKED. Eight sessions, each emitting two strong signals, one weak trickle, and unrelated
+# one-off flags that never get attached -- so the pile of unfiled flags grows every session. The
+# question underneath: as unfiled flags accumulate over months, does the machinery degrade? Does it
+# start sweeping unrelated flags into patterns, stop finding real ones, or mint ever more patterns?
+# That last is the v1 bloat failure, so this is worth reviving IF a failure of that shape turns up
+# in the 2025 rollout.
 #
-# When it would be worth reviving. There IS a real question underneath, and nothing else here
-# tests it: as unfiled flags pile up over months, does the machinery degrade -- sweeping unrelated
-# flags into patterns, missing signal, or minting ever more patterns? That last one is the v1 bloat
-# failure. Bring this back if a real failure of that shape shows up in the 2025 rollout.
+# WHY IT WAS DELETED, so the same thing is not rebuilt. A sabotage prompt written to wreck
+# consolidation scored 4/4 on it while a good prompt scored 3/4 -- anti-correlated with quality,
+# which is worse than having no gate. Its one substantive check rewarded HOLDING a weak signal
+# back before gathering it, and the sabotage's headline instruction was to hold everything, so
+# being bad at the job scored well. Its other three checks only asked whether a label produced a
+# pattern anywhere across eight sessions, which is nearly free when a stream feeds that label every
+# session. And the growing clutter pile it was named for was never graded at all.
 #
-# Bring it back as a MEASUREMENT, not a gate. The answer to "does quality decay as the pile grows"
-# is a curve, and forcing a curve into pass/fail is what produced both the flicker and the backwards
-# incentive. It should report per-session purity, pattern count and coverage, and you read the trend.
+# HOW TO REBUILD IT PROPERLY.
+#   1. As a MEASUREMENT, not a gate. "Does quality decay as the pile grows" is a curve, and forcing
+#      a curve into pass/fail produced both the flicker and the backwards incentive. Report
+#      per-session purity, pattern count and coverage, and read the trend -- the shape of
+#      sandbox/consolidate_prompt_ab/run_ab.py, not of a gate.
+#   2. Grade the STRESSOR, which the original never did: do the unattached one-off flags start
+#      contaminating the real patterns as the pool grows? That is the actual robustness question.
+#   3. Require the strong signals to surface EARLY rather than eventually, which is what makes
+#      over-holding fail instead of pass.
+#   4. If you grade "two tastes stay separate", use pools with OPPOSITE directions. Two under-
+#      scored pools can always be joined by something true ("the profile is too narrow"), so such
+#      a check asks the model not to notice a real pattern.
+#   5. Do not disturb accumulation's stream mix to get there. Two attempts to reshape the pool
+#      composition knocked its weak-signal check from reliable to 1-in-2 and 2-in-3.

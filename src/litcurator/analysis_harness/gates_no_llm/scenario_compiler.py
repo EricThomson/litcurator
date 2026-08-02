@@ -19,20 +19,17 @@ import random
 
 from ..fixtures import scenarios as SC
 from ..fixtures import scenario_gen as GEN
+from ..fixtures import behaviors
 
 
 def test_parity():
-    explicit = {i: [{k: p[k] for k in GEN.PAPER_KEYS} for p in session["papers"]]
-                for i, session in enumerate(SC.SESSIONS)}
-    spec = GEN.ScenarioSpec(
-        name="parity-repro",
-        n_sessions=len(SC.SESSIONS),
-        profile=SC.PROFILE,
-        explicit=explicit,
-        then_rules={i: session["then"] for i, session in enumerate(SC.SESSIONS)},
-        per_round_expect={i: session["expect"] for i, session in enumerate(SC.SESSIONS)},
-        session_names={i: session["name"] for i, session in enumerate(SC.SESSIONS)},
-    )
+    """Compile the spec the harness ACTUALLY runs and assert it still matches the literal.
+
+    Note it calls behaviors.pattern_lifecycle() rather than rebuilding an equivalent spec here.
+    It used to construct its own copy of that conversion, which made the check hollow: change the
+    conversion in behaviors.py and this still passed, because it was comparing the literal against
+    a second implementation nothing runs. The point is to guard the production path."""
+    spec = behaviors.pattern_lifecycle()
     compiled = GEN.build_rounds(spec, random.Random(0))
 
     assert len(compiled) == len(SC.SESSIONS), (len(compiled), len(SC.SESSIONS))
@@ -54,14 +51,14 @@ def test_parity():
 
 
 def test_stream_smoke():
-    pattern_papers = GEN.IntendedPatternPapers(
+    pool = GEN.IntendedPatternPool(
         label="X", direction="under", delta_band=(0.10, 0.12),
         papers=[GEN.SyntheticPaper("Weak title", "Weak abstract.", "J Neuro",
                             "the judge undersold this")],
     )
     spec = GEN.ScenarioSpec(
         name="smoke", n_sessions=3, profile="p",
-        papers_by_intended_pattern={"X": pattern_papers}, streams=[GEN.Stream("X", range(0, 3), count_per_session=2)],
+        pools_by_intended_pattern={"X": pool}, streams=[GEN.Stream("X", range(0, 3), count_per_session=2)],
     )
     rounds = GEN.build_rounds(spec, random.Random(1))
     pmids = []
