@@ -55,8 +55,19 @@ def select_gates(name=None):
     return [name]
 
 
-def is_free(name):
-    return name in FREE_GATES
+def apply_draft_prompts(cluster_prompt=None, consolidate_prompt=None):
+    """Swap draft prompts into profile_analysis for THIS PROCESS ONLY and return the
+    (cluster, consolidate) fingerprints. The draft files and profile_analysis.py are untouched.
+
+    Separate from run_gates because the dry run needs the fingerprints WITHOUT running anything.
+    It used to get them by calling run_gates([]) purely for the side effect, which spent the
+    entire budget: `gates or select_gates()` treats an empty list as "not specified", so the dry
+    run silently executed every gate and then printed that nothing had been spent."""
+    if cluster_prompt is not None:
+        PA.CLUSTER_PROMPT = cluster_prompt
+    if consolidate_prompt is not None:
+        PA._CONSOLIDATE_SYSTEM = consolidate_prompt
+    return fingerprint(PA.CLUSTER_PROMPT), fingerprint(PA._CONSOLIDATE_SYSTEM)
 
 
 def budget(gates):
@@ -107,13 +118,11 @@ def run_gates(gates=None, cluster_prompt=None, consolidate_prompt=None,
     """
     import anthropic
 
-    gates = gates or select_gates()
-    if cluster_prompt is not None:
-        PA.CLUSTER_PROMPT = cluster_prompt
-    if consolidate_prompt is not None:
-        PA._CONSOLIDATE_SYSTEM = consolidate_prompt
-    cluster_fp = fingerprint(PA.CLUSTER_PROMPT)
-    consolidate_fp = fingerprint(PA._CONSOLIDATE_SYSTEM)
+    # `is None`, not falsy: an explicitly EMPTY list means run nothing, and must not be read as
+    # "not specified" and quietly expanded to every gate.
+    if gates is None:
+        gates = select_gates()
+    cluster_fp, consolidate_fp = apply_draft_prompts(cluster_prompt, consolidate_prompt)
 
     ctx = None
     results = []

@@ -91,10 +91,18 @@ def test_shared_flag_in_both():
     assert _one(spec, split_pp, split_rows, {"B": 0, "C": 0},
                 flag_patterns={1: {"pB"}, 2: {"pB"}, 3: {"pC"}},
                 flag_intended=fi) is False
-    # FAIL: chimera -- one blended pattern absorbed both tastes instead of splitting them
+    # FAIL: chimera -- one blended TASTE pattern absorbed both tastes instead of splitting them
     assert _one(spec, {"pM": Counter(B=4, C=4)}, [_pat("pM")], {"B": 0},
                 flag_patterns={1: {"pM"}, 2: {"pM"}, 3: {"pM"}},
                 flag_intended=fi) is False
+    # PASS: a pattern spanning both is fine when it is a cross-cutting observation rather than a
+    # taste. It has to span them to be true, so counting it as a chimera fails a real finding --
+    # the same carve-out stay_separate, fragmentation and min_purity already make.
+    assert _one(spec, {"pB": Counter(B=4, C=1), "pC": Counter(C=4, B=1),
+                       "pX": Counter(B=2, C=2)},
+                [_pat("pB"), _pat("pC"), _pat("pX", "judge-not-applying")], {"B": 0, "C": 0},
+                flag_patterns={1: {"pB", "pC"}, 2: {"pB"}, 3: {"pC"}},
+                flag_intended=fi) is True
     # FAIL: no dual flag in the fixture at all -- nothing to verify, so this cannot pass silently
     assert _one(spec, split_pp, split_rows, {"B": 0, "C": 0},
                 flag_patterns={2: {"pB"}, 3: {"pC"}},

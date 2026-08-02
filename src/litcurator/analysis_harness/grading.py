@@ -18,7 +18,7 @@ from .machinery import pattern_intended, dominant_intended, purity_of
 
 # TASTE_DIRECTIONS lives in machinery (which cannot import this module) -- see it there
 # for why direction decides whether a count is fragmentation or a second finding.
-from .machinery import TASTE_DIRECTIONS  # noqa: F401  (re-exported for readers of this module)
+from .machinery import TASTE_DIRECTIONS
 
 
 def _decided(pattern_for, label):
@@ -217,6 +217,7 @@ def check_terminal(expect, pp, patterns, first_surfaced, history,
     dominant_by_pattern = {pid: dominant_intended(c) for pid, c in pp.items()}
     purity_by_pattern = {pid: purity_of(c) for pid, c in pp.items()}
     by_id = {p["id"]: p for p in patterns}
+    direction_of = {p["id"]: p["direction"] for p in patterns}
 
     def patterns_for(label):
         return [pid for pid, d in dominant_by_pattern.items() if d == label]
@@ -249,21 +250,22 @@ def check_terminal(expect, pp, patterns, first_surfaced, history,
     # Only a TASTE pattern can fuse two tastes. A sharpen or judge-not-applying pattern that
     # spans both is a cross-cutting observation about the profile's wording or the judge's
     # behavior ("the judge penalises specialist journals"), which has to span them to be true.
+    # Fusion is the whole check. There used to be a second term, `set(patterns_for(l1)) &
+    # set(patterns_for(l2))`, meant to catch a pattern belonging to both gaps -- but patterns_for
+    # keys on the DOMINANT intended pattern, which is single-valued, so that intersection is
+    # empty by construction and the term could never fire. It read like a second safeguard and
+    # was doing nothing.
     for pair in expect.get("stay_separate", []):
         l1, l2 = pair
-        direction_of = {p["id"]: p["direction"] for p in patterns}
-        shared = set(patterns_for(l1)) & set(patterns_for(l2))
-        fused = [pid for pid, counter in pp.items()
-                 if counter.get(l1, 0) >= 2 and counter.get(l2, 0) >= 2
-                 and direction_of.get(pid) in TASTE_DIRECTIONS]
-        crosscutting = [pid for pid, counter in pp.items()
-                        if counter.get(l1, 0) >= 2 and counter.get(l2, 0) >= 2
-                        and direction_of.get(pid) not in TASTE_DIRECTIONS]
-        detail = f"shared={sorted(x[:8] for x in shared)}, fused={len(fused)}"
+        both = [(pid, counter) for pid, counter in pp.items()
+                if counter.get(l1, 0) >= 2 and counter.get(l2, 0) >= 2]
+        fused = [pid for pid, _ in both if direction_of.get(pid) in TASTE_DIRECTIONS]
+        crosscutting = [pid for pid, _ in both if direction_of.get(pid) not in TASTE_DIRECTIONS]
+        detail = f"{len(fused)} fused"
         if crosscutting:
             detail += (f"; {len(crosscutting)} cross-cutting allowed "
                        f"({', '.join(sorted({direction_of.get(p) or '?' for p in crosscutting}))})")
-        chk(f"separate: {l1} vs {l2} stay distinct", not shared and not fused, detail)
+        chk(f"separate: {l1} vs {l2} stay distinct", not fused, detail)
 
     # --- one paper, two tastes: it should land in BOTH patterns, not create a chimera -------
     # The failure this guards is the LLM inventing ONE blended pattern to hold two unrelated
@@ -275,8 +277,13 @@ def check_terminal(expect, pp, patterns, first_surfaced, history,
                  if not isinstance(lbls, str) and l1 in lbls and l2 in lbls]
         shared = [fid for fid in duals
                   if {dominant_by_pattern.get(p) for p in (flag_patterns or {}).get(fid, ())} >= {l1, l2}]
-        # a pattern holding >=2 of EACH intended pattern is the fused chimera we are ruling out
-        chimeras = [pid for pid, c in pp.items() if c.get(l1, 0) >= 2 and c.get(l2, 0) >= 2]
+        # A TASTE pattern holding >=2 of EACH intended pattern is the fused chimera being ruled
+        # out. The direction filter matters for the same reason it does in stay_separate above: a
+        # sharpen or judge-not-applying pattern spanning both is a cross-cutting observation,
+        # which has to span them to be true, and counting it as a chimera fails a real finding.
+        chimeras = [pid for pid, c in pp.items()
+                    if c.get(l1, 0) >= 2 and c.get(l2, 0) >= 2
+                    and direction_of.get(pid) in TASTE_DIRECTIONS]
         chk(f"shared: a {l1}+{l2} paper attaches to a pattern of each, no chimera",
             bool(duals) and bool(shared) and not chimeras,
             f"{len(shared)}/{len(duals)} dual flags in both, {len(chimeras)} chimera(s)")

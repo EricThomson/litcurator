@@ -14,16 +14,12 @@ whole history can show, like "did this eventually gather into one pattern."
 Scenarios are registered by name in fixtures/behaviors.py.
 """
 
-import argparse
-import os
 import random
 from collections import Counter, defaultdict
-from pathlib import Path
 
-import anthropic
 from dotenv import load_dotenv
 
-from litcurator import db_interface as DB, profile_analysis as PA
+from litcurator import db_interface as DB
 
 from ..fixtures import scenario_gen as GEN
 from ..machinery import (scratch_db_path, build_db, add_round_flags, run_round,
@@ -129,7 +125,8 @@ def run_reps(spec, reps, pass_frac, client, cluster_model, consolidate_model,
              seed=0, use_cache=True, log=lambda *a: None):
     """Run the spec `reps` times (same synthetic papers each rep, so the variance measured is
     the LLM's, not the fixture's) and tally each named check. A check is GREEN iff it passes in
-    >= pass_frac of reps. Returns (tally, green, total_cost) where tally[label] = (passes, reps)."""
+    >= pass_frac of reps. Returns (tally, green, total_cost, details) where
+    tally[label] = (passes, reps) and details[label] lists why each failing rep failed."""
     tally = defaultdict(lambda: [0, 0])
     details = defaultdict(list)          # label -> what went wrong, per failing rep
     total_cost = 0.0
