@@ -32,16 +32,45 @@ def accumulation(delta_band=(0.16, 0.22), n_sessions=12):
     pattern -> min_session), it fires by a deadline (must not be lost forever -> max_session),
     and the pattern is pure. delta_band is the sweep knob: above 0.15 the flags render in the
     'judge scored too low' bucket; below, in the 'roughly agreed / context' bucket the cluster
-    prompt is told not to pattern -- so the sweep finds where stateless accumulation breaks."""
+    prompt is told not to pattern -- so the sweep finds where stateless accumulation breaks.
+
+    TWELVE SESSIONS IS THE LONG-HORIZON TEST BED, and it is meant to grow. With `robustness` cut
+    this is the only scenario emulating a long history at all -- everything else runs one to four
+    sessions -- and emulating many months is the thing litcurator is actually for. The intended
+    direction is MORE checks riding on these sessions, and more sessions if a question needs them,
+    not fewer.
+
+    So do not shrink it to save model calls. That has been proposed twice, both times on the
+    arithmetic that this is 12 of the suite's 24 calls for one check. The arithmetic is right and
+    the inference is backwards twice over. It reads a test bed as a line item; and the later
+    sessions are not idle repeats even though their summary lines are identical (`0 new, 1 merged`,
+    over and over), because the INPUT grows every session -- by session 10 the model is shown a
+    pattern carrying nine flags and a long paper list, not the two-flag pattern it saw at session 2.
+    A failure like "once a pattern is big enough the model stops recognising it and mints a
+    duplicate" can only appear late, and that is drift and bloat setting in over time: the exact v1
+    failure this project exists to prevent.
+
+    The obvious next thing to add here costs no model calls. This currently grades only the END
+    STATE -- one pattern, right window, pure -- and asserts nothing about the ramp, such as the
+    pattern having kept absorbing flags rather than spawning a sibling at session 9. The per-session
+    history is already collected and handed to the terminal grader, so that is a new check over data
+    already in hand."""
     return GEN.ScenarioSpec(
         name=f"accumulation(delta={delta_band[0]:.2f}-{delta_band[1]:.2f})",
         n_sessions=n_sessions,
         profile=SC.PROFILE,
         papers_by_intended_pattern={"CONNECTOME": banks.connectome_paper_set(delta_band)},
         streams=[GEN.Stream("CONNECTOME", range(0, n_sessions), count_per_session=1)],
-        terminal_expect={"coalesces_to_one": [
-            {"label": "CONNECTOME", "min_session": 1, "max_session": max(2, n_sessions - 4),
-             "min_purity": 0.8}]},
+        terminal_expect={
+            "coalesces_to_one": [
+                {"label": "CONNECTOME", "min_session": 1, "max_session": max(2, n_sessions - 4),
+                 "min_purity": 0.8}],
+            # The ramp, not just the end state. coalesces_to_one is satisfied by a run that mints
+            # the pattern early and then ignores every later flag -- one pure pattern, right
+            # window, and ten flags left on the floor. Measured over the last third of the run,
+            # since the early sessions legitimately hold while the signal is still accumulating.
+            "pool_drains": [{"over_last_sessions": max(2, n_sessions // 3), "max_growth": 0}],
+        },
     )
 
 

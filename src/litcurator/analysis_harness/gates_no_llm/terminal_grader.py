@@ -33,6 +33,13 @@ def _hist(*active_counts):
             for i, n in enumerate(active_counts)]
 
 
+def _pool(*unattached_counts):
+    """A history carrying only the unattached-flag count per session, which is all
+    pool_drains reads."""
+    return [{"session": i, "new": [], "active_count": 1, "unattached": n}
+            for i, n in enumerate(unattached_counts)]
+
+
 def test_coalesces_to_one():
     band = {"coalesces_to_one": [{"label": "W", "min_session": 3, "max_session": 10,
                                   "min_purity": 0.6}]}
@@ -162,6 +169,27 @@ def test_open_pile_settles():
           "a +1-per-session climb and an empty history fail")
 
 
+def test_pool_drains():
+    """The failure this catches is the one coalesces_to_one CANNOT see. If the machinery mints a
+    pattern early and then holds every later flag instead of attaching it, the end state is a
+    single pure pattern surfaced in the right window -- a clean pass -- while every flag after
+    the second one was left on the floor. The tell is the unattached pool, which stays flat when
+    flags are being absorbed and climbs when they are not."""
+    spec = {"pool_drains": [{"over_last_sessions": 3, "max_growth": 0}]}
+    # PASS: one flag in, one attached, every session -- the pool never grows
+    assert _one(spec, {"pW": Counter(W=9)}, [_pat("pW")], {"W": 1},
+                _pool(1, 2, 1, 1, 1, 1)) is True
+    # PASS: a backlog being worked off
+    assert _one(spec, {"pW": Counter(W=9)}, [_pat("pW")], {"W": 1},
+                _pool(1, 4, 3, 2, 1, 1)) is True
+    # FAIL: recognised once, then ignored -- the pattern exists but stopped absorbing
+    assert _one(spec, {"pW": Counter(W=2)}, [_pat("pW")], {"W": 1},
+                _pool(1, 2, 3, 4, 5, 6)) is False
+    # FAIL: nothing recorded, so nothing can be concluded
+    assert _one(spec, {"pW": Counter(W=9)}, [_pat("pW")], {"W": 1}, []) is False
+    print("pool_drains: a flat or draining pool passes; a climbing pool and an empty history fail")
+
+
 def test_empty_expect():
     assert E.check_terminal({}, {"pA": Counter(A=3)}, [_pat("pA")], {"A": 0}, []) == []
     print("empty terminal_expect -> no checks")
@@ -177,6 +205,7 @@ CHECKS = [
     test_named_disinterest_not_dropped,
     test_recurrence_accumulates,
     test_open_pile_settles,
+    test_pool_drains,
     test_empty_expect,
 ]
 

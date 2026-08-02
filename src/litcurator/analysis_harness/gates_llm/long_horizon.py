@@ -74,7 +74,11 @@ def run_scenario(spec, rng, client, cluster_model, consolidate_model,
                                  "priority": cnew.get("priority"), "direction": cnew.get("direction")})
                 if d is not None and d not in first_surfaced:
                     first_surfaced[d] = s
-            history.append({"session": s, "new": snap_new,
+            # `unattached` is the flag count this session was actually handed, and it is the only
+            # window onto whether flags are still being ABSORBED as the run goes on. It stays flat
+            # when each arriving flag gets attached and climbs when they are being held instead --
+            # see pool_drains, which reads it. It was computed here all along and only logged.
+            history.append({"session": s, "new": snap_new, "unattached": n_flags,
                             "active_count": len(DB.get_active_patterns(conn))})
 
             per_round += check_round(conn, rnd["expect"], summary, candidates, flag_intended,

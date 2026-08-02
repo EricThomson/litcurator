@@ -324,6 +324,29 @@ def check_terminal(expect, pp, patterns, first_surfaced, history,
         chk(f"settles: open pile grew <= {cap} over the last {window} sessions", grew <= cap,
             f"{' -> '.join(str(h['active_count']) for h in tail)} = {grew:+d}")
 
+    # --- flags keep being absorbed, not just recognised once ---------------------------------
+    # This catches the one failure coalesces_to_one structurally cannot. That check reads the END
+    # STATE: one pattern, surfaced in the right window, pure. A machinery that mints a pattern
+    # early and then HOLDS every later flag instead of attaching it satisfies all three -- one
+    # pure pattern, right window -- while every flag after the second was left on the floor. The
+    # taste was recognised once and then ignored for the rest of the run, which is exactly the
+    # late drift a long scenario exists to expose.
+    #
+    # The unattached pool is the tell, and it costs nothing: it is the flag count already fed to
+    # each session. Absorbing normally it stays flat (one flag arrives, one gets attached);
+    # ignoring flags it climbs monotonically.
+    for spec in expect.get("pool_drains", []):
+        window, cap = spec["over_last_sessions"], spec["max_growth"]
+        pool = [h["unattached"] for h in history if "unattached" in h]
+        if not pool:
+            chk(f"drains: unattached pool grew <= {cap} over the last {window} sessions", False,
+                "NO unattached counts recorded -- nothing to measure")
+            continue
+        tail = pool[-(window + 1):]
+        grew = tail[-1] - tail[0]
+        chk(f"drains: unattached pool grew <= {cap} over the last {window} sessions", grew <= cap,
+            f"{' -> '.join(str(n) for n in tail)} = {grew:+d}")
+
     # --- a gap the profile ALREADY states must be RECORDED, not dropped as "covered" --------
     # When the profile says something plainly and the judge ignores it anyway, that is a PROMPT
     # problem rather than a hole in the profile. The machinery's job is still to surface it --
