@@ -86,6 +86,22 @@ JUDGE_HARNESS_CASES_FILE = DATA_DIR / "judge_harness_cases.json"
 JUDGE_HARNESS_RUNS_DIR = DATA_DIR / "judge_harness_runs"
 
 # ---------------------------------------------------------------------------
+# Analysis harness
+# ---------------------------------------------------------------------------
+# The profile-analysis machinery's own gates: the cluster -> consolidate -> record
+# pipeline is stateful and set-valued (a SET of flags becomes a SET of patterns plus
+# changes to permanent memory), so its tests are staged synthetic SCENARIOS rather than
+# a list of cases. Everything runs against a throwaway database on wholly synthetic
+# flags -- no judge runs anywhere. See litcurator analysis_harness.
+ANALYSIS_HARNESS_RUNS_DIR = DATA_DIR / "analysis_harness_runs"
+
+# Cluster output is a pure function of (cluster prompt, papers, profile, model), so it
+# is cached here. Most iteration is on the consolidate prompt, and pinning the cluster
+# output makes consolidate the only thing varying. Editing the cluster prompt changes
+# the key and correctly invalidates.
+ANALYSIS_HARNESS_CACHE_DIR = DATA_DIR / "analysis_harness_cache"
+
+# ---------------------------------------------------------------------------
 # Journals
 # ---------------------------------------------------------------------------
 # Journals to search each retrieval run.

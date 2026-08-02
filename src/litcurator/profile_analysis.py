@@ -166,25 +166,58 @@ def _format_papers(flags):
     return "\n\n---\n\n".join(sections), ordered
 
 
-def _format_existing_patterns(active, closed_patterns):
+def _format_existing_patterns(active, closed_patterns, examples=None):
     """The pattern memory, shown to the consolidate step WITH ids so it can name the exact
     pattern a candidate merges into (open) or recurs against (closed). Empty string when
-    there is no history yet."""
+    there is no history yet.
+
+    `examples` is {pattern_id: [{title, ...}]} from db_interface.get_pattern_examples, and it
+    is the most useful thing in the block. Everything else here -- the name, the description --
+    is the model's own paraphrase of a gap, so matching a returning gap against it means
+    comparing two model-authored noun phrases, which is a coin flip: shown "Formal/Normative
+    Theory as Mechanistic" the model minted "Theoretical / Computational Neuroscience Accounts"
+    for the same returning gap. The PAPERS are different in kind. The candidate the model is
+    holding is described by its papers too, so like compares with like.
+
+    Also shown: how many flags a pattern holds, and how many times it has already come back --
+    a gap on its third return should be logged, not minted afresh. Closed patterns keep their
+    direction (the bracket used to be reused for status, which dropped it for exactly the
+    patterns hardest to match).
+
+    NOT shown: suggested_edit. It is the description again in imperative mood, it nearly
+    doubles the block, and it is first-person profile prose arriving in a message that ends
+    with the real profile as source of truth -- which invites the model to read it as profile
+    text and file a real gap as judge-not-applying.
+
+    Passing examples=None renders exactly as before, with no papers."""
     if not active and not closed_patterns:
         return ""
+    examples = examples or {}
+
+    def rows(p, bracket):
+        seen = f", returned {p['recurred_count']}x" if p.get("recurred_count") else ""
+        out = [f"  - id={p['id']}  [{bracket}]  {p['name']}  "
+               f"({p.get('flag_count', 0)} flags{seen})"]
+        if p.get("description"):
+            out.append(f"      {p['description']}")
+        papers = examples.get(p["id"]) or []
+        if papers:
+            titles = " | ".join((e["title"] or "")[:120] for e in papers)
+            out.append(f"      papers: {titles}")
+        return out
+
     lines = ["## Existing pattern memory (match candidates against these by MEANING, using the id)"]
     if active:
         lines.append("\nOPEN patterns (still awaiting a decision) -- a candidate that is the same "
                      "gap is merge_into_open with that id:")
         for p in active:
-            lines.append(f"  - id={p['id']}  [{p['direction']}] {p['name']}: "
-                         f"{p.get('description') or ''}")
+            lines += rows(p, p["direction"])
     if closed_patterns:
         lines.append("\nCLOSED patterns (already INCORPORATED or REJECTED) -- a candidate that matches "
                      "is merge_into_closed with that id (logs the recurrence, does NOT reopen):")
         for p in closed_patterns:
             why = p["status"] + (f": {p['status_note']}" if p.get("status_note") else "")
-            lines.append(f"  - id={p['id']}  [{why}] {p['name']}: {p.get('description') or ''}")
+            lines += rows(p, f"{p['direction']} | {why}")
     return "\n".join(lines)
 
 
@@ -527,7 +560,11 @@ def suggest_edits(start=None, end=None,
         # matches (merge into an open pattern / recurs against a closed pattern).
         active_patterns = db_interface.get_active_patterns(conn)
         closed_patterns = db_interface.get_patterns(conn, statuses=("incorporated", "rejected"))
-        existing_block = _format_existing_patterns(active_patterns, closed_patterns)
+        # The example papers are the strongest identity signal in the memory block -- see
+        # _format_existing_patterns. One batched query for both lists.
+        examples = db_interface.get_pattern_examples(
+            conn, [p["id"] for p in active_patterns] + [p["id"] for p in closed_patterns])
+        existing_block = _format_existing_patterns(active_patterns, closed_patterns, examples)
 
         rng = f"{start or 'all'} to {end or 'all'}"
         print(f"{n} unattached flags ({rng})  |  memory: {len(active_patterns)} open + "

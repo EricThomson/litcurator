@@ -193,7 +193,7 @@ CREATE TABLE IF NOT EXISTS flags (
 # profile prose. See the plan starry-brewing-horizon.md.
 # ---------------------------------------------------------------------------
 
-# direction: over = judge scores this class too high; under = too low;
+# direction: over = judge scores this kind of paper too high; under = too low;
 # sharpen = a boundary needs resolution; judge-not-applying = already in the
 # profile but the judge is not applying it -- a signal to fix the PROMPT, not to
 # pile on more profile prose. name/description/suggested_edit are editable working
@@ -944,7 +944,10 @@ def get_patterns(conn, statuses=None):
             AND e2.event IN ('created', 'carried', 'incorporated', 'rejected')
             ORDER BY e2.created_at DESC, e2.id DESC LIMIT 1
         )
-        ORDER BY ev.created_at DESC
+        -- id breaks the tie: created_at is second-resolution, and every pattern minted in one
+        -- consolidation pass shares a timestamp, so without this their order is arbitrary and
+        -- changes between runs. Same lesson get_closed_recurrences already records.
+        ORDER BY ev.created_at DESC, ev.id DESC
     """).fetchall()
     result = [dict(r) for r in rows]
     if statuses is not None:
@@ -982,9 +985,44 @@ def get_pattern_provenance(conn, pattern_id):
         JOIN flags f ON f.id = pf.flag_id
         JOIN articles a ON a.pmid = f.pmid
         WHERE pf.pattern_id = ?
-        ORDER BY ABS(f.delta) DESC
+        ORDER BY ABS(f.delta) DESC, f.id
     """, (pattern_id,)).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_pattern_examples(conn, pattern_ids, limit=3):
+    """The top `limit` example papers behind EACH of `pattern_ids`, largest |delta| first --
+    the batched form of get_pattern_provenance. Returns {pattern_id: [{title, journal, pmid,
+    delta}, ...]} with every requested id present, even when it has no papers.
+
+    Batched not for speed (this is local sqlite) but so the caller that renders the pattern
+    memory can stay a pure formatter of plain data, which is what makes it testable. Feeding a
+    connection into a formatter to do a query per pattern would give that up.
+
+    Ordering matters more than it looks: without the f.id tiebreak, two flags with equal
+    |delta| order arbitrarily and the memory block shown to the model changes between runs for
+    no reason -- the same second-resolution hazard get_closed_recurrences documents."""
+    if not pattern_ids:
+        return {}
+    ids = list(dict.fromkeys(pattern_ids))
+    marks = ",".join("?" * len(ids))
+    rows = conn.execute(f"""
+        SELECT pattern_id, title, journal, pmid, delta FROM (
+            SELECT pf.pattern_id AS pattern_id, a.title AS title, a.journal AS journal,
+                   f.pmid AS pmid, f.delta AS delta,
+                   ROW_NUMBER() OVER (PARTITION BY pf.pattern_id
+                                      ORDER BY ABS(f.delta) DESC, f.id) AS rn
+            FROM pattern_flags pf
+            JOIN flags f ON f.id = pf.flag_id
+            JOIN articles a ON a.pmid = f.pmid
+            WHERE pf.pattern_id IN ({marks})
+        ) WHERE rn <= ?
+        ORDER BY pattern_id, rn
+    """, (*ids, limit)).fetchall()
+    out = {pid: [] for pid in ids}
+    for r in rows:
+        out[r["pattern_id"]].append(dict(r))
+    return out
 
 
 def get_closed_recurrences(conn):

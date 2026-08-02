@@ -7,7 +7,8 @@ cli.py -- litcurator command line.
 
 Thin dispatch over the pipeline (run), DB summaries (status), the Dash apps (review,
 profile_workbench, prompt_workbench, the labelers), the offline profile_analysis
-suggester, and the judge harness. Each subcommand is a thin wrapper over its module.
+suggester, and the two harnesses: judge_harness for the judge, analysis_harness for the
+profile-analysis machinery. Each subcommand is a thin wrapper over its module.
 """
 
 import argparse
@@ -225,6 +226,46 @@ def _cmd_judge_harness(args):
     print(f"\nsaved to {path}")
 
 
+def _cmd_analysis_harness(args):
+    from pathlib import Path
+    from litcurator import analysis_harness as AH
+    try:
+        gates = AH.select_gates(args.gate)
+    except KeyError as e:
+        print(e)
+        raise SystemExit(2)
+
+    read = lambda p: Path(p).read_text(encoding="utf-8") if p else None
+    cluster_prompt, consolidate_prompt = read(args.cluster_prompt), read(args.consolidate_prompt)
+    drafts = [Path(p).name for p in (args.cluster_prompt, args.consolidate_prompt) if p]
+
+    if args.dry_run:
+        # A draft still gets applied first, so the dry run's fingerprint answers "did I paste
+        # the right path".
+        if cluster_prompt or consolidate_prompt:
+            AH.run_gates([], cluster_prompt=cluster_prompt,
+                         consolidate_prompt=consolidate_prompt)
+        text, ok = AH.dry_run(gates)
+        print(text)
+        raise SystemExit(0 if ok else 2)
+
+    if any(g not in AH.FREE_GATES for g in gates):
+        print(f"models: cluster={AH.PA.DEFAULT_CLUSTER_MODEL}  "
+              f"consolidate={AH.PA.DEFAULT_CONSOLIDATE_MODEL}", flush=True)
+    results, cluster_fp, consolidate_fp = AH.run_gates(
+        gates, cluster_prompt=cluster_prompt, consolidate_prompt=consolidate_prompt,
+        progress=lambda gate, done, total: print(f"  [{done}/{total}] {gate}", flush=True))
+
+    report = AH.format_report(results, cluster_fp, consolidate_fp, drafts=drafts)
+    print("\n" + report)
+    if len(results) < len(gates):
+        print(f"\nnot spending: {len(gates) - len(results)} paid gates skipped, "
+              f"fix the free gates first")
+    path = AH.write_report(report + "\n" + AH.format_transcripts(results))
+    print(f"\nsaved to {path}")
+    raise SystemExit(AH.exit_code(results, gates))
+
+
 def _cmd_label_relevance(args):
     from litcurator.apps import relevance_labeler
     relevance_labeler.run_app(start=args.start, end=args.end)
@@ -362,6 +403,19 @@ def main():
     jh_p.add_argument("--dry-run", action="store_true",
                       help="verify the fixture pmids resolve and list cases, without scoring")
     jh_p.set_defaults(func=_cmd_judge_harness)
+
+    ah_p = sub.add_parser("analysis_harness",
+                           help="run the profile-analysis gates (free ones first, then the paid ones)")
+    ah_p.add_argument("gate", nargs="?", default=None,
+                      help="'quick' for the free gates only, or one gate by name "
+                           "(default: every gate)")
+    ah_p.add_argument("--cluster-prompt", default=None, metavar="FILE",
+                      help="path to a draft cluster prompt to test (default: the live one)")
+    ah_p.add_argument("--consolidate-prompt", default=None, metavar="FILE",
+                      help="path to a draft consolidate prompt to test (default: the live one)")
+    ah_p.add_argument("--dry-run", action="store_true",
+                      help="list the gates and check preconditions, without running or spending")
+    ah_p.set_defaults(func=_cmd_analysis_harness)
 
     lr_p = sub.add_parser("label_relevance",
                            help="launch the relevance labeler (relevant 0/1, date-masked)")
