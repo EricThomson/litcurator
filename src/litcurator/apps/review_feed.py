@@ -17,6 +17,7 @@ Launch:  litcurator review        (or)  python -m litcurator.apps.review_feed
 
 import argparse
 import json
+import sqlite3
 
 import dash_bootstrap_components as dbc
 from dash import ALL, Dash, Input, Output, State, callback, ctx, dcc, html, no_update
@@ -384,6 +385,11 @@ def cb_save_flag(n_clicks_list, scores, notes, start, end, min_score):
     Output("reload-feed", "data", allow_duplicate=True),
     Output("flag-alert", "children", allow_duplicate=True),
     Output("flag-alert", "is_open", allow_duplicate=True),
+    # color + duration so a REFUSAL does not arrive as a green flash that vanishes in three
+    # seconds. This alert has exactly one writer (saving uses per-card inline errors), so
+    # setting them here cannot fight another callback.
+    Output("flag-alert", "color", allow_duplicate=True),
+    Output("flag-alert", "duration", allow_duplicate=True),
     Input({"type": "flag-delete", "pmid": ALL}, "n_clicks"),
     State("reload-feed", "data"),
     prevent_initial_call=True,
@@ -396,14 +402,38 @@ def cb_delete_flag(n_clicks_list, reload_n):
     # asymmetry ever bothers you; it is a deliberate trade, not an oversight.
     triggered = ctx.triggered_id
     if not triggered or not any(n for n in n_clicks_list if n):
-        return no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update, no_update
     pmid = triggered["pmid"]
     conn = db_interface.get_connection()
     try:
         db_interface.delete_flag(conn, pmid)
+    except sqlite3.IntegrityError:
+        # The flag is cited by pattern_flags, so it is a pattern's EVIDENCE, not a stray
+        # entry -- and pattern -> flags -> papers is what answers "why is this line in my
+        # profile?". PRAGMA foreign_keys is ON and pattern_flags.flag_id has no ON DELETE,
+        # so SQLite refuses the delete and the provenance chain cannot be orphaned. The
+        # database was already defending itself; this only says so out loud, because the
+        # bare raise surfaced as a Dash callback error and the success alert below fired
+        # for a delete that never happened.
+        #
+        # Cannot fire while `patterns` is empty. It starts firing the first time a
+        # curation session attaches flags -- i.e. the moment the tool starts working.
+        #
+        # No override offered on purpose. Correcting a flag's NUMBER never needs one:
+        # insert_flag appends and get_flags takes the latest row per paper, so re-saving
+        # supersedes. Removal is only for an unattached mis-click.
+        # "a flag on this paper", not "this flag": delete_flag is pmid-scoped (it removes
+        # every flag row for the paper), so an attached OLDER row blocks the delete even when
+        # the row on the card is a newer unattached re-flag. The refusal is still right -- the
+        # older row is a pattern's evidence -- but the wording has to name what is actually
+        # blocking, or the message sends you looking at the wrong record.
+        return no_update, (
+            f"Cannot remove {pmid}: a flag on this paper is attached to a pattern and is part "
+            f"of its provenance. To change your score, just save the new one -- the latest "
+            f"flag wins."), True, "warning", 8000
     finally:
         conn.close()
-    return reload_n + 1, f"Flag removed: {pmid}.", True
+    return reload_n + 1, f"Flag removed: {pmid}.", True, "success", 3000
 
 
 def run_app(start=None, end=None, port=8052, debug=False):

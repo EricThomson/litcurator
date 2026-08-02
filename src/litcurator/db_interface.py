@@ -1058,12 +1058,12 @@ def get_closed_recurrences(conn):
 # Human labels (benchmark only -- their own table, never evaluations)
 # ---------------------------------------------------------------------------
 
-def insert_human_label(conn, pmid, relevant, curation_label=None, notes=None):
-    conn.execute("""
-        INSERT OR REPLACE INTO human_labels (pmid, relevant, curation_label, notes)
-        VALUES (?, ?, ?, ?)
-    """, (pmid, relevant, curation_label, notes))
-    conn.commit()
+# NB there is deliberately no insert_human_label() here. One existed, with zero callers, and
+# it was INSERT OR REPLACE over all four columns with curation_label defaulting to None -- so
+# any call passing only (pmid, relevant) would have silently blanked an existing curation
+# rating. Aimed at the 2000-label benchmark table, which is hand-made and unrecoverable.
+# The two live writers below are column-scoped and safe: set_relevance_label upserts ONLY
+# relevant (ON CONFLICT DO UPDATE), set_curation_label updates ONLY curation_label.
 
 
 def get_human_label(conn, pmid):

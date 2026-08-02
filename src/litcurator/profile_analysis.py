@@ -38,6 +38,7 @@ markdown report to ~/.litcurator/suggestions/. See starry-brewing-horizon.md.
 
 import os
 import sys
+from datetime import datetime
 
 import anthropic
 from dotenv import load_dotenv
@@ -53,6 +54,11 @@ load_dotenv()
 # drop-in fallback only if the duplicate rate on real data proves poor.
 DEFAULT_CLUSTER_MODEL = "claude-sonnet-4-6"
 DEFAULT_CONSOLIDATE_MODEL = "claude-sonnet-4-6"
+
+# The four the patterns table's CHECK constraint allows. Kept beside the tool schema that
+# enums the same set, because the schema STEERS the model and this one is what the database
+# will actually accept.
+VALID_DIRECTIONS = ("over", "under", "sharpen", "judge-not-applying")
 
 # Approximate API prices, ($/M input, $/M output). Update if pricing changes.
 MODEL_COSTS = {
@@ -441,20 +447,42 @@ def _record_consolidation(conn, candidates, ordered_flags):
                 return val[:60]
         return None
 
+    def _direction(c):
+        """The candidate's direction, clamped to the four the patterns table allows.
+
+        The tool schema enums it, so the model is strongly steered, but nothing HARD-validates
+        a tool argument on the way back -- and `patterns` carries a CHECK constraint, so one
+        out-of-vocabulary value raises IntegrityError partway through recording. Since
+        create_pattern commits per candidate, that leaves a HALF-WRITTEN consolidation. Every
+        other field the model controls already has a recovery path (a missing name, a
+        hallucinated pattern id, an unrecognized choice); this was the one that could still
+        abort the run, and lossless-by-construction has to mean it too. Marked so the coercion
+        is visible in the summary and the report rather than passing as the model's own word."""
+        val = (c.get("direction") or "").strip()
+        if val in VALID_DIRECTIONS:
+            return val, False
+        return "under", True
+
     def _create(c, flag_ids, extra_note=""):
+        direction, coerced = _direction(c)
+        if coerced and c.get("direction"):
+            extra_note += f" [direction {c['direction']!r} not recognized, recorded as under]"
         note = f"{c.get('priority', 'defer')}: {c.get('rationale', '')}{extra_note}".strip()
         return db_interface.create_pattern(
             conn, name=(_fallback_name(c) or "(unnamed pattern)"),
-            direction=(c.get("direction") or "under"),
+            direction=direction,
             description=c.get("description"), suggested_edit=c.get("suggested_edit"),
             flag_ids=flag_ids, note=note or None)
 
     def _record_new(c, flag_ids, extra_note="", recovered=False):
+        direction, coerced = _direction(c)
         entry = {"id": _create(c, flag_ids, extra_note), "name": _fallback_name(c),
-                 "direction": c.get("direction"), "priority": c.get("priority"),
+                 "direction": direction, "priority": c.get("priority"),
                  "n_flags": len(flag_ids)}
         if recovered:
             entry["recovered"] = True
+        if coerced:
+            entry["direction_coerced"] = c.get("direction")
         summary["new"].append(entry)
 
     for c in candidates:
@@ -583,39 +611,77 @@ def suggest_edits(start=None, end=None,
                                                consolidate_model)
         total = cost1 + cost2
 
-        summary = None
-        if persist:
-            summary = _record_consolidation(conn, candidates, ordered_flags)
-            for c in summary["new"]:
-                tag = " [act_now]" if c.get("priority") == "act_now" else ""
-                rec = " (recovered)" if c.get("recovered") else ""
-                print(f"  + new [{c['direction']}] {c['name']}{tag}{rec}  ({c['n_flags']} flags)")
-            for c in summary["merged"]:
-                print(f"  ~ merged into {c['id'][:12]} (+{c['added']} flags -> carried)")
-            for c in summary["recurred"]:
-                print(f"  ! closed pattern {c['id'][:12]} recurred (+{c['added']} flags)")
-            for c in summary["held"]:
-                print(f"  . held (unattached): {c.get('name') or c.get('rationale')}")
-            for c in summary["skipped"]:
-                print(f"  x skipped: {c.get('why')}")
-            print(f"[{_summary_line(summary)}  |  total cost: ${total:.4f}]")
-        else:
-            print(f"[dry run: {len(candidates)} candidates consolidated, nothing recorded  "
-                  f"|  total cost: ${total:.4f}]")
+        # Everything below has already been PAID FOR, and the report is the only place some
+        # of it ever lands: the raw cluster text, and every `hold` (a held candidate touches
+        # no table by design). Recording commits per candidate, so an exception between here
+        # and the file write would leave a half-written consolidation AND no record of what
+        # was proposed -- and a re-run cannot reproduce it, because the flag pool has moved.
+        # So the write happens in a finally, and says so when recording did not finish.
+        summary, recorded = None, False
+        try:
+            if persist:
+                summary = _record_consolidation(conn, candidates, ordered_flags)
+                for c in summary["new"]:
+                    tag = " [act_now]" if c.get("priority") == "act_now" else ""
+                    rec = " (recovered)" if c.get("recovered") else ""
+                    coerced = (f" (direction {c['direction_coerced']!r} not recognized)"
+                               if c.get("direction_coerced") else "")
+                    _echo(f"  + new [{c['direction']}] {c['name']}{tag}{rec}{coerced}"
+                          f"  ({c['n_flags']} flags)\n")
+                for c in summary["merged"]:
+                    _echo(f"  ~ merged into {c['id'][:12]} (+{c['added']} flags -> carried)\n")
+                for c in summary["recurred"]:
+                    _echo(f"  ! closed pattern {c['id'][:12]} recurred (+{c['added']} flags)\n")
+                for c in summary["held"]:
+                    _echo(f"  . held (unattached): {c.get('name') or c.get('rationale')}\n")
+                for c in summary["skipped"]:
+                    _echo(f"  x skipped: {c.get('why')}\n")
+                _echo(f"[{_summary_line(summary)}  |  total cost: ${total:.4f}]\n")
+                recorded = True
+            else:
+                print(f"[dry run: {len(candidates)} candidates consolidated, nothing recorded  "
+                      f"|  total cost: ${total:.4f}]")
+                recorded = True
+        finally:
+            out = _save_report(start, end, n, rng, total, clusters, candidates,
+                               cluster_model, consolidate_model, persist, summary, recorded)
     finally:
         conn.close()
 
+    print(f"\nSaved to {out}")
+    return out
+
+
+def _save_report(start, end, n, rng, total, clusters, candidates,
+                 cluster_model, consolidate_model, persist, summary, recorded):
+    """Write the suggestions markdown and return its path. Called from a finally, so it must
+    tolerate a run that died partway: `summary` is None and `recorded` False in that case."""
     SUGGESTIONS_DIR.mkdir(parents=True, exist_ok=True)
     slug = f"{start or 'all'}_{end or 'all'}"
 
     def _short(model_id):
         return model_id.replace("claude-", "").replace("/", "-")
 
-    tail = "DRY RUN (nothing recorded)" if not persist else _summary_line(summary)
+    if not recorded:
+        tail = ("INCOMPLETE -- the run raised during recording. The database may hold a "
+                "PARTIAL consolidation; this file is the only record of what was proposed.")
+    elif persist:
+        tail = _summary_line(summary)
+    else:
+        tail = "DRY RUN (nothing recorded)"
+
     # Both models in the name: swapping only the consolidate model must not clobber the
     # previous report, or a model A/B is unreadable.
+    #
+    # And a TIMESTAMP, because the window plus the models did not make the name unique: two
+    # runs over the same flags with the same models -- a dry run and the real one, or the same
+    # window before and after a prompt edit -- wrote the same path and the second silently
+    # replaced the first. Timestamped and never overwritten, like the harness reports.
+    # `dryrun` in the name so the previewing runs are distinguishable from the one that wrote.
+    stamp = f"{datetime.now():%Y%m%d_%H%M%S}"
+    kind = "pattern_suggestions" if persist else "pattern_suggestions_dryrun"
     out = (SUGGESTIONS_DIR /
-           f"pattern_suggestions_{slug}_{_short(cluster_model)}__{_short(consolidate_model)}.md")
+           f"{kind}_{slug}_{_short(cluster_model)}__{_short(consolidate_model)}_{stamp}.md")
     out.write_text(
         f"# Pattern suggestions\n\n"
         f"Unattached flags: {n}  |  range: {rng}  |  cluster: {cluster_model}  "
@@ -624,5 +690,4 @@ def suggest_edits(start=None, end=None,
         f"---\n\n## Consolidation (choices)\n\n{_format_consolidation_md(candidates)}\n",
         encoding="utf-8",
     )
-    print(f"\nSaved to {out}")
     return out

@@ -59,7 +59,14 @@ def _label_for(gate, line):
 
 
 def _run_named(module, gate):
-    """Shape one: a module exposing CHECKS."""
+    """Shape one: a module exposing CHECKS.
+
+    Catches Exception, not just AssertionError. A check that dies some OTHER way -- a leaked
+    file handle, a locked scratch database, a typo in the check itself -- used to escape this
+    loop, escape run_free_gate, and abort the whole `litcurator analysis_harness` run with a
+    traceback and no report at all. That is a worse outcome than any red: you lose the eleven
+    gates that would have run next, and you cannot tell a broken check from a broken system.
+    It is reported as a failed check carrying the exception type, so the run continues."""
     out = []
     for fn in module.CHECKS:
         label = f"{gate}: {fn.__name__.replace('test_', '', 1)}"
@@ -71,11 +78,17 @@ def _run_named(module, gate):
             out.append((True, label, printed[-1] if printed else ""))
         except AssertionError as e:
             out.append((False, label, _failure_detail(e)))
+        except Exception as e:                       # noqa: BLE001 -- see the docstring
+            out.append((False, label,
+                        f"{_where(e)}  {type(e).__name__}: {str(e).strip()[:120]}"))
     return out
 
 
 def _run_script(module, gate):
-    """Shape two: a module that runs top to bottom in main()."""
+    """Shape two: a module that runs top to bottom in main().
+
+    Catches Exception for the same reason _run_named does: a script gate that dies on
+    something other than an assertion must not take the whole run down with it."""
     buf = io.StringIO()
     try:
         with contextlib.redirect_stdout(buf):
@@ -85,17 +98,19 @@ def _run_script(module, gate):
         # this on one branch) must not count as a pass just because it printed a line.
         return [((("(BAD)" not in ln) and ("FAILED" not in ln)), _label_for(gate, ln), ln)
                 for ln in done]
-    except AssertionError as e:
+    except Exception as e:                           # noqa: BLE001 -- see the docstring
         done = _stage_lines(buf.getvalue())
         out = [(True, _label_for(gate, ln), ln) for ln in done]
+        detail = (_failure_detail(e) if isinstance(e, AssertionError)
+                  else f"{_where(e)}  {type(e).__name__}: {str(e).strip()[:120]}")
         out.append((False, f"{gate}: stopped",
-                    f"{_failure_detail(e)} -- later stages in this gate did not run"))
+                    f"{detail} -- later stages in this gate did not run"))
         return out
 
 
-# name -> (module name, how to run it). Order matters: workbench-render goes last because it
-# repoints db_interface.LITCURATOR_DB at its own scratch copy, and the runner restores that
-# afterwards rather than trusting the gate to.
+# name -> (module name, how to run it). Order matters: the two workbench gates go last because
+# they repoint db_interface.LITCURATOR_DB at their own scratch database, and the runner restores
+# that afterwards rather than trusting a gate to.
 #
 # Module NAMES rather than modules: importing them here would mean a gate run with
 # `python -m ...gates_no_llm.record_stage` gets imported twice, once by this package and once as
@@ -107,6 +122,7 @@ FREE_GATES = {
     "scenario-compiler": ("scenario_compiler", _run_named),
     "record-stage": ("record_stage", _run_script),
     "pattern-schema": ("pattern_schema", _run_script),
+    "workbench-actions": ("workbench_actions", _run_named),
     "workbench-render": ("workbench_render", _run_script),
 }
 

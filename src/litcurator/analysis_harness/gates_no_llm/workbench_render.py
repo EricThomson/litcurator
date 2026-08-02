@@ -6,6 +6,7 @@ without touching the live DB. Dash callback *behavior* still needs a manual clic
 
     python -m litcurator.analysis_harness.gates_no_llm.workbench_render
 """
+import importlib
 import shutil
 from pathlib import Path
 
@@ -35,7 +36,15 @@ def main():
     conn.close()
 
     # importing builds app.layout via _initial_patterns() (reads SCRATCH)
+    #
+    # The reload is what keeps that true. `import` is a no-op once the module is in
+    # sys.modules, and workbench-actions now imports it first, so this gate was asserting a
+    # layout built earlier against a DIFFERENT database -- the construction it exists to check
+    # never ran, and it passed by replay. Reloading re-executes the module body, which is the
+    # whole point of the check, and makes the gate independent of what ran before it rather
+    # than silently dependent on gate order.
     import litcurator.apps.profile_workbench as wb
+    importlib.reload(wb)
     assert wb.app.layout is not None
     print("layout built OK; app.title =", wb.app.title)
 
