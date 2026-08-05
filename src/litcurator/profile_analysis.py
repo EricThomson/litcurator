@@ -43,7 +43,7 @@ from datetime import datetime
 import anthropic
 from dotenv import load_dotenv
 
-from litcurator import db_interface, profile_interface
+from litcurator import analysis_prompt_interface, db_interface, profile_interface
 from litcurator.config import DATA_DIR, USER_JOURNAL_RATINGS
 
 load_dotenv()
@@ -74,44 +74,43 @@ DELTA_THRESHOLD = 0.15
 
 
 # ---------------------------------------------------------------------------
-# Prompts (validated in v1/v3 -- kept verbatim)
+# SHIPPED DEFAULTS -- deliberately minimal, and NOT what runs for you.
+#
+# The two steps below run the CLUSTER and CONSOLIDATE sections of
+# prompt/analysis_prompt.md in your data directory, which is versioned and content-addressed
+# exactly like your profile and your judge prompt. These constants exist only to seed that file
+# the first time. Editing them changes nothing for an existing install -- edit the active prompt
+# in the analysis prompt lab (it has a Set ACTIVE button) or the file itself.
+#
+# They are MINIMAL on purpose, and the split is deliberate: the prose carries only what the
+# machinery cannot enforce for itself. The four choices, the four directions and the required
+# fields are already pinned by _CONSOLIDATE_TOOL below, so the prompt does not restate them --
+# it says what they MEAN. Everything else is tuning (how eagerly to merge, how to weigh a note,
+# what counts as enough evidence), and tuning belongs in your versioned copy where it can be
+# A/B'd and rolled back, not in the package.
+#
+# If either of these grows past a screen, someone has tuned the default instead of their own.
 # ---------------------------------------------------------------------------
 
-CLUSTER_PROMPT = """
-You are analyzing a researcher's numeric flags on a neuroscience literature curation system.
+# litcurator ships NO prompt content -- see the same note in judge.py. The two steps below run
+# the CLUSTER and CONSOLIDATE sections of prompt/analysis_prompt.md in your data directory,
+# which you author and which is versioned and content-addressed like your profile. Writing a
+# good minimal default for a new user is a real task, and it is on the long-term list rather
+# than something to approximate here: a mediocre default would silently shape every pattern
+# this machinery ever produces.
+PROMPT_NOT_AUTHORED = "<no analysis prompt authored>"
 
-The system scores papers 0-1 against the researcher's seed profile. The researcher has reviewed
-papers and given each their own score (your_score). delta = your_score - judge_score:
-  - Negative delta: judge scored too high -- the seed is over-triggering on something
-  - Positive delta: judge scored too low -- the seed is missing coverage for something
-  - Near zero: agreement
 
-The JUDGE RATIONALE shows what the seed caused the judge to say -- the primary diagnostic.
-Over-scored papers show the judge citing interests that do not really apply; under-scored papers
-show it missing interests absent from the seed.
-
-YOUR JOB HERE IS RECALL. Surface every distinct candidate preference pattern the flags reveal.
-A later stage records and ranks these, so do not self-censor -- but a "pattern" is a regularity
-across MULTIPLE papers, not one paper's quirk. Merge exact duplicates; otherwise be thorough.
-
-For each candidate pattern:
-- A short name (3-6 words)
-- The underlying preference signal (1-2 sentences), read from the judge rationales, not keyword overlap
-- Supporting papers by number
-- How large and pervasive the cluster is: how many papers, and roughly what share of the flags it
-  spans. Frequency matters in its own right -- a pattern that recurs across many papers is important
-  even when each delta is small. (Elapsed time / how many months it spans is NOT a factor; reason
-  about the cluster, not the calendar.)
-- Whether any supporting papers carry an explicit USER NOTE, and what it says. The user writes few
-  notes and is selective, so a note is a deliberate, high-confidence taste signal -- stronger than
-  the delta number alone. Flag note-backed patterns clearly.
-- Direction: seed MISSING coverage (positive deltas), OVER-TRIGGERING (negative deltas), or existing
-  language needs SHARPENING -- plus the rough delta magnitude (how wrong, and which way)
-
-Articles are referenced by number; all references are stripped downstream so the researcher is never
-anchored to specific papers. Plain text.
-""".strip()
-
+def _require_prompt(prompt, which):
+    """Resolve a step's prompt, or fail loudly. Every caller in the package passes one
+    explicitly (suggest_edits loads the active analysis prompt and splits it); this catches a
+    caller that assumed a default exists."""
+    if prompt and prompt != PROMPT_NOT_AUTHORED:
+        return prompt
+    raise ValueError(
+        f"No {which} prompt. litcurator ships no default -- author one and set it active "
+        f"(the analysis prompt lab has a Set ACTIVE button), or pass prompt= explicitly. "
+        f"The active prompt lives at prompt/analysis_prompt.md in your data directory.")
 
 # ---------------------------------------------------------------------------
 # Formatting helpers for the prompt
@@ -264,7 +263,11 @@ def _stream(client, model, system, user_msg, max_tokens):
     return "".join(parts), _cost(model, final.usage)
 
 
-def run_cluster_step(client, papers_block, n_flags, seed_text, model):
+def run_cluster_step(client, papers_block, n_flags, seed_text, model, prompt=None):
+    """`prompt` is the CLUSTER section of the active analysis prompt, passed in by the caller.
+    Taking it as an argument rather than reading a module global is what lets the harness and
+    the lab test a draft without mutating shared state -- the judge has always worked this way."""
+    prompt = _require_prompt(prompt, "cluster")
     journal_block = _format_journal_ratings()
     user_msg = (
         f"## Current profile\n\n{seed_text}\n\n"
@@ -274,73 +277,12 @@ def run_cluster_step(client, papers_block, n_flags, seed_text, model):
         f"## Flagged papers ({n_flags} total)\n\n{papers_block}"
     )
     # Recall scales with flag count; give it room so it is never truncated mid-pattern.
-    return _stream(client, model, CLUSTER_PROMPT, user_msg, max_tokens=6000)
+    return _stream(client, model, prompt, user_msg, max_tokens=6000)
 
 
 # ---------------------------------------------------------------------------
 # Consolidate: assign every candidate a choice, then RECORD (structured)
 # ---------------------------------------------------------------------------
-
-_CONSOLIDATE_SYSTEM = """
-You are consolidating candidate preference patterns (distilled from a researcher's flags) against the
-researcher's profile and their EXISTING pattern memory. You do NOT author profile prose and you do
-NOT discard real signal. You assign EVERY candidate a choice and record it via the tool.
-
-This is a MEMORY step, not a selection step. The bar for recording is low and objective: a candidate
-is real if it is a regularity the flags actually show. The ONLY candidate not recorded is a HOLD -- a
-lone one-paper correction too early to act on, kept unattached so it returns and can accumulate. Everything
-else is recorded; whether to ACT on it this round is a separate ranking the human does later, carried
-by the `priority` hint, never by dropping.
-
-MERGE FIRST. Before assigning choices, collapse candidates that a single profile edit would
-satisfy, or that are facets of ONE underlying taste, into ONE pattern (union their paper_numbers).
-Several sub-themes of the same taste -- distinct topics that all express one interest ("I value
-theoretical/computational work"), or distinct methods that all express one disinterest ("scalp EEG
-is uninteresting") -- are ONE pattern, not several. This is CONSOLIDATION, not dropping: every
-supporting paper stays attached to the merged pattern, so no signal is lost. Aim for the FEWEST
-patterns that capture the genuinely DISTINCT tastes; a proliferation of narrow near-duplicates is the
-failure mode. Recording everything real means not losing a distinct taste -- it does NOT mean
-recording every fine-grained slice of one taste as its own pattern.
-
-For each candidate choose a choice:
-- new: a real taste-gap not already tracked. Give name, direction, description, suggested_edit,
-  priority, paper_numbers.
-- merge_into_open: essentially one of the OPEN patterns shown below (the same taste). Give its
-  existing_pattern_id and the paper_numbers of the NEW supporting flags -- this is how recurrence
-  accumulates on a pattern instead of spawning a duplicate.
-- merge_into_closed: it matches a pattern already INCORPORATED or REJECTED (a closed pattern). Give the
-  existing_pattern_id. This LOGS that the taste came back; it does NOT reopen the decision. Say so in
-  `rationale` ONLY if the new flags are a materially stronger case than when it was decided -- the
-  human decides whether to reopen.
-- hold: a real correction too lonely to act on yet -- NOT dropped. Record nothing to a pattern; the
-  flag stays unattached and returns next round until enough copies accumulate. Give a one-line rationale.
-
-MATCHING: match against the shown patterns by MEANING, using their ids. Bias toward `new` when
-identity is UNCERTAIN -- a duplicate is cheap for the human to reject, but an over-merge is sticky and
-hard to undo. Only merge/recurs when it is clearly the same taste.
-
-DIRECTION:
-- under: the profile is MISSING coverage the flags show (judge scored too low).
-- over: the profile OVER-triggers on something (judge scored too high).
-- sharpen: the profile is genuinely vague/ambiguous on a boundary that needs resolution.
-- judge-not-applying: the profile ALREADY states this preference clearly, yet the judge is not
-  applying it. This is NOT a drop and NOT "already covered so ignore" -- it is a first-class signal to
-  fix the PROMPT (the other tuning knob), so RECORD it as its own pattern. Use it whenever a flagged
-  mismatch is the judge failing to honor clear existing profile text, rather than a profile gap.
-
-PRIORITY (governs the act-now HINT only, never record-vs-drop):
-- act_now: reserve for the FEW candidates that clearly beat the do-nothing default -- a real,
-  generalizable taste worth a profile edit this round.
-- defer: everything else real. Deferral is cheap here: the pattern is recorded and accumulates
-  recurrence until it earns action. Bias toward defer.
-
-THE NOTE WALL: in suggested_edit, state a GENERAL principle in the researcher's own voice -- never
-transcribe a user's private note verbatim, and do not adopt the judge's framing or vocabulary (its
-reasoning may be the error). Name the taste; do not draft the final profile line.
-
-paper_numbers are the [N] references from the candidate clusters (union across any candidates you
-merge). Record EVERY candidate exactly once. Output only via the record_consolidation tool.
-""".strip()
 
 _CONSOLIDATE_TOOL = {
     "name": "record_consolidation",
@@ -380,11 +322,16 @@ _CONSOLIDATE_TOOL = {
 }
 
 
-def run_consolidate_step(client, clusters_text, seed_text, existing_block, model):
+def run_consolidate_step(client, clusters_text, seed_text, existing_block, model,
+                         prompt=None):
     """Assign every candidate a choice via forced tool-use (so the JSON is always
     valid). Shown the clusters, the profile (to tell a real gap from the judge ignoring
     clear text -> judge-not-applying), and the existing patterns + closed patterns WITH ids
-    (to capture the cross-round match). Returns (candidates, cost)."""
+    (to capture the cross-round match). Returns (candidates, cost).
+
+    `prompt` defaults to the in-code seed; the live path passes the active consolidate section
+    from disk, the harness passes a draft. See run_cluster_step."""
+    prompt = _require_prompt(prompt, "consolidate")
     memory = f"{existing_block}\n\n---\n\n" if existing_block else ""
     user_msg = (
         f"## Candidate patterns (with [N] paper numbers)\n\n{clusters_text}\n\n---\n\n"
@@ -395,7 +342,7 @@ def run_consolidate_step(client, clusters_text, seed_text, existing_block, model
     resp = client.messages.create(
         model=model,
         max_tokens=4000,
-        system=_CONSOLIDATE_SYSTEM,
+        system=prompt,
         messages=[{"role": "user", "content": user_msg}],
         tools=[_CONSOLIDATE_TOOL],
         tool_choice={"type": "tool", "name": "record_consolidation"},
@@ -408,7 +355,7 @@ def run_consolidate_step(client, clusters_text, seed_text, existing_block, model
     return candidates, _cost(model, resp.usage)
 
 
-def _record_consolidation(conn, candidates, ordered_flags):
+def _record_consolidation(conn, candidates, ordered_flags, analysis_run_id=None):
     """Write each candidate's choice into the pattern memory. Provenance: paper
     number N -> ordered_flags[N-1] -> flag id. The event attached to a merge/recurs is
     driven by the TARGET pattern's REAL status, not the LLM's label -- so a mislabeled id
@@ -472,7 +419,7 @@ def _record_consolidation(conn, candidates, ordered_flags):
             conn, name=(_fallback_name(c) or "(unnamed pattern)"),
             direction=direction,
             description=c.get("description"), suggested_edit=c.get("suggested_edit"),
-            flag_ids=flag_ids, note=note or None)
+            flag_ids=flag_ids, note=note or None, analysis_run_id=analysis_run_id)
 
     def _record_new(c, flag_ids, extra_note="", recovered=False):
         direction, coerced = _direction(c)
@@ -570,8 +517,15 @@ def suggest_edits(start=None, end=None,
     open pattern / recurs against a closed pattern); a genuine one-paper hold is kept unattached, not recorded.
     Streams the recall to console and saves a dated markdown report. Returns the output
     path (or None if too few flags). Never re-validates on the flag set. persist=False is
-    a dry run (writes the markdown, records nothing)."""
+    a dry run (writes the markdown, records nothing).
+
+    The analysis prompt is loaded from disk and REGISTERED, exactly as the pipeline does with
+    the judge prompt: every pattern this produces points at an analysis_run, which points at
+    the prompt content that made it. Without that, "which prompt produced this pattern" is
+    unanswerable, which was the one provenance gap in the system."""
     seed_text = profile_interface.load_active()
+    analysis_prompt = analysis_prompt_interface.load_active()
+    cluster_prompt, consolidate_prompt = analysis_prompt_interface.split(analysis_prompt)
 
     conn = db_interface.get_connection()
     try:
@@ -603,12 +557,13 @@ def suggest_edits(start=None, end=None,
         papers_block, ordered_flags = _format_papers(flags)
 
         print("=== Step 1: cluster (recall) ===\n")
-        clusters, cost1 = run_cluster_step(client, papers_block, n, seed_text, cluster_model)
+        clusters, cost1 = run_cluster_step(client, papers_block, n, seed_text, cluster_model,
+                                           prompt=cluster_prompt)
         print(f"\n[step 1 cost: ${cost1:.4f}]\n")
 
         print("=== Step 2: consolidate (choice) ===")
         candidates, cost2 = run_consolidate_step(client, clusters, seed_text, existing_block,
-                                               consolidate_model)
+                                               consolidate_model, prompt=consolidate_prompt)
         total = cost1 + cost2
 
         # Everything below has already been PAID FOR, and the report is the only place some
@@ -620,7 +575,17 @@ def suggest_edits(start=None, end=None,
         summary, recorded = None, False
         try:
             if persist:
-                summary = _record_consolidation(conn, candidates, ordered_flags)
+                # The run row first: patterns reference it, so it has to exist before any is
+                # created. Registering the prompt is idempotent (content-addressed), so an
+                # unchanged prompt adds no row.
+                analysis_prompt_id = db_interface.get_or_create_prompt(
+                    conn, analysis_prompt, kind="analysis")
+                run_id = db_interface.create_analysis_run(
+                    conn, analysis_prompt_id, cluster_model, consolidate_model,
+                    profile_id=db_interface.get_or_create_profile(conn, seed_text),
+                    date_start=start, date_end=end, n_flags=n, cost_usd=total)
+                summary = _record_consolidation(conn, candidates, ordered_flags,
+                                                analysis_run_id=run_id)
                 for c in summary["new"]:
                     tag = " [act_now]" if c.get("priority") == "act_now" else ""
                     rec = " (recovered)" if c.get("recovered") else ""

@@ -109,12 +109,38 @@ CREATE TABLE IF NOT EXISTS profiles (
 # prompt/judge_prompt.md on disk; at run time it is hashed and registered here.
 # scoring_runs.judge_prompt_hash equals this id, so "which prompt produced this
 # score" is answerable by JOIN -- the prompt half of the biconvex provenance.
+# Every hand-authored PROMPT, content-addressed exactly like profiles. `kind` says which
+# artifact a row belongs to, so lineage stays per-artifact:
+#   judge     the scoring procedure the judge follows (prompt/judge_prompt.md)
+#   analysis  cluster + consolidate, how flags become patterns (prompt/analysis_prompt.md)
+# Ids are content hashes so two kinds could never collide; kind is what makes "show me this
+# artifact's history" a query rather than a guess.
 _CREATE_PROMPTS = """
 CREATE TABLE IF NOT EXISTS prompts (
     id TEXT PRIMARY KEY,
     content TEXT NOT NULL,
     parent_id TEXT REFERENCES prompts(id),
     notes TEXT,
+    kind TEXT NOT NULL DEFAULT 'judge',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
+# One profile_analysis invocation: which prompt and models produced this batch of patterns,
+# over which flags, at what cost. The direct mirror of scoring_runs, and for the same reason --
+# provenance belongs on the RUN, and each item points at it. Without this, "which prompt made
+# this pattern" is unanswerable, which is the one gap the rest of the system does not have.
+_CREATE_ANALYSIS_RUNS = """
+CREATE TABLE IF NOT EXISTS analysis_runs (
+    id TEXT PRIMARY KEY,
+    analysis_prompt_id TEXT NOT NULL REFERENCES prompts(id),
+    profile_id TEXT REFERENCES profiles(id),
+    cluster_model TEXT NOT NULL,
+    consolidate_model TEXT NOT NULL,
+    date_start TEXT,
+    date_end TEXT,
+    n_flags INTEGER,
+    cost_usd REAL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 )
 """
@@ -205,6 +231,7 @@ CREATE TABLE IF NOT EXISTS patterns (
     direction TEXT NOT NULL,
     description TEXT,
     suggested_edit TEXT,
+    analysis_run_id TEXT REFERENCES analysis_runs(id),
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     CHECK (direction IN ('over', 'under', 'sharpen', 'judge-not-applying'))
@@ -251,6 +278,7 @@ _CREATE_STATEMENTS = [
     _CREATE_SCORING_RUNS,
     _CREATE_EVALUATIONS,
     _CREATE_FLAGS,
+    _CREATE_ANALYSIS_RUNS,
     _CREATE_PATTERNS,
     _CREATE_PATTERN_FLAGS,
     _CREATE_PATTERN_EVENTS,
@@ -398,7 +426,21 @@ def _drop_dead_columns(conn):
     conn.commit()
 
 
+# Columns added after the tables shipped. ALTER TABLE ADD COLUMN is idempotent-by-exception
+# here: a duplicate-column error means the migration already ran.
+_LATE_COLUMNS = [
+    "ALTER TABLE prompts ADD COLUMN kind TEXT NOT NULL DEFAULT 'judge'",
+    "ALTER TABLE patterns ADD COLUMN analysis_run_id TEXT REFERENCES analysis_runs(id)",
+]
+
+
 def _migrate(conn):
+    for sql in _LATE_COLUMNS:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise
     for sql in _ARTICLE_MIGRATIONS:
         try:
             conn.execute(sql)
@@ -593,15 +635,38 @@ def get_seed_profile(conn):
 # profiles, for the judge prompt (the other biconvex knob).
 # ---------------------------------------------------------------------------
 
-def get_or_create_prompt(conn, content, parent_id=None, notes=None):
-    """Snapshot a judge prompt. id = SHA256(content); identical content returns the
-    existing id (no duplicate row). Returns the prompt id."""
+def create_analysis_run(conn, analysis_prompt_id, cluster_model, consolidate_model,
+                        profile_id=None, date_start=None, date_end=None, n_flags=None,
+                        cost_usd=None):
+    """Record one profile_analysis invocation and return its id. Unlike scoring runs there is
+    no find-or-create: each invocation is its own run even over identical inputs, because two
+    runs of a nondeterministic pipeline are two different events and both produced patterns."""
+    run_id = uuid.uuid4().hex
+    conn.execute(
+        "INSERT INTO analysis_runs (id, analysis_prompt_id, profile_id, cluster_model, "
+        "consolidate_model, date_start, date_end, n_flags, cost_usd) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (run_id, analysis_prompt_id, profile_id, cluster_model, consolidate_model,
+         date_start, date_end, n_flags, cost_usd),
+    )
+    conn.commit()
+    return run_id
+
+
+def get_analysis_run(conn, run_id):
+    row = conn.execute("SELECT * FROM analysis_runs WHERE id = ?", (run_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_or_create_prompt(conn, content, parent_id=None, notes=None, kind="judge"):
+    """Snapshot a prompt. id = SHA256(content); identical content returns the existing id (no
+    duplicate row). `kind` is 'judge' or 'analysis' -- see the prompts DDL. Returns the id."""
     prompt_id = _sha256(content)
     existing = conn.execute("SELECT id FROM prompts WHERE id = ?", (prompt_id,)).fetchone()
     if not existing:
         conn.execute(
-            "INSERT INTO prompts (id, content, parent_id, notes) VALUES (?, ?, ?, ?)",
-            (prompt_id, content, parent_id, notes),
+            "INSERT INTO prompts (id, content, parent_id, notes, kind) VALUES (?, ?, ?, ?, ?)",
+            (prompt_id, content, parent_id, notes, kind),
         )
         conn.commit()
     return prompt_id
@@ -841,17 +906,22 @@ def get_flags(conn, start=None, end=None, exclude_attached=False):
 # ---------------------------------------------------------------------------
 
 def create_pattern(conn, name, direction, description=None, suggested_edit=None,
-                   flag_ids=(), note=None):
+                   flag_ids=(), note=None, analysis_run_id=None):
     """Create a pattern from the flags that produced it, in one transaction: the
     pattern row, its pattern_flags provenance links, and an initial 'created' event.
     Returns the new pattern id. direction in {over, under, sharpen, judge-not-applying}.
     note rides the 'created' event -- the suggester passes the consolidate priority +
-    rationale here so the first event carries why the pattern was minted."""
+    rationale here so the first event carries why the pattern was minted.
+
+    analysis_run_id ties the pattern to the run that produced it, and through that to the
+    analysis prompt and models -- the same way an evaluation reaches its judge prompt through
+    scoring_runs. Nullable only so a test can mint a bare pattern; the real path always sets
+    it."""
     pattern_id = uuid.uuid4().hex
     conn.execute(
-        "INSERT INTO patterns (id, name, direction, description, suggested_edit) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (pattern_id, name, direction, description, suggested_edit),
+        "INSERT INTO patterns (id, name, direction, description, suggested_edit, "
+        "analysis_run_id) VALUES (?, ?, ?, ?, ?, ?)",
+        (pattern_id, name, direction, description, suggested_edit, analysis_run_id),
     )
     for fid in dict.fromkeys(flag_ids):   # dedup, preserve order
         conn.execute(

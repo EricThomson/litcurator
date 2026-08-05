@@ -242,8 +242,7 @@ def _cmd_analysis_harness(args):
     if args.dry_run:
         # A draft still gets applied first, so the dry run's fingerprint answers "did I paste
         # the right path". Applying it must not RUN anything -- see apply_draft_prompts.
-        AH.apply_draft_prompts(cluster_prompt, consolidate_prompt)
-        text, ok = AH.dry_run(gates)
+        text, ok = AH.dry_run(gates, cluster_prompt, consolidate_prompt)
         print(text)
         raise SystemExit(0 if ok else 2)
 

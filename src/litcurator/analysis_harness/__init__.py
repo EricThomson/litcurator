@@ -27,7 +27,7 @@ span both. Driven by `litcurator analysis_harness`; see cli.py.
 import os
 import time
 
-from litcurator import profile_analysis as PA
+from litcurator import analysis_prompt_interface, profile_analysis as PA
 
 from .gates_llm import COLD_CACHE_GATES, PAID_GATES
 from .gates_no_llm import FREE_GATES, run_free_gate
@@ -55,19 +55,21 @@ def select_gates(name=None):
     return [name]
 
 
-def apply_draft_prompts(cluster_prompt=None, consolidate_prompt=None):
-    """Swap draft prompts into profile_analysis for THIS PROCESS ONLY and return the
-    (cluster, consolidate) fingerprints. The draft files and profile_analysis.py are untouched.
+def resolve_prompts(cluster_prompt=None, consolidate_prompt=None):
+    """Return the (cluster, consolidate) prompt TEXT this run should use: the active analysis
+    prompt from disk, with either section replaced by a draft if one was given.
+
+    Returns text rather than mutating profile_analysis globals, which is what the harness used
+    to do. Mutating a module global to test a draft means the override leaks to anything else
+    in the process and cannot be nested -- the judge never worked that way (judge_articles_batch
+    has always taken system_prompt=), and now neither does this.
 
     Separate from run_gates because the dry run needs the fingerprints WITHOUT running anything.
     It used to get them by calling run_gates([]) purely for the side effect, which spent the
     entire budget: `gates or select_gates()` treats an empty list as "not specified", so the dry
     run silently executed every gate and then printed that nothing had been spent."""
-    if cluster_prompt is not None:
-        PA.CLUSTER_PROMPT = cluster_prompt
-    if consolidate_prompt is not None:
-        PA._CONSOLIDATE_SYSTEM = consolidate_prompt
-    return fingerprint(PA.CLUSTER_PROMPT), fingerprint(PA._CONSOLIDATE_SYSTEM)
+    active_cluster, active_consolidate = analysis_prompt_interface.load_active_sections()
+    return (cluster_prompt or active_cluster, consolidate_prompt or active_consolidate)
 
 
 def budget(gates):
@@ -96,6 +98,18 @@ def preconditions():
         out.append((False, "live database", f"{db} not found"))
     out.append((bool(os.getenv("ANTHROPIC_API_KEY")), "ANTHROPIC_API_KEY",
                 "set" if os.getenv("ANTHROPIC_API_KEY") else "not set -- paid gates cannot run"))
+    # The active analysis prompt must split into two non-empty sections. A mistyped marker
+    # would otherwise send an EMPTY prompt to the model, which surfaces as mysteriously bad
+    # clustering rather than as an error -- the kind of failure that costs a day to find. It
+    # belongs here rather than in a gate because it is a can-this-run-at-all question, and this
+    # way it shows in --dry-run before anything is spent.
+    try:
+        c, s = analysis_prompt_interface.load_active_sections()
+        out.append((True, "analysis prompt",
+                    f"{analysis_prompt_interface.active_version_id()} "
+                    f"(cluster {len(c)} chars, consolidate {len(s)} chars)"))
+    except Exception as e:                                # noqa: BLE001 - report, never crash
+        out.append((False, "analysis prompt", f"{type(e).__name__}: {e}"))
     return out
 
 
@@ -122,7 +136,8 @@ def run_gates(gates=None, cluster_prompt=None, consolidate_prompt=None,
     # "not specified" and quietly expanded to every gate.
     if gates is None:
         gates = select_gates()
-    cluster_fp, consolidate_fp = apply_draft_prompts(cluster_prompt, consolidate_prompt)
+    cluster_text, consolidate_text = resolve_prompts(cluster_prompt, consolidate_prompt)
+    cluster_fp, consolidate_fp = fingerprint(cluster_text), fingerprint(consolidate_text)
 
     ctx = None
     results = []
@@ -152,6 +167,7 @@ def run_gates(gates=None, cluster_prompt=None, consolidate_prompt=None,
                 client=anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY")),
                 cluster_model=cluster_model or PA.DEFAULT_CLUSTER_MODEL,
                 consolidate_model=consolidate_model or PA.DEFAULT_CONSOLIDATE_MODEL,
+                cluster_prompt=cluster_text, consolidate_prompt=consolidate_text,
                 use_cache=use_cache)
         started = time.time()
         try:
@@ -179,15 +195,19 @@ def exit_code(results, selected=None):
     return 0
 
 
-def dry_run(gates=None):
-    """What WOULD run, and whether it could. Returns (text, ok). Spends nothing."""
+def dry_run(gates=None, cluster_prompt=None, consolidate_prompt=None):
+    """What WOULD run, and whether it could. Returns (text, ok). Spends nothing.
+
+    Takes the draft prompts so the fingerprints answer "did I paste the right path", without
+    running or mutating anything."""
     from litcurator import config
 
     gates = gates or select_gates()
+    cluster_text, consolidate_text = resolve_prompts(cluster_prompt, consolidate_prompt)
     calls, n_free = budget(gates)
     out = ["ANALYSIS HARNESS -- dry run (nothing runs, nothing is spent)",
-           f"cluster prompt      {fingerprint(PA.CLUSTER_PROMPT)}",
-           f"consolidate prompt  {fingerprint(PA._CONSOLIDATE_SYSTEM)}",
+           f"cluster prompt      {fingerprint(cluster_text)}",
+           f"consolidate prompt  {fingerprint(consolidate_text)}",
            f"models              cluster={PA.DEFAULT_CLUSTER_MODEL}  "
            f"consolidate={PA.DEFAULT_CONSOLIDATE_MODEL}",
            "", "preconditions"]

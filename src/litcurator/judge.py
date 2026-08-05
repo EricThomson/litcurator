@@ -44,70 +44,24 @@ _TRANSIENT_API_ERRORS = (anthropic.APIStatusError, anthropic.APIConnectionError)
 # ---------------------------------------------------------------------------
 # Primary prompts -- article (title + abstract) mode, profile-only
 # ---------------------------------------------------------------------------
-# DEFAULT_JUDGE_PROMPT is the SEED: prompt_interface seeds the on-disk active
-# prompt from it, so behavior is byte-identical until the user edits it in the
-# prompt workbench. The runtime prompt is passed in (loaded from disk), not this.
+# litcurator ships NO judge prompt. The active one lives at prompt/judge_prompt.md in your data
+# directory, is loaded there by the pipeline, and is passed in to every call here. There is no
+# default to fall back on -- see PROMPT_NOT_AUTHORED below.
 
-DEFAULT_JUDGE_PROMPT = """
-You decide whether a scientific paper should be surfaced to a specific researcher, given (a) that researcher's user profile describing their interests, and (b) the paper's title and abstract.
+# litcurator ships NO prompt content. The judge runs prompt/judge_prompt.md from your data
+# directory; authoring it is your job, exactly like the profile. There is no default here on
+# purpose -- a half-reasonable default is worse than none, because it looks authoritative,
+# quietly shapes every score, and nobody remembers it is there. Writing a genuinely good
+# starting prompt is a real task and is on the long-term list, not a thing to fake in passing.
+#
+# This sentinel exists so the failure is LOUD and says what to do, instead of an empty string
+# reaching the API and producing confident nonsense.
+PROMPT_NOT_AUTHORED = "<no judge prompt authored>"
 
-You are scoring EXPECTED INTEREST FOR THIS USER, not the paper's scientific quality or general importance. A brilliant molecular-biology paper can be a low score if this user does not care about molecular biology. A modest behavior-only animal study can be a high score if it matches what this user follows. A one-sentence news blurb about an exciting paper is still a low score because it is not a substantive article.
-
-## How to read the user profile
-
-The user profile lists interests, disinterests, method preferences, and article-type preferences. Read it as a description of a person's taste, not as a set of keyword rules.
-
-- The listed interests are AMPLIFIERS, not a closed list. A paper on a topic the profile does not mention is NOT automatically low -- judge whether it fits the spirit of what this person follows. Do not penalize a paper merely because its exact topic is not named in the profile.
-- Active disinterests apply only when that topic is the MAIN FOCUS of the paper, not when it appears incidentally.
-- If the profile says behavioral, computational, theoretical, or conceptual work can be sufficient on its own, then do NOT require neural data. Absence of neural data is not a strike against a paper whose value is behavioral or conceptual.
-- Method preferences modulate interest in a paper that is already topically relevant; they rarely make an off-topic paper interesting on their own.
-
-## What you must NOT do
-
-- Do NOT keyword-match. "The abstract mentions X and the profile mentions X, therefore high" is wrong reasoning. Judge meaning and fit, the way the person themselves would on reading the abstract.
-- Do NOT require any specific feature (neural data, a particular organism, a particular method) unless the profile makes it a hard requirement.
-- Do NOT score for general scientific importance. Score for THIS user's likely interest.
-- Do NOT invent facts. Judge only from the title, abstract, and user profile. If the abstract is thin, that is a reason for lower confidence, not invented detail.
-- Treat article type seriously. A one-sentence news / commentary item should usually score low even if the paper it discusses sounds interesting.
-
-## Article length
-
-Page range, when present, signals article type: a one- or two-page span in a paginated journal usually marks a News & Views, Preview, Dispatch, or commentary, not a primary research article -- score those as the non-substantive items they are. A multi-page span marks a substantive article, review, or perspective; do NOT dismiss it as mere commentary just because its abstract is short (perspectives and consortium pieces routinely have brief abstracts). IMPORTANT: a missing page range is UNINFORMATIVE -- many journals are electronic-only and never assign pages, so absence says nothing about substance. Never penalize a paper for lacking a page range.
-
-## Score semantics (expected interest for this user)
-
-The surfacing line is 0.5: papers at or above 0.5 are candidates to show the user; below 0.5 are not. The exact cutoff is tunable downstream, but treat 0.5 as the decision boundary when you score.
-
-- 0.80 - 1.00: Strong, durable interest. Clearly show.
-- 0.60 - 0.79: Solid interest. Show.
-- 0.50 - 0.59: Marginal keep -- just above the line.
-- 0.40 - 0.49: Marginal drop -- just below the line.
-- 0.20 - 0.39: Clear non-fit.
-- 0.00 - 0.19: Strong mismatch / actively unwanted.
-
-**Precision matters near the boundary, not far from it.** A paper you are sure the user wants can be 0.85 or 0.95 -- the difference does not matter. A paper you are sure they do not want can be 0.05 or 0.20 -- also does not matter. Do NOT agonize over the exact number when a paper is clearly in or clearly out. Spend your judgment where the decision actually flips: papers near 0.5. For those, think hard about which side of the line they belong on, because that is the call that changes what the user sees. Far from the line, a rough score is fine; near the line, be deliberate.
-
-## Output
-
-Return ONLY a JSON object with EXACTLY these four keys (these exact names, all four always present):
-
-{
-  "estimated_score": number 0.0-1.0,        // expected interest for THIS user
-  "surface_decision": "surface" | "maybe" | "do_not_surface",
-  "curation_rationale": "...",              // 1-3 sentences: why this score, in terms of the person's taste
-  "possible_mismatch": "..."                // the honest counter-case, or "none"
-}
-
-- surface_decision: "surface" for scores >= 0.5, "do_not_surface" below 0.5. Use "maybe" only for genuinely borderline papers right at the line (roughly 0.45-0.55) where you are torn. The decision and the score must agree: do not say "surface" with a score of 0.3.
-- curation_rationale: speak in terms of the person's taste ("this person follows X and this paper does Y"), not in terms of generic quality. Be concrete and brief.
-- possible_mismatch: the strongest honest reason this score might be wrong, or the strongest reason the paper might NOT fit despite a high score (or might fit despite a low score). Use "none" only when there genuinely is no meaningful counter-case.
-
-ASCII only. Return ONLY the JSON object, no preamble, no code fences.
-""".strip()
-
-# Backward-compat alias; tools that referenced SYSTEM_PROMPT still work (they get
-# the seed default). The runtime prompt is loaded from disk and passed in.
-SYSTEM_PROMPT = DEFAULT_JUDGE_PROMPT
+# Backward-compat alias. There is no shipped prompt any more, so this is the sentinel: a
+# caller that relied on the module-level default now gets a clear error instead of silent
+# behavior from text it never chose.
+SYSTEM_PROMPT = PROMPT_NOT_AUTHORED
 
 # The editable prompt is a SINGLE-paper prompt; the batch (multi-paper) variant is
 # derived from it -- everything up to the '## Output' marker, then this JSON-array
@@ -142,6 +96,18 @@ def _batch_prompt(system_prompt):
     """Derive the batch system prompt from a single-paper prompt: head (up to
     '## Output') + the JSON-array output contract."""
     return system_prompt.split(_OUTPUT_MARKER, 1)[0] + _BATCH_OUTPUT
+
+
+def _require_prompt(system_prompt):
+    """Resolve the judge prompt, or fail loudly. Callers in the package always pass one (the
+    pipeline loads the active prompt from disk and hands it down); this catches a direct or
+    standalone caller that assumed a default exists."""
+    if system_prompt and system_prompt != PROMPT_NOT_AUTHORED:
+        return system_prompt
+    raise ValueError(
+        "No judge prompt. litcurator ships no default -- author one and set it active "
+        "(litcurator prompt_workbench), or pass system_prompt= explicitly. "
+        "The active prompt lives at prompt/judge_prompt.md in your data directory.")
 
 
 def _client():
@@ -221,11 +187,11 @@ def _judge_call(system_prompt, user_message, max_tokens, parse):
 def judge_article(title, abstract, journal, profile_text, pages=None, system_prompt=None):
     """Judge a paper from title + abstract + journal (+ optional page range) against
     the user profile. system_prompt is the active judge prompt (from disk); falls
-    back to DEFAULT_JUDGE_PROMPT so direct/standalone callers still work.
+    raises if none was given -- there is no shipped default to fall back to.
 
     Returns (judgment dict, usage, cost). Retries once on a malformed response.
     """
-    system_prompt = system_prompt or DEFAULT_JUDGE_PROMPT
+    system_prompt = _require_prompt(system_prompt)
     article_text = _article_to_text(title, abstract, journal, pages)
     user_message = (
         f"# User profile (this user's interests)\n\n{profile_text}\n\n"
@@ -247,12 +213,12 @@ def judge_article(title, abstract, journal, profile_text, pages=None, system_pro
 def judge_articles_batch(items, profile_text, system_prompt=None):
     """Judge a batch of articles in a single API call. system_prompt is the active
     judge prompt (from disk); the batch variant is derived from it. Falls back to
-    DEFAULT_JUDGE_PROMPT.
+    the active prompt; raises if none is supplied.
 
     items: list of dicts with keys title, abstract, journal (all optional str).
     Returns (list of judgment dicts, total_cost). Retries once on a malformed response.
     """
-    system_prompt = system_prompt or DEFAULT_JUDGE_PROMPT
+    system_prompt = _require_prompt(system_prompt)
     batch_prompt = _batch_prompt(system_prompt)
     article_blocks = []
     for i, item in enumerate(items, 1):

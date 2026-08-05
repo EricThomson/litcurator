@@ -59,7 +59,7 @@ def run(ctx):
         H.add_round_flags(conn, run_id, papers, flag_intended)
         n_flags, _candidates, summary, cost, _ = H.run_round(
             conn, ctx.client, spec.profile, ctx.cluster_model, ctx.consolidate_model,
-            use_cache=ctx.use_cache)
+            ctx.cluster_prompt, ctx.consolidate_prompt, use_cache=ctx.use_cache)
         pp = H.pattern_intended(conn, flag_intended)
     finally:
         conn.close()

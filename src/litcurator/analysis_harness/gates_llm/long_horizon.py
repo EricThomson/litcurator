@@ -36,8 +36,9 @@ ENGINE_DB = scratch_db_path("long_horizon")
 # Running one scenario end to end
 # ---------------------------------------------------------------------------
 
-def run_scenario(spec, rng, client, cluster_model, consolidate_model,
-                 use_cache=True, db_path=ENGINE_DB, keep_db=False, log=lambda *a: None):
+def run_scenario(spec, rng, client, cluster_model, consolidate_model, cluster_prompt,
+                 consolidate_prompt, use_cache=True, db_path=ENGINE_DB, keep_db=False,
+                 log=lambda *a: None):
     """Compile the spec and run every session through the real machinery, collecting the
     per-session history the terminal checks read. Returns a result dict:
       {per_round, terminal, history, first_surfaced, cost, n_patterns}"""
@@ -53,7 +54,8 @@ def run_scenario(spec, rng, client, cluster_model, consolidate_model,
             open_before = len(DB.get_active_patterns(conn))
 
             n_flags, candidates, summary, c, memory_shown = run_round(
-                conn, client, spec.profile, cluster_model, consolidate_model, use_cache=use_cache)
+                conn, client, spec.profile, cluster_model, consolidate_model,
+                cluster_prompt, consolidate_prompt, use_cache=use_cache)
             cost += c
             # What the model was actually given about past patterns. When a recurrence check
             # goes red the first question is always "was that closed pattern even in front of
@@ -126,7 +128,8 @@ def run_scenario(spec, rng, client, cluster_model, consolidate_model,
 # ---------------------------------------------------------------------------
 
 def run_reps(spec, reps, pass_frac, client, cluster_model, consolidate_model,
-             seed=0, use_cache=True, log=lambda *a: None):
+             cluster_prompt, consolidate_prompt, seed=0, use_cache=True,
+             log=lambda *a: None):
     """Run the spec `reps` times (same synthetic papers each rep, so the variance measured is
     the LLM's, not the fixture's) and tally each named check. A check is GREEN iff it passes in
     >= pass_frac of reps. Returns (tally, green, total_cost, details) where
@@ -136,7 +139,8 @@ def run_reps(spec, reps, pass_frac, client, cluster_model, consolidate_model,
     total_cost = 0.0
     for r in range(reps):
         res = run_scenario(spec, random.Random(seed), client, cluster_model,
-                           consolidate_model, use_cache=use_cache, log=log)
+                           consolidate_model, cluster_prompt, consolidate_prompt,
+                           use_cache=use_cache, log=log)
         total_cost += res["cost"]
         # A per-round label can occur once per session; collapse within a rep by AND (every
         # occurrence must pass for the rep to count as a pass), then vote across reps.
@@ -176,7 +180,8 @@ def run(ctx, scenario, reps, pass_frac):
 
     tally, _green, cost, details = run_reps(
         spec, reps, pass_frac, ctx.client, ctx.cluster_model, ctx.consolidate_model,
-        use_cache=ctx.use_cache, log=lines.append)
+        ctx.cluster_prompt, ctx.consolidate_prompt, use_cache=ctx.use_cache,
+        log=lines.append)
 
     checks = []
     for label, (passes, total) in sorted(tally.items()):

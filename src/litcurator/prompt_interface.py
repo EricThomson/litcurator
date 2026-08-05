@@ -7,9 +7,10 @@ profile. This module is the single gatekeeper for it (the judge via the pipeline
 and the prompt workbench all go through here), exactly mirroring profile_interface,
 so "set active backs up the outgoing prompt first" lives in one place.
 
-Difference from profile_interface: there is no "no prompt" state. load_active()
-SEEDS the active file from judge.DEFAULT_JUDGE_PROMPT the first time, so the judge
-always has a prompt and behavior is byte-identical until the user edits it.
+Same as profile_interface, including the "no prompt" state: litcurator ships no default judge
+prompt, so load_active() RAISES if you have not authored one. A half-reasonable shipped default
+is worse than none -- it looks authoritative, silently shapes every score, and nobody remembers
+it is there. Writing a good starting prompt is a real task and is on the long-term list.
 
 Layout under PROMPT_DIR:
     judge_prompt.md                  the active prompt (what the judge runs)
@@ -45,11 +46,13 @@ def exists():
 
 
 def load_active():
-    """Return the active judge prompt, seeding it from the default the first time.
-    The judge always has a prompt; the seed is byte-identical to the in-code default
-    so nothing changes until the user edits it in the workbench."""
+    """Return the active judge prompt. Raises FileNotFoundError if there is none -- the judge
+    must never score against an empty or invented prompt."""
     if not JUDGE_PROMPT_PATH.exists():
-        _seed_default()
+        raise FileNotFoundError(
+            f"No active judge prompt at {JUDGE_PROMPT_PATH}. litcurator ships no default -- "
+            f"author one in `litcurator prompt_workbench`, or promote a version with "
+            f"set_active().")
     return JUDGE_PROMPT_PATH.read_text(encoding="utf-8", errors="replace")
 
 
@@ -58,12 +61,6 @@ def read_active_or_empty():
     if JUDGE_PROMPT_PATH.exists():
         return JUDGE_PROMPT_PATH.read_text(encoding="utf-8", errors="replace")
     return ""
-
-
-def _seed_default():
-    """Write the in-code default judge prompt as the seed (root of the lineage)."""
-    from litcurator.judge import DEFAULT_JUDGE_PROMPT
-    set_active(DEFAULT_JUDGE_PROMPT, notes="seed: default judge prompt")
 
 
 def set_active(text, notes=None):

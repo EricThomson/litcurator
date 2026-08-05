@@ -42,6 +42,8 @@ class GateContext:
     client: object
     cluster_model: str
     consolidate_model: str
+    cluster_prompt: str = ""
+    consolidate_prompt: str = ""
     use_cache: bool = True
 
 
@@ -57,18 +59,19 @@ def scratch_db_path(name):
     return config.DATA_DIR / f"_scratch_analysis_{name}_{os.getpid()}.db"
 
 
-def cached_cluster(client, papers_block, n_flags, profile, model, use_cache):
+def cached_cluster(client, papers_block, n_flags, profile, model, use_cache, cluster_prompt):
     """Cluster output is a pure function of (cluster prompt, papers, profile, model), so
     cache it. Two reasons this matters: most iteration is on the CONSOLIDATE prompt, and
     re-running cluster each time is pure waste; and pinning cluster output makes consolidate
     the ONLY variable, which is better science. Editing CLUSTER_PROMPT changes the key and
     correctly invalidates. Returns (text, cost, was_cached)."""
     key = hashlib.sha256("\x00".join(
-        [PA.CLUSTER_PROMPT, papers_block, profile, model]).encode("utf-8")).hexdigest()[:16]
+        [cluster_prompt, papers_block, profile, model]).encode("utf-8")).hexdigest()[:16]
     path = config.ANALYSIS_HARNESS_CACHE_DIR / f"{key}.md"
     if use_cache and path.exists():
         return path.read_text(encoding="utf-8"), 0.0, True
-    text, cost = PA.run_cluster_step(client, papers_block, n_flags, profile, model)
+    text, cost = PA.run_cluster_step(client, papers_block, n_flags, profile, model,
+                                     prompt=cluster_prompt)
     config.ANALYSIS_HARNESS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return text, cost, False
@@ -153,7 +156,8 @@ def purity_of(counter):
 # One round
 # ---------------------------------------------------------------------------
 
-def run_round(conn, client, profile, cluster_model, consolidate_model, use_cache=True):
+def run_round(conn, client, profile, cluster_model, consolidate_model, cluster_prompt,
+              consolidate_prompt, use_cache=True):
     """One review session through the real pipeline: cluster the unattached flags,
     consolidate the candidates against the pattern memory, record the choices.
     `profile` is the scenario's own synthetic profile (see build_db)."""
@@ -165,11 +169,11 @@ def run_round(conn, client, profile, cluster_model, consolidate_model, use_cache
         open_patterns, closed_patterns,
         DB.get_pattern_examples(conn, [p["id"] for p in open_patterns + closed_patterns]))
     clusters, c1, hit = cached_cluster(client, papers_block, len(flags), profile,
-                                       cluster_model, use_cache)
+                                       cluster_model, use_cache, cluster_prompt)
     if hit:
         print("  [cluster: cache hit -- $0.00]", flush=True)
     candidates, c2 = PA.run_consolidate_step(client, clusters, profile, existing,
-                                           consolidate_model)
+                                           consolidate_model, prompt=consolidate_prompt)
     summary = PA._record_consolidation(conn, candidates, ordered)
     # `existing` is returned so the report can show EXACTLY what memory the model was
     # shown. When it fails to match a closed pattern, the first question is always "was
