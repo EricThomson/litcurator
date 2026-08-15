@@ -37,9 +37,16 @@ def accumulation(delta_band=(0.16, 0.22), n_sessions=12):
 
     coalesces_to_one grades three things at once: it fires (a lone flag or two must not mint a
     pattern -> min_session), it fires by a deadline (must not be lost forever -> max_session),
-    and the pattern is pure. delta_band is the sweep knob: above 0.15 the flags render in the
-    'judge scored too low' bucket; below, in the 'roughly agreed / context' bucket the cluster
-    prompt is told not to pattern -- so the sweep finds where stateless accumulation breaks.
+    and the pattern is pure. delta_band is the sweep knob -- it sets how WEAK the signal is, so
+    the sweep finds the magnitude at which stateless accumulation stops working.
+
+    This docstring used to say the band mattered because 0.15 was a rendering boundary, and
+    that below it the flags landed in a bucket 'the cluster prompt is told not to pattern'.
+    Both halves were wrong. No such instruction was ever in any cluster prompt -- it lived in a
+    header string in _format_papers -- and the boundary is gone (2026-08-07; see the note beside
+    profile_analysis.MIN_FLAGS). The band is now a plain magnitude dose, which is the cleaner
+    experiment: the old 0.13-0.17 band was half above the line and half below it, so it dosed
+    two things at once.
 
     Two checks ride on it. `coalesces_to_one` grades the END STATE and `pool_drains` grades the
     RAMP, because the end state alone is satisfied by a run that mints the pattern early and then

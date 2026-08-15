@@ -137,30 +137,30 @@ JOURNALS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Journal quality
+# Journal quality -- NOT HERE. There is exactly one source of truth for venue taste: the
+# hand-authored "Journal relative ranking" block in prompt/judge_prompt.md, decided
+# 2026-06-19 (hand-authored WORDS, not config-rendered numbers -- the eLife and Nature
+# Communications dings are taste, not generic prestige, and prose keeps them legible).
+#
+# A numeric USER_JOURNAL_RATINGS dict used to live here as a second copy of those same four
+# tiers, entry for entry, kept in sync by nobody. It reached src/ in the 2026-07-07 wholesale
+# sandbox lift, three weeks AFTER that decision, because the decision was scoped to "at judge
+# time" and the offline suggester was never in scope. Removed 2026-08-07. Two reasons:
+#
+#   The auditor was being handed the auditee's rubric. Its only consumer was the CLUSTER step
+#   -- whose entire job is finding where the judge's calibration is wrong -- under the header
+#   "use these, not your own priors about journal prestige". Two January flags dispute exactly
+#   one of its rows (Annual Review of Psychology, +0.00), so the block asserted as settled the
+#   thing the evidence was contesting. By the amplify-to-lift law the uncontested assertion
+#   wins and the pattern gets suppressed.
+#
+#   It would have manufactured a false recurrence. Act on that venue pattern by editing the
+#   judge prompt's tiers, and this table would still say +0.00 -- so the same complaint would
+#   resurface next round looking like a genuine return.
+#
+# Venue taste reaches the analysis stage the way every other taste does: the journal is on
+# each paper's line and the user says so in the note.
 # ---------------------------------------------------------------------------
-USER_JOURNAL_RATINGS = {
-    "Nature":                                                                              +0.10,
-    "Science":                                                                             +0.10,
-    "Science (New York, N.Y.)":                                                            +0.10,
-    "Cell":                                                                                +0.10,
-    "Neuron":                                                                              +0.10,
-    "Nature neuroscience":                                                                 +0.10,
-    "Nature reviews. Neuroscience":                                                        +0.10,
-    "Annual review of neuroscience":                                                       +0.10,
-    "Curr Biol":                                                                           +0.05,
-    "Trends Neurosci":                                                                     +0.05,
-    "Curr Opin Neurobiol":                                                                 +0.05,
-    "The Journal of neuroscience : the official journal of the Society for Neuroscience":   0.00,
-    "J Neurophysiol":                                                                       0.00,
-    "Neural computation":                                                                   0.00,
-    "Journal of computational neuroscience":                                                0.00,
-    "Proceedings of the National Academy of Sciences of the United States of America":      0.00,
-    "Annual review of psychology":                                                          0.00,
-    "Cerebral cortex (New York, N.Y. : 1991)":                                              0.00,
-    "eLife":                                                                               -0.05,
-    "Nature communications":                                                               -0.10,
-}
 
 # ---------------------------------------------------------------------------
 # Stage 1: Domain filter prompts

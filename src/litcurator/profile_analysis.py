@@ -44,7 +44,7 @@ import anthropic
 from dotenv import load_dotenv
 
 from litcurator import analysis_prompt_interface, db_interface, profile_interface
-from litcurator.config import DATA_DIR, USER_JOURNAL_RATINGS
+from litcurator.config import DATA_DIR
 
 load_dotenv()
 
@@ -69,8 +69,39 @@ MODEL_COSTS = {
 
 SUGGESTIONS_DIR = DATA_DIR / "suggestions"
 
+# Below this many unattached flags, suggest_edits refuses to run: clustering three flags buys
+# a pattern you could have seen by eye. Inherited from the same v1-era script as the delta
+# threshold below and never re-derived, but kept deliberately (2026-08-07) -- unlike that one
+# it is a cadence guard, it is not shaping the evidence, and it fails loudly.
 MIN_FLAGS = 10
-DELTA_THRESHOLD = 0.15
+
+# NO MAGNITUDE THRESHOLD ON DELTA. There used to be one -- DELTA_THRESHOLD = 0.15, which split
+# the papers block into over-scored / under-scored / "roughly agreed, provided for context".
+# It was inherited verbatim from the v1-era sandbox/suggest_seed_edits.py, never chosen, never
+# justified, never pinned by a test, and it turned out to be doing real damage. Removed
+# 2026-08-07. Do not add another one; the reasoning is worth keeping because the constant
+# looked harmless for months:
+#
+#   The label was false. On the January flags every single paper it filed under "roughly
+#   agreed" was a complaint carrying an explicit instruction ("should be bumped down",
+#   "how is this close to threshold", "the mismatch reasoning is bad"). Zero agreements.
+#   A flag is a correction by definition -- the user does not spend one to say "correct".
+#
+#   It cut tastes in half. Two flags asking for nearly the same profile edit in nearly the
+#   same words (delta -0.20 and -0.15, both "topics of disinterest section") landed on
+#   opposite sides, one as evidence and one as background. Same for venue calibration and
+#   for high-resolution imaging in nonhumans. The cluster prompt asks the model to weigh how
+#   pervasive a pattern is; the renderer was hiding half the evidence for three of them.
+#
+#   The line sat inside the noise. Judge test-retest sigma is about 0.05 where these flags
+#   live, and one flag sat 0.001 from the boundary while a re-score moved it 0.046.
+#
+# The sign of delta is categorical and free -- it is on every paper's own line. The MAGNITUDE
+# is continuous and belongs to the model's judgment, which is where the analysis prompt now
+# puts it ("a steady ~0.1 bias across many papers is a real, systematic error"). If a
+# near-zero concept is ever wanted again it goes in prompt/analysis_prompt.md, which is
+# hand-authored, content-addressed and stamped on every analysis_run -- not here, where a
+# number silently reshapes the evidence for every future run and leaves no record at all.
 
 
 # ---------------------------------------------------------------------------
@@ -116,59 +147,46 @@ def _require_prompt(prompt, which):
 # Formatting helpers for the prompt
 # ---------------------------------------------------------------------------
 
-def _format_journal_ratings():
-    """Group USER_JOURNAL_RATINGS by value for the cluster prompt.
-    The LLM should use these, not its own priors about journal prestige."""
-    from collections import defaultdict
-    groups = defaultdict(list)
-    for journal, rating in USER_JOURNAL_RATINGS.items():
-        groups[rating].append(journal)
-    lines = ["## User journal quality ratings (use these, not your own priors about journal prestige)"]
-    for rating in sorted(groups, reverse=True):
-        lines.append(f"  {rating:+.2f}: {', '.join(groups[rating])}")
-    return "\n".join(lines)
+# _format_journal_ratings lived here and rendered config.USER_JOURNAL_RATINGS into the cluster
+# message. Both are gone (2026-08-07) -- the reasoning is in config.py where the table was.
+# Short version: it handed the auditor the auditee's rubric.
 
 def _format_papers(flags):
-    """Render the flags as the numbered papers block, AND return the flags in the
-    SAME order the numbers follow -- so paper number N in the LLM output maps back to
-    ordered[N-1] (and thus its flag id) for provenance. Numbering is deterministic:
-    over-scored (delta asc), then under-scored (delta desc), then roughly-agreed."""
-    neg = sorted([f for f in flags if f["delta"] < -DELTA_THRESHOLD], key=lambda f: f["delta"])
-    pos = sorted([f for f in flags if f["delta"] > DELTA_THRESHOLD], key=lambda f: f["delta"],
-                 reverse=True)
-    near = [f for f in flags if abs(f["delta"]) <= DELTA_THRESHOLD]
+    """Render the flags as ONE numbered papers block, AND return the flags in the SAME order
+    the numbers follow -- so paper number N in the LLM output maps back to ordered[N-1] (and
+    thus its flag id) for provenance.
 
-    ordered = []
-    sections = []
+    Order is strongest disagreement first: |delta| descending, flag id ascending to break
+    ties. The tiebreak is load-bearing rather than tidy -- judge scores are lumpy (the model
+    reaches for favored anchors), so equal |delta| happens, and without a stable second key
+    the block would reshuffle between runs for no reason and a re-run would be unattributable.
+    db_interface.get_pattern_examples documents the same hazard for the memory block.
 
-    def render(group, header):
-        if not group:
-            return
-        lines = [header]
-        for f in group:
-            ordered.append(f)
-            num = len(ordered)
-            note_line = f"\n   YOUR NOTE: {f['note']}" if f.get("note") else ""
-            mismatch_line = (f"\n   POSSIBLE MISMATCH: {f['possible_mismatch']}"
-                             if f.get("possible_mismatch") else "")
-            abstract = (f.get("abstract") or "")[:500]
-            lines.append(
-                f"[{num}] delta {f['delta']:+.2f}  "
-                f"(judge {f['judge_score']:.2f} -> you {f['user_score']:.2f})\n"
-                f"   Title: {f.get('title') or '(no title)'}\n"
-                f"   Journal: {f.get('journal') or ''}  |  {f.get('pub_date_iso') or ''}\n"
-                f"   Abstract: {abstract}\n"
-                f"   JUDGE RATIONALE: {f.get('rationale') or ''}"
-                f"{mismatch_line}"
-                f"{note_line}"
-            )
-        sections.append("\n\n".join(lines))
+    NO SECTIONS, and no magnitude cut -- see the note beside MIN_FLAGS. Every paper carries its
+    own signed delta on its own line, which is all the sections ever asserted, minus the part
+    they asserted falsely."""
+    ordered = sorted(flags, key=lambda f: (-abs(f["delta"]), f["id"]))
 
-    render(neg, "## JUDGE SCORED TOO HIGH (you scored lower -- seed over-triggering)")
-    render(pos, "## JUDGE SCORED TOO LOW (you scored higher -- seed missing coverage)")
-    render(near, f"## ROUGHLY AGREED (|delta| <= {DELTA_THRESHOLD}) -- provided for context")
+    # No header here: run_cluster_step already writes one over this block. The old three
+    # headers were SECTIONS underneath it, so a wrapper plus sections made sense; with one
+    # list it would just be the same heading twice.
+    lines = []
+    for num, f in enumerate(ordered, start=1):
+        note_line = f"\n   YOUR NOTE: {f['note']}" if f.get("note") else ""
+        mismatch_line = (f"\n   POSSIBLE MISMATCH: {f['possible_mismatch']}"
+                         if f.get("possible_mismatch") else "")
+        lines.append(
+            f"[{num}] delta {f['delta']:+.2f}  "
+            f"(judge {f['judge_score']:.2f} -> you {f['user_score']:.2f})\n"
+            f"   Title: {f.get('title') or '(no title)'}\n"
+            f"   Journal: {f.get('journal') or ''}  |  {f.get('pub_date_iso') or ''}\n"
+            f"   Abstract: {f.get('abstract') or ''}\n"
+            f"   JUDGE RATIONALE: {f.get('rationale') or ''}"
+            f"{mismatch_line}"
+            f"{note_line}"
+        )
 
-    return "\n\n---\n\n".join(sections), ordered
+    return "\n\n".join(lines), ordered
 
 
 def _format_existing_patterns(active, closed_patterns, examples=None):
@@ -268,13 +286,12 @@ def run_cluster_step(client, papers_block, n_flags, seed_text, model, prompt=Non
     Taking it as an argument rather than reading a module global is what lets the harness and
     the lab test a draft without mutating shared state -- the judge has always worked this way."""
     prompt = _require_prompt(prompt, "cluster")
-    journal_block = _format_journal_ratings()
+    # The message is the profile plus the flagged papers, and nothing else. A journal-ratings
+    # block used to sit between them; see config.py for why it is gone.
     user_msg = (
         f"## Current profile\n\n{seed_text}\n\n"
         f"---\n\n"
-        f"{journal_block}\n\n"
-        f"---\n\n"
-        f"## Flagged papers ({n_flags} total)\n\n{papers_block}"
+        f"## Flagged papers ({n_flags} total, strongest disagreement first)\n\n{papers_block}"
     )
     # Recall scales with flag count; give it room so it is never truncated mid-pattern.
     return _stream(client, model, prompt, user_msg, max_tokens=6000)

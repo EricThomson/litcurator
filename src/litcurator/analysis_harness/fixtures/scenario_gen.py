@@ -17,11 +17,12 @@ Two ways to fill a session:
   - STREAM: draw N papers from an intended pattern's papers each firing session, with light variation. Used
     for the long-horizon behavior scenarios where volume is the point.
 
-The delta sign follows the intended pattern direction, matching db_interface.insert_flag / _format_papers:
-  under  -> judge scored too LOW  -> user - judge > 0   (renders in the "too low" bucket)
-  over   -> judge scored too HIGH -> user - judge < 0   (renders in the "too high" bucket)
-A small |delta| (<= profile_analysis.DELTA_THRESHOLD, 0.15) renders in the "roughly agreed"
-context bucket -- which is exactly the weak-signal regime the accumulation scenario probes.
+The delta sign follows the intended pattern direction, matching db_interface.insert_flag:
+  under  -> judge scored too LOW  -> user - judge > 0
+  over   -> judge scored too HIGH -> user - judge < 0
+|delta| sets how WEAK the signal is, which is the regime the accumulation scenario probes. It
+no longer changes how a flag is RENDERED: _format_papers emits one list ordered by |delta|
+descending, with no magnitude buckets (2026-08-07).
 """
 
 from dataclasses import dataclass, field

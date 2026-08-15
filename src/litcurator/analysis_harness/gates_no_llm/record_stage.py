@@ -10,6 +10,7 @@ The overlap is deliberate -- the two cover different closed states.
 
     python -m litcurator.analysis_harness.gates_no_llm.record_stage
 """
+import re
 import shutil
 from pathlib import Path
 
@@ -29,13 +30,17 @@ def _wipe_model_output(conn):
 
 
 def _make_flags(conn):
-    """Six flags with distinct deltas so _format_papers numbering is deterministic:
-    neg (delta asc) then pos (delta desc). paper i maps to flag F{i}."""
+    """Six flags with distinct |delta| so _format_papers numbering is deterministic.
+
+    The deltas alternate in sign as |delta| falls, so the render order INTERLEAVES the
+    fixture labels (F1, F4, F2, F5, F3, F6) rather than running F1..F6. That is deliberate:
+    a lookup bug that ignored the paper number and took a fixed position would still be
+    right by accident if the labels came out in order."""
     pmids = [r[0] for r in conn.execute("SELECT pmid FROM articles LIMIT 6").fetchall()]
     pid = db_interface.get_or_create_profile(conn, "sugg test")
     run_id = db_interface.find_or_create_scoring_run(
         conn, "curation", "m", "benchmark", profile_id=pid, judge_prompt_hash="h")
-    # (judge, your) -> delta: F1..F3 negative (asc), F4..F6 positive (desc)
+    # (judge, your) -> delta: F1 -0.80, F2 -0.60, F3 -0.40, F4 +0.70, F5 +0.50, F6 +0.35
     specs = [(0.9, 0.1), (0.8, 0.2), (0.7, 0.3), (0.2, 0.9), (0.3, 0.8), (0.4, 0.75)]
     flag_id = {}
     for i, (judge, your) in enumerate(specs, start=1):
@@ -53,32 +58,49 @@ def main():
     _wipe_model_output(conn)
     flag_id = _make_flags(conn)
 
-    # --- 1. numbering + provenance mapping (paper N -> flag id) ---
+    # --- 1a. THE PROVENANCE CONTRACT, asserted independently of the sort ---
+    # What must hold is that the delta printed on the "[N]" line belongs to ordered[N-1]:
+    # that is the whole basis of paper N -> flag id -> pattern_flags. Pinning a literal
+    # order instead would make a DELIBERATE re-sort look exactly like a broken mapping,
+    # which is what happened when the magnitude sections were removed.
     flags = db_interface.get_flags(conn)
     papers_block, ordered = profile_analysis._format_papers(flags)
-    order = [next(l for l, fid in flag_id.items() if fid == f["id"]) for f in ordered]
-    assert order == ["F1", "F2", "F3", "F4", "F5", "F6"], order
-    assert all(f"[{i}]" in papers_block for i in range(1, 7))
-    print("paper numbering deterministic:", order)
+    printed = dict(re.findall(r"\[(\d+)\] delta ([-+]\d\.\d\d)", papers_block))
+    assert len(printed) == len(ordered) == 6, (len(printed), len(ordered))
+    for n, f in enumerate(ordered, start=1):
+        assert printed[str(n)] == f"{f['delta']:+.2f}", (n, printed[str(n)], f["delta"])
+    print(f"provenance contract: [N] delta line matches ordered[N-1] for all {len(ordered)}")
+
+    # --- 1b. and the documented order: strongest disagreement first ---
+    # Separate assertion on purpose. If this one alone goes red, the sort changed; if 1a
+    # goes red, the mapping broke. Those are different bugs and should not share a check.
+    magnitudes = [abs(f["delta"]) for f in ordered]
+    assert magnitudes == sorted(magnitudes, reverse=True), magnitudes
+    label = {fid: l for l, fid in flag_id.items()}
+    order = [label[f["id"]] for f in ordered]
+    assert order == ["F1", "F4", "F2", "F5", "F3", "F6"], order
+    print("order is |delta| descending, signs interleaved:", order)
 
     # --- 2. a `new` candidate: attaches the right flags + note rides the created event ---
     s = profile_analysis._record_consolidation(conn, [{
         "choice": "new", "name": "NewTaste", "direction": "under",
         "description": "d", "suggested_edit": "e", "priority": "act_now",
-        "paper_numbers": [1, 3], "rationale": "real gap"}], ordered)
+        # papers 2 and 4 -> F4 and F5. Both are MIDDLE positions: never the first or last
+        # paper, so a lookup taking ordered[0] or ordered[-1] cannot pass by accident.
+        "paper_numbers": [2, 4], "rationale": "real gap"}], ordered)
     newp = s["new"][0]
     attached = {r[0] for r in conn.execute(
         "SELECT flag_id FROM pattern_flags WHERE pattern_id=?", (newp["id"],)).fetchall()}
-    assert attached == {flag_id["F1"], flag_id["F3"]}, attached
+    assert attached == {flag_id["F4"], flag_id["F5"]}, attached
     note = conn.execute("SELECT note FROM pattern_events WHERE pattern_id=? AND event='created'",
                         (newp["id"],)).fetchone()[0]
     assert note == "act_now: real gap", note
-    print("new: links F1,F3 and created-event note rides:", repr(note))
+    print("new: links F4,F5 and created-event note rides:", repr(note))
 
     # bad / out-of-range paper numbers are ignored, not crashing
     s_bad = profile_analysis._record_consolidation(conn, [{
         "choice": "new", "name": "x", "direction": "over",
-        "paper_numbers": [99, "bad", 2], "rationale": "r"}], ordered)
+        "paper_numbers": [99, "bad", 3], "rationale": "r"}], ordered)
     linked_bad = {r[0] for r in conn.execute(
         "SELECT flag_id FROM pattern_flags WHERE pattern_id=?", (s_bad["new"][0]["id"],)).fetchall()}
     assert linked_bad == {flag_id["F2"]}, linked_bad
@@ -91,9 +113,9 @@ def main():
 
     s2 = profile_analysis._record_consolidation(conn, [
         {"choice": "merge_into_open", "existing_pattern_id": p_open,
-         "paper_numbers": [2, 3], "rationale": "same taste"},           # +F2,F3
+         "paper_numbers": [3, 5], "rationale": "same taste"},           # +F2,F3
         {"choice": "merge_into_closed", "existing_pattern_id": p_tomb,
-         "paper_numbers": [5], "rationale": "came back"},               # +F5 (new)
+         "paper_numbers": [4], "rationale": "came back"},               # +F5 (new)
         {"choice": "hold", "name": "quirk", "paper_numbers": [], "rationale": "one-off"},
         {"choice": "merge_into_open", "existing_pattern_id": "deadbeefdeadbeef",
          "name": "Recovered", "direction": "over", "paper_numbers": [6], "rationale": "bad id"},
@@ -140,7 +162,7 @@ def main():
     # --- 4. idempotency: re-running the same merge adds nothing ---
     s3 = profile_analysis._record_consolidation(conn, [{
         "choice": "merge_into_open", "existing_pattern_id": p_open,
-        "paper_numbers": [2, 3], "rationale": "again"}], ordered)
+        "paper_numbers": [3, 5], "rationale": "again"}], ordered)
     assert len(s3["skipped"]) == 1 and pat(p_open)["carried_count"] == 1
     print("idempotent: re-merge adds 0 flags, no second carried event")
 

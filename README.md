@@ -2,7 +2,7 @@
 # litcurator 
 An LLM-based literature filter. 
 
-Litcurator works in two stages. First, retrieve publications from PubMed within your field of interest. This casts a very broad net (e.g., neuroscience). Then, narrow them down to a final curated list using an LLM that works from a user profile. 
+Litcurator works in two stages. First, retrieve publications from PubMed within your field of interest. Then, use an LLM (armed with a description of your specific interests) to narrow them down to a final curated list. 
 
 Initial focus is on systems neuroscience. 
 
@@ -12,5 +12,6 @@ For this to work you need some API keys that you should store in `.env`:
 - An API key for an LLM vendor (I'm currently using anthropic). 
 
 ## Status
-- Building tooling for profile analysis/update across sessions. 
+- Tweaking prompts for profile updater (cluster/consolidater). 
+- Running 2025 simulation with labeled data to see how it works.  
 

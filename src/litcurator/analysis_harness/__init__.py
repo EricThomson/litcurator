@@ -228,8 +228,13 @@ def dry_run(gates=None, cluster_prompt=None, consolidate_prompt=None):
             f"        cluster cache holds {cached} entries; a hit costs nothing"]
     multi = [g for g in gates if g in COLD_CACHE_GATES]
     if multi:
+        # The key is sha256(cluster prompt, papers block, profile, model), so ANY change to
+        # how _format_papers renders invalidates it too -- not just a prompt edit. That is
+        # easy to forget, because a renderer change is not a prompt change and leaves no
+        # fingerprint in the report.
         out.append(f"        {', '.join(multi)} run many sessions in sequence. Warm that is "
-                   f"about a minute each; on a COLD cache (a cluster-prompt edit invalidates "
-                   f"every key) it is several minutes each.")
+                   f"about a minute each; on a COLD cache (any edit to the cluster prompt OR "
+                   f"to the papers-block renderer invalidates every key) it is several "
+                   f"minutes each.")
     out.append("        `litcurator analysis_harness quick` runs the free gates only, 0 calls")
     return "\n".join(out), all(ok for ok, _, _ in checks)
