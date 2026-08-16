@@ -191,12 +191,14 @@ def note_carry():
         terminal_expect={
             "intended_patterns_surface": ["CANCER"],
             "stay_separate": [["CANCER", "B"]],
-            # CANCER's flags are all negative deltas, so `under` here is never defensible.
-            # NB an earlier fixture made this ambiguous and the model answered `under` once and
-            # `judge-not-applying` once -- never the declared direction. Cancer biology has no
-            # neurons, so there is no defensible second reading now.
-            "direction_not_inverted": [{"label": "CANCER", "taste": "over"},
-                                       {"label": "B", "taste": "under"}],
+            # B ONLY, and CANCER deliberately absent. Cancer biology sits outside the profile's
+            # STATED domain ("I follow systems and circuit neuroscience"), so
+            # `judge-not-applying` is the correct answer for it -- the judge really is failing
+            # to apply something the profile says. The check allows cross-cutting labels, so on
+            # CANCER it could only ever pass: a check that cannot fail is the vacuous shape this
+            # suite has already been bitten by twice. Direction is covered where it
+            # discriminates -- A and D (over), B, C and CONNECTOME (under).
+            "direction_not_inverted": [{"label": "B", "taste": "under"}],
             # Three depths of the same question, kept separate so a red LOCALISES the loss.
             # term green + directive red  -> the note wall is eating the actionable half.
             # both red                    -> the wording never survived the cluster step.

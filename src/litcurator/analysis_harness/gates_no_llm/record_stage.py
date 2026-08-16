@@ -177,6 +177,63 @@ def main():
     assert db_interface.attach_flags_to_pattern(conn, p_open, [flag_id["F2"]]) == 0
     print("attach_flags_to_pattern dedups on the PK -> 0")
 
+    # --- 7. DIRECTION COMES FROM THE FLAGS, NOT THE MODEL ---------------------------------
+    # `direction` was asking one field two questions: which way the judge erred (arithmetic on
+    # the deltas, which this function already has in hand) and what is wrong at the other end
+    # (a judgment about the profile). Only the second needs a model, and the first was being
+    # routed through two LLM stages as English and arriving flipped. So code now answers it.
+    #
+    # TESTED HERE, model-free, because it IS pure code -- the paid gate cannot cover it, since
+    # it can only exercise whatever the model happens to propose that run. On 2026-08-16 the
+    # model proposed a cross-cutting label and the override branch never fired at all, which is
+    # exactly why this belongs offline.
+    #
+    # Fixture deltas: F1 -0.80, F2 -0.60, F3 -0.40 (negative), F4 +0.70, F5 +0.50, F6 +0.35.
+    # Render order is |delta| descending: papers 1..6 = F1, F4, F2, F5, F3, F6.
+    def _one_new(direction, paper_numbers):
+        out = profile_analysis._record_consolidation(conn, [{
+            "choice": "new", "name": "dir probe", "direction": direction,
+            "paper_numbers": paper_numbers, "rationale": "r"}], ordered)
+        rec = out["new"][0]
+        note = conn.execute(
+            "SELECT note FROM pattern_events WHERE pattern_id=? AND event='created'",
+            (rec["id"],)).fetchone()[0] or ""
+        return rec, note
+
+    # (a) the model contradicts the flags -> the FLAGS win, and the disagreement is RECORDED.
+    # Silently correcting would turn a measurable prompt defect into a mystery, and the harness
+    # grades the PROPOSAL precisely because the recorded value is now arithmetic.
+    rec, note = _one_new("under", [1, 3])            # papers 1,3 -> F1,F2, both negative
+    assert rec["direction"] == "over", rec
+    assert rec.get("direction_proposed") == "under", rec
+    assert "from flag deltas: over" in note and "'under'" in note, note
+    print("direction: model said under, flags say over -> recorded over, disagreement logged")
+
+    # (b) a cross-cutting label is NOT a sign claim, so code leaves it alone
+    rec, note = _one_new("judge-not-applying", [1, 3])
+    assert rec["direction"] == "judge-not-applying", rec
+    assert "direction_proposed" not in rec and "flag deltas" not in note, (rec, note)
+    print("direction: judge-not-applying kept as-is, no override")
+
+    # (c) agreement is silent -- no note fragment, nothing for the grader to flag
+    rec, note = _one_new("over", [1, 3])
+    assert rec["direction"] == "over" and "direction_proposed" not in rec, rec
+    assert "flag deltas" not in note, note
+    print("direction: model agreed with the flags -> recorded, nothing logged")
+
+    # (d) flags pointing BOTH ways keep the model's word and say so. patterns.direction has no
+    # value for it, and this is the free measurement for the deferred "wrong in both directions
+    # at once" question -- if it shows up often on real flags, a fifth value has earned itself.
+    rec, note = _one_new("under", [1, 2])            # F1 negative, F4 positive
+    assert rec["direction"] == "under", rec
+    assert "BOTH ways" in note, note
+    print("direction: mixed-sign flags keep the model's word and are logged as mixed")
+
+    # (e) nothing to compute from -> the model's word stands, unremarked
+    rec, note = _one_new("under", [])
+    assert rec["direction"] == "under" and "flag deltas" not in note, (rec, note)
+    print("direction: no usable papers -> model's word stands")
+
     conn.close()
     SCRATCH.unlink(missing_ok=True)
     print("\nALL CHECKS PASSED")
