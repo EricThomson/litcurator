@@ -132,100 +132,85 @@ _CONNECTOME_RATIONALES = [
 ]
 
 
-# TIDAL -- the NOTE-CARRIER probe. Every other pool here encodes its signal in the delta: a big
-# number means the judge was badly wrong. This one encodes it in the NOTE, with a deliberately
-# SMALL delta, because that is the archetype the fixture was missing entirely and the live data
-# is full of. About 30% of the user's real flags sit at |delta| <= 0.15, and they are small
-# precisely BECAUSE the score is not what is being corrected -- the flag exists to carry a
-# sentence ("put this on my disinterest list", "the mismatch reasoning is bad"). Before this
-# pool the fixture's smallest |delta| anywhere was 0.17, so nothing tested a flag whose evidence
-# lives in the prose.
+# NOT NEURAL AT ALL, and the bluntness IS the design -- rule 1, easy cases only.
 #
-# THE NOTES ARE THE FIXTURE HERE, and they are built to be graded discretely so ONE run settles
-# it (never three runs and an average -- that would mean the case is not easy enough). Each note
-# plants three markers that fail at different depths:
-#   "circatidal"        the topic word. Survives almost any faithful handling; if this is gone
-#                       the user's language never left the cluster step at all.
-#   "disinterest list"  the DESTINATION. The user is not describing a taste, they are naming
-#                       where the fix goes. This is the actionable half.
-#   "tide-table biology" the user's own idiosyncratic phrase. Nothing paraphrases to this, so it
-#                       is the sharpest test of whether their VOICE arrives or gets restated.
-# All three are unusual enough to have no natural synonym, which is what makes a substring test
-# honest rather than a proxy for prose quality.
-# DELIBERATELY VERTEBRATE (fish), and that is a fixture-design constraint, not a detail. The
-# first draft of this pool used crabs, isopods and amphipods -- which collides head-on with pool
-# C, invertebrate neuroethology. Two pools that can be confused for each other produce a red
-# that is about the FIXTURE rather than the machinery, which is the exact failure
-# pool_calibration exists to catch. Marine fish keep the tidal setting while staying clear of
-# C (invertebrates), A (non-invasive human), B (formal theory) and D (disease models).
-_TIDAL_STUBS = [
+# Three earlier drafts violated it and each took a run to disprove: circatidal rhythms in crabs
+# (collides with pool C, invertebrate neuroethology, which this fixture declares the user WANTS),
+# the same in fish (no collision, but tidal oscillators driving behavior are genuinely
+# interesting -- the user's reaction to the word was "instantly interested"), and thermoregulation
+# circuits (optogenetics plus behavior plus causal manipulation, i.e. a paper he would want to
+# read). On the fish version the model never once produced the declared direction across two
+# runs: `under`, then `judge-not-applying`.
+#
+# The lesson: for `over`, pick something laughably off-scope. It is synthetic data -- there is no
+# reason to hunt for a close call. Cancer cell biology has no neurons, no circuit, no behavior
+# and no organism the profile cares about. Nothing to weigh. The judge over-scores it on generic
+# quality signals (glam venue, clean knockouts), which is a real failure mode and exactly why
+# the flag is a note-carrier: the score is only mildly wrong and the NOTE says what is going on.
+#
+# NB on markers: the DESTINATION word ("disinterest") is load-bearing because it appears ONLY in
+# the note. A topic word would be near-vacuous -- the model reaches for "cancer" from the titles
+# alone. The idiosyncratic-phrase check was dropped after flipping green/red across two runs;
+# whether a model quotes a colourful phrase is genuinely variable, which is rule 1 again.
+_CANCER_STUBS = [
     GEN.SyntheticPaper(
-        "Circatidal rhythms persist in isolated killifish gill explants",
-        "Explanted gill tissue from the mangrove killifish maintains a ~12.4 h transcriptional "
-        "cycle for six days in constant conditions, establishing a peripheral circatidal "
-        "oscillator that runs without any input from the nervous system.",
+        "A MYC-driven transcriptional switch controls proliferation in colorectal tumour lines",
+        "CRISPR knockout of a MYC cofactor in three colorectal cancer cell lines collapses a "
+        "proliferative gene programme, and re-expression restores it; xenograft growth is "
+        "reduced by two thirds.",
         "Nature",
-        "A clean rhythmic-timing result with a well-controlled free-running design, in a "
-        "vertebrate the profile has no stated objection to.",
-        "Tide-table biology, not neuroscience -- there is no circuit here at all. Put circatidal "
-        "rhythm work on my disinterest list."),
+        "A causal, mechanistically clean result in a top-tier journal, with knockout and rescue "
+        "both demonstrated.",
+        "This is cancer biology. Not neuroscience at all. Disinterest list."),
     GEN.SyntheticPaper(
-        "A molecular clock for circatidal timing in the reef goby",
-        "Transcriptomic profiling across the tidal cycle identifies an oscillating gene module "
-        "whose period is uncoupled from the circadian clock, with knockdown abolishing the "
-        "12.4 h rhythm in gill epithelium.",
+        "KRAS-G12C inhibitor resistance arises through adaptive RTK feedback signalling",
+        "Time-course phosphoproteomics in treated lung adenocarcinoma cells identifies a "
+        "feedback wave restoring pathway flux within 48 hours; combination treatment prevents it.",
         "Cell",
-        "Chronobiology with a clear molecular mechanism and a convincing knockdown, in a "
-        "non-standard vertebrate model.",
-        "Again tide-table biology. Peripheral tissue, no behavior, no circuit. This belongs on "
-        "the disinterest list with the rest of the circatidal work."),
+        "Careful causal pharmacology with a strong mechanism and an obvious translational "
+        "payoff, in an excellent venue.",
+        "Oncology drug resistance. Nothing to do with me. Disinterest list."),
     GEN.SyntheticPaper(
-        "Entrainment of circatidal swimming by hydrostatic pressure cycles in juvenile plaice",
-        "Fish held under cyclic pressure adopt a 12.4 h swimming rhythm that free-runs for four "
-        "cycles, identifying pressure as a sufficient zeitgeber for the circatidal oscillator.",
-        "Current Biology",
-        "A behavioral entrainment study showing an environmental signal driving behavior, which "
-        "the profile states an interest in.",
-        "Entrainment studies are still tide-table biology to me. Circatidal work goes on the "
-        "disinterest list even when there is behavior attached."),
+        "An enhancer hijacking event activates a proto-oncogene in pancreatic carcinoma",
+        "Hi-C and ATAC-seq in patient-derived organoids map a structural rearrangement that "
+        "places a distal enhancer next to the oncogene; CRISPRi of the enhancer abolishes "
+        "expression.",
+        "Science",
+        "Gene-regulatory mechanism established causally in patient-derived material, a strong "
+        "result in a leading journal.",
+        "Tumour genomics. Wrong field entirely. Put it on the disinterest list."),
     GEN.SyntheticPaper(
-        "Two independent oscillators time circatidal and circadian behavior in Atlantic salmon smolts",
-        "Behavioral recording under constant conditions separates a 12.4 h and a 24 h component "
-        "with distinct temperature compensation, arguing for two anatomically separate clocks.",
-        "Neuron",
-        "Dissociating two oscillators is a systems-level organizational claim, and the profile "
-        "favours organizational results of this kind.",
-        "Still tide-table biology. Add circatidal rhythms to the disinterest list; I do not want "
-        "these no matter how clean the dissociation is."),
+        "p53 restoration triggers senescence rather than apoptosis in hepatocellular carcinoma",
+        "Inducible p53 re-expression in a mouse liver tumour model produces a senescent "
+        "phenotype with a characteristic secretory profile, and clearance depends on innate "
+        "immune recruitment.",
+        "Nature",
+        "A classic tumour-suppressor question answered with a clean inducible system in vivo.",
+        "Cancer again. I do not want any of this. Disinterest list."),
 ]
 
 
-# Meaning-equal restatements of the judge's wrong reason, rotated so the repeats a short run
-# produces are not verbatim. Four papers over six emissions means papers 0 and 1 come round
-# twice, and handing the cluster step an identical title, abstract AND rationale would make the
-# grouping easier than reality -- which matters even here, where the question is note survival
-# rather than coalescing, because a trivially clean cluster is a friendlier place for a quote to
-# survive than a messy one. Same reasoning as _CONNECTOME_RATIONALES; see the arithmetic note
-# there before changing the count.
-_TIDAL_RATIONALES = [
-    "Rhythmic timing in a marine invertebrate, with a clean oscillator result. The profile's "
-    "interest in invertebrate preparations and in how environmental signals drive behavior "
-    "makes this worth surfacing.",
-    "A well-controlled chronobiology study in a tractable non-model organism. Nothing here "
-    "conflicts with the stated disinterests, and the organism is one the profile favours.",
+# Meaning-equal restatements of the judge's WRONG reason, rotated across emissions so a repeat
+# is not verbatim. All say the same thing: it is good science in a good journal, judged on
+# generic quality rather than on whether the user cares about the subject.
+_CANCER_RATIONALES = [
+    "Rigorous causal mechanism in a leading journal, with knockout and rescue. The quality of "
+    "the work is not in question.",
+    "A well-controlled molecular study with a clear mechanistic claim, published in a venue the "
+    "user rates highly.",
 ]
 
 
-def tidal_pool(delta_band=(0.08, 0.14)):
-    """The NOTE-CARRIER probe, TIDAL -- see the block above for why the notes are the fixture.
+def cancer_pool(delta_band=(0.08, 0.14)):
+    """The NOTE-CARRIER probe, CANCER -- see the block above for why the topic is blunt.
 
-    The band is deliberately BELOW every other pool in this file (the next smallest is
-    connectome at 0.16) and inside the user's real 0.07-0.15 region. `over` because the judge
-    is scoring these too high; the user wants them gone, and says so in words rather than by
-    moving the number far."""
-    return GEN.IntendedPatternPool("TIDAL", "over", delta_band,
-                                   papers=list(_TIDAL_STUBS),
-                                   rationale_templates=list(_TIDAL_RATIONALES))
+    The band is deliberately BELOW every other pool here (the next smallest is connectome at
+    0.16) and inside the user's real 0.07-0.15 region. `over` because the judge scores these too
+    high; the user wants them gone and says so in words rather than by moving the number far,
+    which is what a note-carrier flag IS."""
+    return GEN.IntendedPatternPool("CANCER", "over", delta_band,
+                                   papers=list(_CANCER_STUBS),
+                                   rationale_templates=list(_CANCER_RATIONALES))
 
 
 def connectome_pool(delta_band=(0.16, 0.22)):

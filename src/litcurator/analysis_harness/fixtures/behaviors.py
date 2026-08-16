@@ -89,7 +89,7 @@ def accumulation(delta_band=(0.16, 0.22), n_sessions=12):
             "pool_drains": [{"over_last_sessions": max(2, n_sessions // 3), "max_growth": 0}],
             # CONNECTOME flags are all positive deltas, so `over` on this pattern is never
             # defensible. Worth having here in particular: this is the pool with the smallest
-            # deltas after TIDAL, and the inversion that prompted this check turned up on the
+            # deltas after CANCER, and the inversion that prompted this check turned up on the
             # smallest-delta pool in the suite.
             "direction_not_inverted": [{"label": "CONNECTOME", "taste": "under"}],
         },
@@ -158,7 +158,7 @@ def note_carry():
 
     THE GAP THIS CLOSES. Every other check in this suite grades the provenance graph -- which
     flags landed on which pattern -- and never reads a word the model produced. That leaves a
-    whole class invisible: the user writes "put circatidal work on my disinterest list", the
+    whole class invisible: the user writes "put this on my disinterest list", the
     cluster step paraphrases it into a pattern description, consolidate (which never sees the
     note, only cluster's prose) restates it again, and what reaches the workbench is a blurred
     version of a sentence the user had already written precisely. The graph is perfect
@@ -184,28 +184,25 @@ def note_carry():
         name="note_carry(the user's own words reach the pattern)",
         n_sessions=3,
         profile=SC.PROFILE,
-        pools_by_intended_pattern={"TIDAL": paper_pools.tidal_pool(),
+        pools_by_intended_pattern={"CANCER": paper_pools.cancer_pool(),
                                    "B": paper_pools.POOLS_BY_INTENDED_PATTERN["B"]},
-        streams=[GEN.Stream("TIDAL", [0, 1, 2], count_per_session=2),
+        streams=[GEN.Stream("CANCER", [0, 1, 2], count_per_session=2),
                  GEN.Stream("B", [0, 1, 2], count_per_session=2)],
         terminal_expect={
-            "intended_patterns_surface": ["TIDAL"],
-            "stay_separate": [["TIDAL", "B"]],
-            # TIDAL's flags are all negative deltas, so `under` here is never defensible.
-            # This is the check that caught the under/over definition clash between the two
-            # prompt halves; keep it as the regression guard once that is fixed.
-            "direction_not_inverted": [{"label": "TIDAL", "taste": "over"},
+            "intended_patterns_surface": ["CANCER"],
+            "stay_separate": [["CANCER", "B"]],
+            # CANCER's flags are all negative deltas, so `under` here is never defensible.
+            # NB an earlier fixture made this ambiguous and the model answered `under` once and
+            # `judge-not-applying` once -- never the declared direction. Cancer biology has no
+            # neurons, so there is no defensible second reading now.
+            "direction_not_inverted": [{"label": "CANCER", "taste": "over"},
                                        {"label": "B", "taste": "under"}],
             # Three depths of the same question, kept separate so a red LOCALISES the loss.
             # term green + directive red  -> the note wall is eating the actionable half.
             # both red                    -> the wording never survived the cluster step.
             "note_wording_survives": [
-                {"label": "TIDAL", "kind": "term", "markers": ["circatidal"],
-                 "fields": ("name", "description", "suggested_edit")},
-                {"label": "TIDAL", "kind": "directive", "markers": ["disinterest"],
+                {"label": "CANCER", "kind": "directive", "markers": ["disinterest"],
                  "fields": ("suggested_edit",)},
-                {"label": "TIDAL", "kind": "voice", "markers": ["tide-table"],
-                 "fields": ("name", "description", "suggested_edit")},
             ],
         },
     )
