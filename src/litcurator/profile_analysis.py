@@ -394,6 +394,41 @@ def _record_consolidation(conn, candidates, ordered_flags, analysis_run_id=None)
         return [ordered_flags[i - 1]["id"] for i in nums
                 if isinstance(i, int) and 1 <= i <= n]
 
+    def deltas_for(c):
+        """The deltas of the flags this candidate actually cites, in render order."""
+        nums = c.get("paper_numbers") or []
+        return [ordered_flags[i - 1]["delta"] for i in nums
+                if isinstance(i, int) and 1 <= i <= n]
+
+    def computed_sign(c):
+        """over / under / mixed / None, from ARITHMETIC on the cited flags.
+
+        WHY THIS EXISTS AND WHY IT OVERRIDES THE MODEL. `direction` was asking one field to
+        answer two different questions: WHICH WAY the judge erred (the sign of the delta --
+        deterministic, and already in this function's hands) and WHAT IS WRONG at the other end
+        (profile silent / vague / stated-but-ignored -- a real judgment about the profile).
+        Only the second needs a model.
+
+        The first was being routed through two LLM stages as English and arriving flipped.
+        Measured over three different fixtures on 2026-08-16: the cluster step wrote "Judge
+        scoring too HIGH. Deltas of -0.13 on both papers" -- correct, explicit, unambiguous --
+        and consolidate recorded `under`, then `judge-not-applying`, then `judge-not-applying`.
+        It never once produced the declared sign. Not a data problem: the answer was in the
+        input in plain words. It matched the DEFINITION it was given, where `under` reads as
+        "the profile is MISSING coverage", which was true of a profile silent on the topic.
+
+        No wording fixes that, because the two questions genuinely have different answers. So
+        code answers the one it can answer exactly. Returns None when the candidate cites no
+        usable papers, in which case the model's word stands -- there is nothing to compute."""
+        ds = [d for d in deltas_for(c) if d is not None]
+        if not ds:
+            return None
+        if all(d > 0 for d in ds):
+            return "under"
+        if all(d < 0 for d in ds):
+            return "over"
+        return "mixed"
+
     def status_of(pid):
         row = conn.execute(
             "SELECT event FROM pattern_events WHERE pattern_id = ? "
@@ -427,8 +462,38 @@ def _record_consolidation(conn, candidates, ordered_flags, analysis_run_id=None)
             return val, False
         return "under", True
 
+    def _resolved_direction(c):
+        """The direction actually recorded, plus a note fragment when code overrode the model.
+
+        RULE: the model keeps `sharpen` and `judge-not-applying`, which are claims about the
+        PROFILE rather than about which way a score went -- code has no opinion on those and a
+        cross-cutting read is often the better answer. For `over`/`under` the computed sign
+        wins, because that one is arithmetic.
+
+        DISAGREEMENTS ARE RECORDED, NOT SILENTLY CORRECTED. "The model said judge-not-applying,
+        the flags say over" is the signal that the prompt's definitions are off, and hiding it
+        would turn a measurable prompt defect into a mystery. It also keeps the harness honest:
+        a check asserting the RECORDED direction would now be tautologically green, so the gate
+        asserts model-vs-computed AGREEMENT instead, which is the thing that can still be wrong.
+
+        `mixed` (the candidate's flags point both ways) is recorded in the note but falls back
+        to the model's word, because `patterns.direction` has no value for it. That is the
+        deferred "wrong in BOTH directions at once" question, and this gives it a free
+        measurement: if mixed shows up often on real flags, the fifth value has earned itself."""
+        model_dir, coerced = _direction(c)
+        sign = computed_sign(c)
+        if model_dir in ("sharpen", "judge-not-applying") or sign is None:
+            return model_dir, coerced, ""
+        if sign == "mixed":
+            return model_dir, coerced, f" [flags point BOTH ways; recorded {model_dir}]"
+        if sign == model_dir:
+            return sign, coerced, ""
+        return sign, coerced, (f" [direction from flag deltas: {sign}; the model proposed "
+                               f"{(c.get('direction') or model_dir)!r}]")
+
     def _create(c, flag_ids, extra_note=""):
-        direction, coerced = _direction(c)
+        direction, coerced, disagreement = _resolved_direction(c)
+        extra_note += disagreement
         if coerced and c.get("direction"):
             extra_note += f" [direction {c['direction']!r} not recognized, recorded as under]"
         note = f"{c.get('priority', 'defer')}: {c.get('rationale', '')}{extra_note}".strip()
@@ -439,7 +504,7 @@ def _record_consolidation(conn, candidates, ordered_flags, analysis_run_id=None)
             flag_ids=flag_ids, note=note or None, analysis_run_id=analysis_run_id)
 
     def _record_new(c, flag_ids, extra_note="", recovered=False):
-        direction, coerced = _direction(c)
+        direction, coerced, disagreement = _resolved_direction(c)
         entry = {"id": _create(c, flag_ids, extra_note), "name": _fallback_name(c),
                  "direction": direction, "priority": c.get("priority"),
                  "n_flags": len(flag_ids)}
@@ -447,6 +512,11 @@ def _record_consolidation(conn, candidates, ordered_flags, analysis_run_id=None)
             entry["recovered"] = True
         if coerced:
             entry["direction_coerced"] = c.get("direction")
+        if disagreement:
+            # What the model WANTED, kept beside what was recorded. The harness grades on this
+            # -- asserting the recorded direction would be grading arithmetic, not the prompt.
+            entry["direction_proposed"] = _direction(c)[0]
+            entry["direction_note"] = disagreement.strip()
         summary["new"].append(entry)
 
     for c in candidates:

@@ -383,19 +383,32 @@ def check_terminal(expect, pp, patterns, first_surfaced, history,
     # profile that is silent about the topic those two readings come apart, and the silent case
     # is exactly what "add this to my disinterest list" means. Keep this check even after the
     # prompt is fixed -- it is the regression guard for that fix.
+    # WHAT THIS GRADES CHANGED 2026-08-16, and the reason is the whole point. The RECORDED
+    # direction is now computed in code from the cited flags' deltas, so asserting it would be
+    # grading arithmetic -- tautologically green, the vacuous-pass failure this project has hit
+    # twice already. So this grades whether the MODEL agreed with the arithmetic. That is the
+    # part that can still be wrong, it is what tells you the prompt's definitions are off, and
+    # it stays red until they are fixed.
+    #
+    # `sharpen` and `judge-not-applying` remain legal: they are claims about the profile rather
+    # than about which way a score went, so they cannot contradict a sign. What fails is the
+    # model proposing the OPPOSITE taste direction to the flags that built the pattern.
     for spec in expect.get("direction_not_inverted", []):
         L, taste = spec["label"], spec["taste"]
         opposite = "under" if taste == "over" else "over"
         pats = patterns_for(L)
         if not pats:
-            chk(f"direction: {L} is not labelled {opposite} (declared {taste})", False,
+            chk(f"direction: {L} not proposed as {opposite} (flags say {taste})", False,
                 "NO pattern recorded for this label -- nothing to inspect")
             continue
-        bad = [pid for pid in pats if by_id.get(pid, {}).get("direction") == opposite]
-        got = [by_id.get(pid, {}).get("direction") for pid in pats]
-        chk(f"direction: {L} is not labelled {opposite} (declared {taste})", not bad,
-            f"{len(pats)} pattern(s): {got}"
-            + (f" -- {len(bad)} INVERTED" if bad else ""))
+        # Fall back to the recorded direction when nothing was proposed separately, so this
+        # still works on runs predating the computed-sign change.
+        proposed = {pid: (by_id.get(pid, {}).get("direction_proposed")
+                          or by_id.get(pid, {}).get("direction")) for pid in pats}
+        bad = [pid for pid, d in proposed.items() if d == opposite]
+        chk(f"direction: {L} not proposed as {opposite} (flags say {taste})", not bad,
+            f"{len(pats)} pattern(s) proposed {sorted(proposed.values())}"
+            + (f" -- {len(bad)} INVERTED against the flags" if bad else ""))
 
     # --- THE USER'S OWN WORDS MUST REACH THE PATTERN --------------------------------------
     # The ONLY checks in this file that read produced TEXT rather than the provenance graph,

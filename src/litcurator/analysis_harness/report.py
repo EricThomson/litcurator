@@ -10,6 +10,7 @@ clean run has no failure headers at all.
 """
 
 import hashlib
+import re
 from datetime import datetime
 
 from litcurator import config
@@ -105,11 +106,19 @@ def format_transcripts(results):
     return "\n".join(out)
 
 
-def write_report(text, runs_dir=None):
+def write_report(text, runs_dir=None, selector=None):
     """Save a timestamped report. Never overwritten, so you accumulate a history to compare
-    across edits, exactly like the judge harness."""
+    across edits, exactly like the judge harness.
+
+    `selector` is what was asked for -- None (everything), 'quick', or one gate name -- and it
+    goes in the FILENAME. Without it a full suite, a `quick` and a single named gate all produce
+    identically-shaped names, so the only way to tell them apart is to open them. That is not
+    hypothetical: a `quick` run and a `note-carry` run sat next to each other on 2026-08-16 and
+    the newest-file-wins assumption read the wrong one. Same fix as the `_dryrun` marker on the
+    suggestions report, for the same reason."""
     runs_dir = runs_dir or config.ANALYSIS_HARNESS_RUNS_DIR
     runs_dir.mkdir(parents=True, exist_ok=True)
-    path = runs_dir / f"analysis_harness_{datetime.now():%Y%m%d_%H%M%S}.md"
+    tag = re.sub(r"[^A-Za-z0-9-]+", "-", selector) if selector else "all"
+    path = runs_dir / f"analysis_harness_{tag}_{datetime.now():%Y%m%d_%H%M%S}.md"
     path.write_text(text, encoding="utf-8")
     return path

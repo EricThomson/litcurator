@@ -45,6 +45,10 @@ def run_scenario(spec, rng, client, cluster_model, consolidate_model, cluster_pr
     rounds = GEN.build_rounds(spec, rng)
     conn, run_id, _ = build_db(db_path, spec.profile)
     flag_intended, pattern_for = {}, {}
+    # {pattern_id: the direction the MODEL asked for}. The recorded direction is computed
+    # in code from the flags' deltas, so grading it would grade arithmetic; the grader
+    # needs what the model proposed, which lives only in the per-round summary.
+    proposed_direction = {}
     history, first_surfaced = [], {}
     per_round, cost = [], 0.0
     try:
@@ -70,6 +74,8 @@ def run_scenario(spec, rng, client, cluster_model, consolidate_model, cluster_pr
             pp_now = pattern_intended(conn, flag_intended)
             snap_new = []
             for cnew in summary["new"]:
+                proposed_direction[cnew["id"]] = (cnew.get("direction_proposed")
+                                                  or cnew.get("direction"))
                 ctr = pp_now.get(cnew["id"], Counter())
                 d = dominant_intended(ctr)
                 snap_new.append({"id": cnew["id"], "dominant_by_pattern": d, "purity": purity_of(ctr),
@@ -91,7 +97,8 @@ def run_scenario(spec, rng, client, cluster_model, consolidate_model, cluster_pr
                 apply_actions(conn, spec.profile, rnd["then"], flag_intended, pattern_for, log)
 
         pp = pattern_intended(conn, flag_intended)
-        patterns = DB.get_patterns(conn)
+        patterns = [{**p, "direction_proposed": proposed_direction.get(p["id"])}
+                    for p in DB.get_patterns(conn)]
         terminal = check_terminal(spec.terminal_expect, pp, patterns, first_surfaced, history,
                                   patterns_by_flag(conn), flag_intended)
         n_patterns = len(patterns)

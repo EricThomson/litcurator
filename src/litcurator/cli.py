@@ -258,7 +258,8 @@ def _cmd_analysis_harness(args):
     if len(results) < len(gates):
         print(f"\nnot spending: {len(gates) - len(results)} paid gates skipped, "
               f"fix the free gates first")
-    path = AH.write_report(report + "\n" + AH.format_transcripts(results))
+    path = AH.write_report(report + "\n" + AH.format_transcripts(results),
+                           selector=args.gate)
     print(f"\nsaved to {path}")
     raise SystemExit(AH.exit_code(results, gates))
 

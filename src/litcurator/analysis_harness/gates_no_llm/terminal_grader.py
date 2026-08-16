@@ -22,12 +22,13 @@ def _one(expect, pp, patterns, first_surfaced, history=None,
 
 
 def _pat(pid, direction="under", status="created", recurred_count=0,
-         name="", description="", suggested_edit=""):
+         name="", description="", suggested_edit="", direction_proposed=None):
     """The text fields default to EMPTY so every pre-existing caller keeps grading exactly the
     provenance graph and nothing else. Only note_wording_survives fills them."""
     return {"id": pid, "direction": direction, "status": status,
             "recurred_count": recurred_count, "name": name,
-            "description": description, "suggested_edit": suggested_edit}
+            "description": description, "suggested_edit": suggested_edit,
+            "direction_proposed": direction_proposed}
 
 
 def _hist(*active_counts):
@@ -137,31 +138,42 @@ def test_named_disinterest_not_dropped():
 
 
 def test_direction_not_inverted():
-    """Guards the ONE direction error that is never defensible: a taste pattern carrying the
-    opposite sign to the flags that built it. Cross-cutting labels stay legal on purpose."""
+    """Grades what the MODEL proposed, not what got recorded. The recorded direction is computed
+    from the flags in code, so asserting it would be asserting arithmetic -- green by
+    construction, which is the vacuous pass this suite has been bitten by twice."""
     spec = {"direction_not_inverted": [{"label": "T", "taste": "over"}]}
-    # PASS: the declared direction
-    assert _one(spec, {"pT": Counter(T=6)}, [_pat("pT", "over")], {"T": 0}) is True
-    # PASS: a cross-cutting read is a legitimate alternative, not an inversion. These say
-    # something about the profile's wording or the judge's behavior rather than about which way
-    # a score went, so they cannot contradict the sign.
-    assert _one(spec, {"pT": Counter(T=6)}, [_pat("pT", "judge-not-applying")], {"T": 0}) is True
-    assert _one(spec, {"pT": Counter(T=6)}, [_pat("pT", "sharpen")], {"T": 0}) is True
-    # FAIL: the actual bug -- every word of the pattern said "scored too high", the label said
-    # the opposite
-    assert _one(spec, {"pT": Counter(T=6)}, [_pat("pT", "under")], {"T": 0}) is False
-    # FAIL: one good pattern does not excuse an inverted sibling. Direction feeds four other
-    # checks, so a single wrong one is enough to make them compare the wrong things.
+    # PASS: the model agreed with the flags
+    assert _one(spec, {"pT": Counter(T=6)},
+                [_pat("pT", "over", direction_proposed="over")], {"T": 0}) is True
+    # PASS: cross-cutting reads are legitimate alternatives, not inversions -- they are claims
+    # about the profile rather than about which way a score went, so they cannot contradict a sign
+    assert _one(spec, {"pT": Counter(T=6)},
+                [_pat("pT", "over", direction_proposed="judge-not-applying")], {"T": 0}) is True
+    assert _one(spec, {"pT": Counter(T=6)},
+                [_pat("pT", "over", direction_proposed="sharpen")], {"T": 0}) is True
+    # FAIL: the model asked for the OPPOSITE sign. THE RECORDED VALUE IS CORRECT HERE -- code
+    # already fixed it -- so a check reading `direction` would score this green while the prompt
+    # defect it exists to catch went unreported. This is the whole reason the check moved.
+    assert _one(spec, {"pT": Counter(T=6)},
+                [_pat("pT", "over", direction_proposed="under")], {"T": 0}) is False
+    # FAIL: one good pattern does not excuse an inverted sibling
     assert _one(spec, {"pT": Counter(T=3), "pT2": Counter(T=3)},
-                [_pat("pT", "over"), _pat("pT2", "under")], {"T": 0}) is False
-    # FAIL: no pattern at all must not pass vacuously by having nothing to inspect
+                [_pat("pT", "over", direction_proposed="over"),
+                 _pat("pT2", "over", direction_proposed="under")], {"T": 0}) is False
+    # FAIL: no pattern at all must not pass vacuously
     assert _one(spec, {"pB": Counter(B=2)}, [_pat("pB")], {"B": 0}) is False
-    # and the mirror case, so the check is not accidentally hard-coded to one sign
+    # BACKWARD COMPATIBILITY: runs predating the computed-sign change carry no proposal, so the
+    # recorded direction stands in
+    assert _one(spec, {"pT": Counter(T=6)}, [_pat("pT", "under")], {"T": 0}) is False
+    assert _one(spec, {"pT": Counter(T=6)}, [_pat("pT", "over")], {"T": 0}) is True
+    # and the mirror sign, so the check is not hard-coded to one direction
     under = {"direction_not_inverted": [{"label": "T", "taste": "under"}]}
-    assert _one(under, {"pT": Counter(T=6)}, [_pat("pT", "under")], {"T": 0}) is True
-    assert _one(under, {"pT": Counter(T=6)}, [_pat("pT", "over")], {"T": 0}) is False
-    print("direction_not_inverted: declared sign and cross-cutting pass; the opposite sign, "
-          "an inverted sibling and a missing pattern fail; both signs covered")
+    assert _one(under, {"pT": Counter(T=6)},
+                [_pat("pT", "under", direction_proposed="under")], {"T": 0}) is True
+    assert _one(under, {"pT": Counter(T=6)},
+                [_pat("pT", "under", direction_proposed="over")], {"T": 0}) is False
+    print("direction_not_inverted: grades the model's PROPOSAL, not the computed record; "
+          "cross-cutting passes, the opposite sign fails even when the record is right")
 
 
 def test_note_wording_survives():
