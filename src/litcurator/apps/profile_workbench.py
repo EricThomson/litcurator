@@ -42,9 +42,11 @@ load_dotenv()
 
 CHAT_MODEL = "claude-sonnet-4-6"
 
-DIRECTIONS = ["over", "under", "sharpen", "judge-not-applying"]
+DIRECTIONS = list(db_interface.DIRECTIONS)
+# Badge colours, UI only. Asserted so a new direction cannot render as an unexplained grey.
 _DIR_COLOR = {"over": "danger", "under": "success",
               "sharpen": "warning", "judge-not-applying": "info"}
+assert set(_DIR_COLOR) == set(DIRECTIONS), sorted(set(DIRECTIONS) - set(_DIR_COLOR))
 
 
 # ---------------------------------------------------------------------------

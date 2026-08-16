@@ -29,9 +29,10 @@ from litcurator import config, db_interface as DB, profile_analysis as PA
 # The last two are observations about the profile or the judge rather than about a taste, so they
 # legitimately span several tastes at once ("the judge is penalising specialist journals"). Counting
 # them as fragmentation or contamination punishes a real finding, so per-taste counts are restricted
-# to TASTE_DIRECTIONS. It lives here rather than in grading.py because machinery must not import
-# grading -- grading already imports machinery.
-TASTE_DIRECTIONS = ("over", "under")
+# to TASTE_DIRECTIONS. RE-EXPORTED from db_interface, which owns the vocabulary -- it used to be
+# defined here to dodge a circular import with grading, which is a placement chosen for import
+# order rather than for what the thing IS. grading imports it from here and does not care.
+TASTE_DIRECTIONS = DB.TASTE_DIRECTIONS
 
 
 @dataclass

@@ -40,6 +40,26 @@ def main():
             except sqlite3.IntegrityError:
                 conn.rollback(); print(f"  CHECK {bad[1]} enforced: OK")
 
+        # EVERY declared direction is actually accepted by the table. The vocabulary used to be
+        # written out in five places (the CHECK, the clamp, the tool enum, the workbench
+        # dropdown, TASTE_DIRECTIONS) and two of them failed silently when they drifted -- a
+        # value missing from the clamp is rewritten to `under`, one missing from the enum is
+        # never proposed. db_interface now owns the tuple and the CHECK is generated from it,
+        # so this asserts the two cannot come apart: a value in DIRECTIONS that the table
+        # rejects means the constraint was not regenerated, which on an EXISTING database is
+        # the expected failure, because CREATE TABLE IF NOT EXISTS never alters a live table.
+        # Adding a direction still needs a migration; this is what tells you so.
+        for d in db_interface.DIRECTIONS:
+            try:
+                conn.execute("INSERT INTO patterns (id,name,direction) VALUES (?,?,?)",
+                             (f"dirprobe_{d}", "probe", d))
+                conn.rollback()
+            except sqlite3.IntegrityError:
+                conn.rollback(); ok = False
+                print(f"  direction {d!r} is declared but the table REJECTS it (BAD -- the "
+                      f"CHECK constraint predates it; needs a migration)")
+        print(f"  all {len(db_interface.DIRECTIONS)} declared directions accepted: OK")
+
         # 2. fixtures: a run + evaluation + two flags on real articles
         pmids = [r[0] for r in conn.execute("SELECT pmid FROM articles LIMIT 2").fetchall()]
         pid = db_interface.get_or_create_profile(conn, "test profile content")

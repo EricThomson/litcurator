@@ -219,11 +219,42 @@ CREATE TABLE IF NOT EXISTS flags (
 # profile prose. See the plan starry-brewing-horizon.md.
 # ---------------------------------------------------------------------------
 
-# direction: over = judge scores this kind of paper too high; under = too low;
-# sharpen = a boundary needs resolution; judge-not-applying = already in the
-# profile but the judge is not applying it -- a signal to fix the PROMPT, not to
-# pile on more profile prose. name/description/suggested_edit are editable working
-# drafts (the human tweaks them in place); the fate lives in pattern_events.
+# THE ONE PLACE THE DIRECTION VOCABULARY IS WRITTEN DOWN. It lives here, at the bottom
+# layer, because everything above imports db_interface already and nothing here imports
+# them back -- so the CHECK constraint below, the clamp in profile_analysis, the enum in
+# the consolidate tool schema, the workbench dropdown and the harness's taste-only carve-out
+# all read the same tuple instead of restating it.
+#
+# It was in FIVE places until 2026-08-16, and every copy was individually correct when it
+# was written: the CHECK defends the table, the clamp validates a tool argument on the way
+# back, the enum steers the model, the dropdown offers the human a choice, TASTE_DIRECTIONS
+# answers "which of these are claims about a taste". Four different purposes, four different
+# dates -- which is exactly why nobody saw them as copies. NOTE THE GENERAL SHAPE: a DRY
+# violation hides when the duplicates serve different purposes. Identical code gets noticed;
+# identical VOCABULARY does not. The journal-ratings table (deleted 2026-08-07) wore the same
+# disguise -- "judge calibration" and "suggester input" looked like two concerns.
+#
+# Two of the five failed SILENTLY when they drifted: a value missing from the clamp is
+# rewritten to `under`, and a value missing from the enum is simply never proposed.
+#
+#   over                the judge scores this kind of paper too high
+#   under               too low
+#   sharpen             a boundary in the profile needs resolution
+#   judge-not-applying  the profile says it already and the judge ignores it -- fix the
+#                       PROMPT, not the profile
+DIRECTIONS = ("over", "under", "sharpen", "judge-not-applying")
+
+# The subset that are claims about ONE taste. `sharpen` and `judge-not-applying` are
+# observations about the profile's wording or the judge's behavior, so they legitimately span
+# several tastes at once and must not be counted as fragmentation or contamination.
+TASTE_DIRECTIONS = ("over", "under")
+
+# name/description/suggested_edit are editable working drafts (the human tweaks them in
+# place); the fate lives in pattern_events. The CHECK is GENERATED from DIRECTIONS rather
+# than restating it -- it is no longer an independent check, and that is correct: independence
+# matters for invariants, not for vocabulary. Its job is rejecting anything outside the list,
+# which it still does. NB `CREATE TABLE IF NOT EXISTS` never alters an existing table, so
+# changing this list still needs a migration for a database that already exists.
 _CREATE_PATTERNS = """
 CREATE TABLE IF NOT EXISTS patterns (
     id TEXT PRIMARY KEY,
@@ -234,9 +265,9 @@ CREATE TABLE IF NOT EXISTS patterns (
     analysis_run_id TEXT REFERENCES analysis_runs(id),
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    CHECK (direction IN ('over', 'under', 'sharpen', 'judge-not-applying'))
+    CHECK (direction IN (%s))
 )
-"""
+""" % ", ".join(f"'{d}'" for d in DIRECTIONS)
 
 # Provenance join (many-to-many): which flags a pattern was built from. A flag is
 # "handled" precisely because it is attached here -- no per-flag retirement needed.

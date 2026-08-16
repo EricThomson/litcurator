@@ -55,10 +55,11 @@ load_dotenv()
 DEFAULT_CLUSTER_MODEL = "claude-sonnet-4-6"
 DEFAULT_CONSOLIDATE_MODEL = "claude-sonnet-4-6"
 
-# The four the patterns table's CHECK constraint allows. Kept beside the tool schema that
-# enums the same set, because the schema STEERS the model and this one is what the database
-# will actually accept.
-VALID_DIRECTIONS = ("over", "under", "sharpen", "judge-not-applying")
+# Re-exported, NOT redefined. db_interface owns the vocabulary; this name stays because it
+# reads better at the clamp below and because callers already import it. Until 2026-08-16 it
+# was a fourth hand-maintained copy, and a value missing from it was silently rewritten to
+# `under` -- see the note beside db_interface.DIRECTIONS.
+VALID_DIRECTIONS = db_interface.DIRECTIONS
 
 # Approximate API prices, ($/M input, $/M output). Update if pricing changes.
 MODEL_COSTS = {
@@ -318,8 +319,9 @@ _CONSOLIDATE_TOOL = {
                             "description": "id of the open pattern (merge_into_open) or closed pattern "
                                            "(merge_into_closed) this matches; omit for new / hold"},
                         "name": {"type": "string", "description": "short label, 3-6 words (for new)"},
-                        "direction": {"type": "string",
-                            "enum": ["over", "under", "sharpen", "judge-not-applying"]},
+                        # From db_interface.DIRECTIONS, so the set the model is offered
+                        # cannot drift from the set the database accepts.
+                        "direction": {"type": "string", "enum": list(VALID_DIRECTIONS)},
                         "description": {"type": "string", "description": "one sentence (for new)"},
                         "suggested_edit": {"type": "string",
                             "description": "the directive as the researcher would author it (for new)"},
