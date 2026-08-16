@@ -87,6 +87,11 @@ def accumulation(delta_band=(0.16, 0.22), n_sessions=12):
             # window, and ten flags left on the floor. Measured over the last third of the run,
             # since the early sessions legitimately hold while the signal is still accumulating.
             "pool_drains": [{"over_last_sessions": max(2, n_sessions // 3), "max_growth": 0}],
+            # CONNECTOME flags are all positive deltas, so `over` on this pattern is never
+            # defensible. Worth having here in particular: this is the pool with the smallest
+            # deltas after TIDAL, and the inversion that prompted this check turned up on the
+            # smallest-delta pool in the suite.
+            "direction_not_inverted": [{"label": "CONNECTOME", "taste": "under"}],
         },
     )
 
@@ -141,7 +146,67 @@ def dual_nature():
         terminal_expect={
             "intended_patterns_surface": ["B", "C"],
             "stay_separate": [["B", "C"]],
+            "direction_not_inverted": [{"label": "B", "taste": "under"},
+                                       {"label": "C", "taste": "under"}],
             "shared_flag_in_both": [{"labels": ["B", "C"]}],
+        },
+    )
+
+
+def note_carry():
+    """A strongly-worded user NOTE must reach the pattern intact, across several sessions.
+
+    THE GAP THIS CLOSES. Every other check in this suite grades the provenance graph -- which
+    flags landed on which pattern -- and never reads a word the model produced. That leaves a
+    whole class invisible: the user writes "put circatidal work on my disinterest list", the
+    cluster step paraphrases it into a pattern description, consolidate (which never sees the
+    note, only cluster's prose) restates it again, and what reaches the workbench is a blurred
+    version of a sentence the user had already written precisely. The graph is perfect
+    throughout. Found 2026-08-07 by reading ONE real January flag, after twelve green gates.
+
+    WHY IT RUNS THREE SESSIONS RATHER THAN ONE. The one-hop version would be a weaker test. The
+    worry is DECAY: session 1 mints the pattern from the note, sessions 2 and 3 merge more flags
+    into it, and each merge is another chance for the wording to be restated. So the checks run
+    at the END, after the pattern has been carried twice. Three is enough to see drift; there is
+    no reason to pay for twelve.
+
+    The B stream is ballast with the OPPOSITE direction, for two reasons: the note-carrier has to
+    compete for attention rather than being the only thing in the pool (pool composition is
+    load-bearing -- see prompt_insights), and opposite directions are what make a separation
+    check honest, since any two same-direction groups can be joined by something true.
+
+    EXPECT THIS TO BE RED AT FIRST, and that is the point. The active consolidate prompt says
+    "never transcribe a user's private note verbatim", so the directive check should FAIL until
+    that paragraph is rewritten to distinguish "do not let the machine invent profile prose"
+    (the v1 failure the rule exists for) from "when the user already stated the fix, carry their
+    words". A test that goes green the day you write it has told you nothing."""
+    return GEN.ScenarioSpec(
+        name="note_carry(the user's own words reach the pattern)",
+        n_sessions=3,
+        profile=SC.PROFILE,
+        pools_by_intended_pattern={"TIDAL": paper_pools.tidal_pool(),
+                                   "B": paper_pools.POOLS_BY_INTENDED_PATTERN["B"]},
+        streams=[GEN.Stream("TIDAL", [0, 1, 2], count_per_session=2),
+                 GEN.Stream("B", [0, 1, 2], count_per_session=2)],
+        terminal_expect={
+            "intended_patterns_surface": ["TIDAL"],
+            "stay_separate": [["TIDAL", "B"]],
+            # TIDAL's flags are all negative deltas, so `under` here is never defensible.
+            # This is the check that caught the under/over definition clash between the two
+            # prompt halves; keep it as the regression guard once that is fixed.
+            "direction_not_inverted": [{"label": "TIDAL", "taste": "over"},
+                                       {"label": "B", "taste": "under"}],
+            # Three depths of the same question, kept separate so a red LOCALISES the loss.
+            # term green + directive red  -> the note wall is eating the actionable half.
+            # both red                    -> the wording never survived the cluster step.
+            "note_wording_survives": [
+                {"label": "TIDAL", "kind": "term", "markers": ["circatidal"],
+                 "fields": ("name", "description", "suggested_edit")},
+                {"label": "TIDAL", "kind": "directive", "markers": ["disinterest"],
+                 "fields": ("suggested_edit",)},
+                {"label": "TIDAL", "kind": "voice", "markers": ["tide-table"],
+                 "fields": ("name", "description", "suggested_edit")},
+            ],
         },
     )
 
@@ -203,8 +268,13 @@ def named_disinterest():
         profile=SC.PROFILE + _DISINTEREST_LINE,
         pools_by_intended_pattern={"A": paper_pools.POOLS_BY_INTENDED_PATTERN["A"]},
         streams=[GEN.Stream("A", [0], count_per_session=5)],
-        terminal_expect={"named_disinterest_not_dropped": [
-            {"label": "A", "directions": ["judge-not-applying", "over"]}]},
+        terminal_expect={
+            "named_disinterest_not_dropped": [
+                {"label": "A", "directions": ["judge-not-applying", "over"]}],
+            # Compatible with the check above rather than a duplicate of it: that one requires
+            # a specific allowed set, this one only forbids the inversion. Both must hold.
+            "direction_not_inverted": [{"label": "A", "taste": "over"}],
+        },
     )
 
 
@@ -219,4 +289,5 @@ SCENARIOS = {
     "accumulation": accumulation,
     "dual_nature": dual_nature,
     "named_disinterest": named_disinterest,
+    "note_carry": note_carry,
 }

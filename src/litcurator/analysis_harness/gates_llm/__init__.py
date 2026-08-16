@@ -23,6 +23,7 @@ _SCENARIOS = {
     "dual-nature": ("dual_nature", 1, 1.0),
     "named-disinterest": ("named_disinterest", 1, 1.0),
     "accumulation": ("accumulation", 1, 1.0),
+    "note-carry": ("note_carry", 1, 1.0),
 }
 
 
@@ -76,6 +77,15 @@ PAID_GATES = {
         "lowered the delta band; a real regression otherwise. run_accumulation_sweep.py in the "
         "sandbox shows the whole curve.",
         12),
+    "note-carry": (
+        4, _scenario_runner(*_SCENARIOS["note-carry"]),
+        "the user's own words did not survive into the pattern. Read WHICH of the three checks "
+        "went red, they localise the loss: 'term' green + 'directive' red means the note wall in "
+        "the consolidate prompt is eating the actionable half ('put this on my disinterest "
+        "list'); both red means the wording never made it out of the cluster step, which is a "
+        "cluster-prompt problem instead. This is the ONLY gate that reads produced TEXT rather "
+        "than the provenance graph, so nothing else here can see this failure.",
+        6),
 }
 
 # ---------------------------------------------------------------------------

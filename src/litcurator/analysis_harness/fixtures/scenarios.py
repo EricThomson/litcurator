@@ -540,4 +540,13 @@ TERMINAL_EXPECT = {
     # something roomier because the per-session caps already allow 1 each: at a cumulative cap
     # of 2 this would pass on exactly the +1-per-session ratchet it exists to catch.
     "open_pile_settles": [{"over_last_sessions": 2, "max_growth": 0}],
+    # No taste pattern may carry the OPPOSITE sign to the flags that built it. Cheap, and it
+    # guards four other checks rather than only itself -- fragmentation, min_purity,
+    # no_new_pattern_for and the chimera carve-out all branch on direction, so an inverted one
+    # makes them compare the wrong things while still reporting green. The four labels here take
+    # their sign from the papers above: A and D are over-scored, B and C under-scored.
+    "direction_not_inverted": [{"label": "A", "taste": "over"},
+                               {"label": "B", "taste": "under"},
+                               {"label": "C", "taste": "under"},
+                               {"label": "D", "taste": "over"}],
 }

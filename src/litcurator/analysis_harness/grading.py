@@ -362,5 +362,83 @@ def check_terminal(expect, pp, patterns, first_surfaced, history,
             bool(right),
             f"{len(pats)} pattern(s) with directions {got}" if pats else "NO pattern recorded")
 
+    # --- A TASTE PATTERN MUST NOT BE LABELLED WITH THE OPPOSITE ERROR DIRECTION ------------
+    # Added 2026-08-07 after the note-carry gate produced a pattern whose every WORD said "the
+    # judge scores these too high, get them out of scope" and whose `direction` said `under`,
+    # i.e. the judge scored them too low. Nothing caught it, and nothing could have: direction
+    # was read by four other checks (fragmentation counts per direction, min_purity filters on
+    # it, no_new_pattern_for tells a duplicate from a second finding by it, and the chimera
+    # carve-out keys on it) while NOTHING ever validated it. So a wrong direction did not merely
+    # slip through, it quietly made those four compare the wrong things.
+    #
+    # WHAT THIS ASSERTS, and deliberately no more: never the OPPOSITE taste direction. A pool
+    # declared `over` may legitimately come back `sharpen` or `judge-not-applying` -- those are
+    # statements about the profile's wording or the judge's behavior rather than about which way
+    # a score went, and a cross-cutting read is often the BETTER answer. What is never
+    # defensible is `under` on a pool whose flags all have negative deltas.
+    #
+    # NB the failure this caught was a PROMPT defect, not a model one: the consolidate prompt
+    # defines under/over by the PROFILE's state ("the profile is MISSING coverage") while the
+    # cluster prompt defines them by the JUDGE's error ("the judge OVER-valued the paper"). On a
+    # profile that is silent about the topic those two readings come apart, and the silent case
+    # is exactly what "add this to my disinterest list" means. Keep this check even after the
+    # prompt is fixed -- it is the regression guard for that fix.
+    for spec in expect.get("direction_not_inverted", []):
+        L, taste = spec["label"], spec["taste"]
+        opposite = "under" if taste == "over" else "over"
+        pats = patterns_for(L)
+        if not pats:
+            chk(f"direction: {L} is not labelled {opposite} (declared {taste})", False,
+                "NO pattern recorded for this label -- nothing to inspect")
+            continue
+        bad = [pid for pid in pats if by_id.get(pid, {}).get("direction") == opposite]
+        got = [by_id.get(pid, {}).get("direction") for pid in pats]
+        chk(f"direction: {L} is not labelled {opposite} (declared {taste})", not bad,
+            f"{len(pats)} pattern(s): {got}"
+            + (f" -- {len(bad)} INVERTED" if bad else ""))
+
+    # --- THE USER'S OWN WORDS MUST REACH THE PATTERN --------------------------------------
+    # The ONLY checks in this file that read produced TEXT rather than the provenance graph,
+    # and they are here because the graph cannot see this class of failure at all. A flag's
+    # note is frequently the user AUTHORING THE FIX ("put this on my disinterest list"), and
+    # consolidate never sees the note -- it sees cluster's prose about it. So the user's
+    # wording has to survive two hops, and if it is paraphrased on the way the human gets a
+    # blurred restatement of a sentence they had already written precisely, AND the blur is
+    # what future rounds match against.
+    #
+    # HOW THESE STAY SINGLE-RUN HONEST, which is the whole design constraint. Never ask a
+    # model whether a paraphrase was faithful -- that is unfalsifiable and would force reps
+    # and averaging. Instead the fixture plants DISCRETE tokens in the note and we test for
+    # their presence, exactly as the graph checks test set membership: a coined term has no
+    # natural synonym, so a run either carried it or did not, with no middle to average.
+    #
+    # The two are deliberately separate because they fail in different places:
+    #   note-term        -- did ANY of the user's language survive into the pattern at all
+    #   note-directive   -- did the ACTIONABLE part reach suggested_edit, the field whose
+    #                       description is literally "the directive as the researcher would
+    #                       author it" and the one the prompt's note-wall paragraph governs
+    # A green term with a red directive localises the loss to the note wall; both red means
+    # the wording never left the cluster step.
+    def _text_of(pid, fields):
+        p = by_id.get(pid, {})
+        return " ".join(str(p.get(f) or "") for f in fields).lower()
+
+    for spec in expect.get("note_wording_survives", []):
+        L, markers = spec["label"], [m.lower() for m in spec["markers"]]
+        fields = spec.get("fields", ("name", "description", "suggested_edit"))
+        where = "+".join(fields)
+        pats = patterns_for(L)
+        if not pats:
+            chk(f"note-{spec.get('kind', 'term')}: {L} carries {markers[0]!r} into {where}",
+                False, "NO pattern recorded for this label -- nothing to inspect")
+            continue
+        hits = {pid: [m for m in markers if m in _text_of(pid, fields)] for pid in pats}
+        best = max(hits.values(), key=len)
+        chk(f"note-{spec.get('kind', 'term')}: {L} carries {markers[0]!r} into {where}",
+            bool(best),
+            f"matched {best}" if best else
+            f"none of {markers} in {where} of {len(pats)} pattern(s); "
+            f"got {[ _text_of(pid, fields)[:90] for pid in pats ]}")
+
     return out
 

@@ -21,9 +21,13 @@ def _one(expect, pp, patterns, first_surfaced, history=None,
     return res[0][0]
 
 
-def _pat(pid, direction="under", status="created", recurred_count=0):
+def _pat(pid, direction="under", status="created", recurred_count=0,
+         name="", description="", suggested_edit=""):
+    """The text fields default to EMPTY so every pre-existing caller keeps grading exactly the
+    provenance graph and nothing else. Only note_wording_survives fills them."""
     return {"id": pid, "direction": direction, "status": status,
-            "recurred_count": recurred_count}
+            "recurred_count": recurred_count, "name": name,
+            "description": description, "suggested_edit": suggested_edit}
 
 
 def _hist(*active_counts):
@@ -132,6 +136,82 @@ def test_named_disinterest_not_dropped():
     print("named_disinterest_not_dropped: JNA/over passes; dropped or mis-directed fails")
 
 
+def test_direction_not_inverted():
+    """Guards the ONE direction error that is never defensible: a taste pattern carrying the
+    opposite sign to the flags that built it. Cross-cutting labels stay legal on purpose."""
+    spec = {"direction_not_inverted": [{"label": "T", "taste": "over"}]}
+    # PASS: the declared direction
+    assert _one(spec, {"pT": Counter(T=6)}, [_pat("pT", "over")], {"T": 0}) is True
+    # PASS: a cross-cutting read is a legitimate alternative, not an inversion. These say
+    # something about the profile's wording or the judge's behavior rather than about which way
+    # a score went, so they cannot contradict the sign.
+    assert _one(spec, {"pT": Counter(T=6)}, [_pat("pT", "judge-not-applying")], {"T": 0}) is True
+    assert _one(spec, {"pT": Counter(T=6)}, [_pat("pT", "sharpen")], {"T": 0}) is True
+    # FAIL: the actual bug -- every word of the pattern said "scored too high", the label said
+    # the opposite
+    assert _one(spec, {"pT": Counter(T=6)}, [_pat("pT", "under")], {"T": 0}) is False
+    # FAIL: one good pattern does not excuse an inverted sibling. Direction feeds four other
+    # checks, so a single wrong one is enough to make them compare the wrong things.
+    assert _one(spec, {"pT": Counter(T=3), "pT2": Counter(T=3)},
+                [_pat("pT", "over"), _pat("pT2", "under")], {"T": 0}) is False
+    # FAIL: no pattern at all must not pass vacuously by having nothing to inspect
+    assert _one(spec, {"pB": Counter(B=2)}, [_pat("pB")], {"B": 0}) is False
+    # and the mirror case, so the check is not accidentally hard-coded to one sign
+    under = {"direction_not_inverted": [{"label": "T", "taste": "under"}]}
+    assert _one(under, {"pT": Counter(T=6)}, [_pat("pT", "under")], {"T": 0}) is True
+    assert _one(under, {"pT": Counter(T=6)}, [_pat("pT", "over")], {"T": 0}) is False
+    print("direction_not_inverted: declared sign and cross-cutting pass; the opposite sign, "
+          "an inverted sibling and a missing pattern fail; both signs covered")
+
+
+def test_note_wording_survives():
+    """The only checks that read produced TEXT. Everything here is about them being DISCRETE --
+    a substring either is or is not present -- because that is what lets the paid gate settle in
+    ONE run instead of needing reps and an average."""
+    term = {"note_wording_survives": [
+        {"label": "T", "kind": "term", "markers": ["circatidal"],
+         "fields": ("name", "description", "suggested_edit")}]}
+    # PASS: the user's word survived into the description
+    assert _one(term, {"pT": Counter(T=4)},
+                [_pat("pT", description="judge over-scores circatidal rhythm work")],
+                {"T": 0}) is True
+    # PASS: case does not matter -- the model title-cases things constantly
+    assert _one(term, {"pT": Counter(T=4)},
+                [_pat("pT", name="Circatidal Rhythm Studies")], {"T": 0}) is True
+    # FAIL: generalised away. This is the actual failure mode -- a true, useless paraphrase
+    assert _one(term, {"pT": Counter(T=4)},
+                [_pat("pT", description="reduced interest in chronobiology")], {"T": 0}) is False
+    # FAIL: no pattern for the label at all -- must not pass vacuously by having nothing to read
+    assert _one(term, {"pB": Counter(B=3)}, [_pat("pB")], {"B": 0}) is False
+
+    # FIELD SCOPING is the point of the `directive` check and needs its own proof. The wording
+    # can survive in the description and still never reach suggested_edit, which is the field
+    # the human actually edits and the one the prompt's note-wall paragraph governs. If scoping
+    # did not work, that failure would score green off the description.
+    directive = {"note_wording_survives": [
+        {"label": "T", "kind": "directive", "markers": ["disinterest"],
+         "fields": ("suggested_edit",)}]}
+    assert _one(directive, {"pT": Counter(T=4)},
+                [_pat("pT", suggested_edit="add circatidal work to the disinterest list")],
+                {"T": 0}) is True
+    assert _one(directive, {"pT": Counter(T=4)},
+                [_pat("pT", description="belongs on the disinterest list",
+                      suggested_edit="de-prioritise tidal chronobiology")], {"T": 0}) is False
+
+    # ANY-OF across markers and across patterns: one accepted synonym landing anywhere is a
+    # pass. Deliberately tolerant -- the case is meant to be EASY, so a near-miss in wording
+    # must not produce a red that sends you hunting for a bug that is not there.
+    multi = {"note_wording_survives": [
+        {"label": "T", "kind": "directive", "markers": ["disinterest list", "disinterest section"],
+         "fields": ("suggested_edit",)}]}
+    assert _one(multi, {"pT": Counter(T=2), "pT2": Counter(T=2)},
+                [_pat("pT", suggested_edit="drop these"),
+                 _pat("pT2", suggested_edit="goes in the disinterest section")],
+                {"T": 0}) is True
+    print("note_wording_survives: substring present passes; paraphrase, missing pattern and "
+          "wrong-field all fail; markers and patterns are any-of")
+
+
 def test_recurrence_accumulates():
     spec = {"recurrence_accumulates": [{"label": "B", "min_recurrences": 2}]}
     # PASS: one closed pattern logged the return twice
@@ -203,6 +283,8 @@ CHECKS = [
     test_stay_separate,
     test_shared_flag_in_both,
     test_named_disinterest_not_dropped,
+    test_direction_not_inverted,
+    test_note_wording_survives,
     test_recurrence_accumulates,
     test_open_pile_settles,
     test_pool_drains,
