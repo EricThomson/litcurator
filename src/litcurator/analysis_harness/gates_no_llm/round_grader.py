@@ -334,12 +334,36 @@ def test_memory_block_shows_evidence():
           "omits suggested_edit; examples=None unchanged")
 
 
+def test_scripted_human_can_decide_a_held_pattern():
+    """apply_actions must see the SAME two lists the person does: Active and Held.
+
+    The workbench has two tabs, and a held pattern is decided from the second one (Promote or
+    Reject). While the scripted human scanned only get_active_patterns, a gap the model held in
+    round one could never be decided: pattern_for[label] came back with an empty id set, and
+    every cross-session check for that label then failed with UNRESOLVED two or three rounds
+    later -- reading exactly like a model regression while being nothing of the kind. This pins
+    both halves: the held pattern is found, and the decision lands on it."""
+    conn, flag_intended, by_label = _world({"B": 4})
+    held = DB.create_pattern(conn, "held gap B", "under", flag_ids=by_label["B"])
+    DB.add_pattern_event(conn, held, "held", note="thin for now")
+    assert held not in {p["id"] for p in DB.get_active_patterns(conn)}, "fixture: must be held"
+
+    pattern_for = {}
+    M.apply_actions(conn, PROFILE, [("reject", "B")], flag_intended, pattern_for, lambda *_: None)
+
+    assert pattern_for["B"]["ids"] == {held},         f"the scripted human must reach a HELD pattern, got {pattern_for['B']}"
+    assert DB.get_patterns(conn)[0]["status"] == "rejected", DB.get_patterns(conn)[0]["status"]
+    _close(conn)
+    print("apply_actions: a held pattern is visible to the scripted human and can be decided")
+
+
 CHECKS = [
     test_every_matching_pattern_is_decided,
     test_unresolved_decision_is_recorded,
     test_no_duplicate_fails_loudly_when_unresolved,
     test_no_duplicate_same_vs_opposite_direction,
     test_purity_applies_to_every_new_pattern,
+    test_scripted_human_can_decide_a_held_pattern,
     test_recurrence_is_any_of,
     test_merged_into_existing_is_any_of,
     test_stay_closed_is_all_of,

@@ -35,9 +35,17 @@ def accumulation(delta_band=(0.16, 0.22), n_sessions=12):
     nothing else. Each flag stays HELD (unattached) until enough accumulate for the cluster step to see
     the regularity, at which point they should coalesce into exactly ONE pattern.
 
-    coalesces_to_one grades three things at once: it fires (a lone flag or two must not mint a
-    pattern -> min_session), it fires by a deadline (must not be lost forever -> max_session),
-    and the pattern is pure. delta_band is the sweep knob -- it sets how WEAK the signal is, so
+    coalesces_to_one grades three things at once: it fires (a lone flag or two must not be put
+    in front of the user -> min_session), it fires by a deadline (must not be lost forever ->
+    max_session), and the pattern is pure.
+
+    WHAT "FIRES" MEANS CHANGED 2026-08-26, and the mechanism this scenario tests did not. A thin
+    gap can now be recorded as a HELD pattern from the first flag -- a real row with real
+    provenance that the user is simply not shown -- so min_session no longer grades when a ROW
+    appears, it grades when the pattern becomes VISIBLE (long_horizon reads first_surfaced off
+    the active list for exactly this reason). The trickle still piles up in the clustering pool
+    while it is held, because a held pattern's flags deliberately stay there; that is what keeps
+    the accumulation happening in CLUSTER, the only step that reads titles and abstracts. delta_band is the sweep knob -- it sets how WEAK the signal is, so
     the sweep finds the magnitude at which stateless accumulation stops working.
 
     This docstring used to say the band mattered because 0.15 was a rendering boundary, and

@@ -200,10 +200,20 @@ def apply_actions(conn, profile, actions, flag_intended, pattern_for, log):
     The ("incorporate", "A", "taste") escape hatch is GONE with the diagnosis directions
     (2026-08-25). It existed to decide only the taste patterns and leave cross-cutting ones
     open; with every direction now a taste direction it could only ever be a no-op. A third
-    tuple element is still accepted and ignored, so an old fixture does not crash."""
+    tuple element is still accepted and ignored, so an old fixture does not crash.
+
+        ACTIVE AND HELD, because that is what the person sees (2026-08-26). The workbench has two
+    tabs: the Active queue, and Held -- patterns the consolidate step recorded and judged not
+    yet worth showing, where the one extra action is Promote. Scanning only the active list
+    left the scripted human blind to half the screen, so a gap the model held in round one
+    could never be decided, `pattern_for[label]` came back empty, and every cross-session check
+    for that label failed with UNRESOLVED three rounds later. That reads as a model regression
+    and is nothing of the kind. The semantics fall out unchanged: rejecting a held pattern
+    closes it, and carrying one writes `carried`, which is exactly what Promote does."""
     pp = pattern_intended(conn, flag_intended)
     for action, intended, *_scope in actions:
-        owned = [p for p in DB.get_active_patterns(conn)
+        visible = DB.get_active_patterns(conn) + DB.get_held_patterns(conn)
+        owned = [p for p in visible
                  if dominant_intended(pp.get(p["id"], Counter())) == intended]
         pattern_for[intended] = {"action": action, "ids": {p["id"] for p in owned}}
         if not owned:

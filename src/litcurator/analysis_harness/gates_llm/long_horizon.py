@@ -69,17 +69,36 @@ def run_scenario(spec, rng, client, cluster_model, consolidate_model, cluster_pr
             log(f"\n  memory the consolidate step was shown in session {s}:")
             for line in (memory_shown or "(empty -- no history yet)").splitlines():
                 log(f"    {line}")
-            new_ids = {p["id"] for p in DB.get_patterns(conn)} - before
+            # WHAT THE HUMAN COULD SEE, not what was written (2026-08-26). A HELD pattern is a
+            # real row, so a plain diff over get_patterns would hand held rows to
+            # fragmentation, min_purity and no_new_pattern_for -- and a run that held
+            # EVERYTHING would start passing checks it should fail while the user was shown
+            # nothing. That is the vacuous-pass shape this suite has been bitten by twice, so
+            # new_ids is intersected with the active list.
+            minted_ids = {p["id"] for p in DB.get_patterns(conn)} - before
+            active_now = {p["id"] for p in DB.get_active_patterns(conn)}
+            new_ids = minted_ids & active_now
+            held_ids = {p["id"] for p in DB.get_held_patterns(conn)}
 
             pp_now = pattern_intended(conn, flag_intended)
             snap_new = []
-            for cnew in summary["new"]:
+            # Held patterns carry a proposed direction too, and direction_not_inverted grades
+            # every produced pattern at the end -- so record it for both buckets.
+            for cnew in summary["new"] + summary["held"]:
                 proposed_direction[cnew["id"]] = (cnew.get("direction_proposed")
                                                   or cnew.get("direction"))
+            for cnew in summary["new"]:
                 ctr = pp_now.get(cnew["id"], Counter())
                 d = dominant_intended(ctr)
                 snap_new.append({"id": cnew["id"], "dominant_by_pattern": d, "purity": purity_of(ctr),
                                  "priority": cnew.get("priority"), "direction": cnew.get("direction")})
+            # FIRST SURFACED means first VISIBLE, and it is read off the active list rather than
+            # off summary["new"]. Those used to be the same thing; since a thin gap can now be
+            # minted held at session 0 and promoted later, they are not. Keying on the summary
+            # would leave first_surfaced unset for exactly the patterns coalesces_to_one exists
+            # to grade, turning a bookkeeping gap into a red that looks like model behaviour.
+            for pid in active_now:
+                d = dominant_intended(pp_now.get(pid, Counter()))
                 if d is not None and d not in first_surfaced:
                     first_surfaced[d] = s
             # `unattached` is the flag count this session was actually handed, and it is the only
@@ -87,12 +106,13 @@ def run_scenario(spec, rng, client, cluster_model, consolidate_model, cluster_pr
             # when each arriving flag gets attached and climbs when they are being held instead --
             # see pool_drains, which reads it. It was computed here all along and only logged.
             history.append({"session": s, "new": snap_new, "unattached": n_flags,
-                            "active_count": len(DB.get_active_patterns(conn))})
+                            "active_count": len(active_now), "held_count": len(held_ids)})
 
             per_round += check_round(conn, rnd["expect"], summary, candidates, flag_intended,
                                      new_ids, open_before, pattern_for)
             log(f"  session {s}: {n_flags} unattached -> {len(summary['new'])} new, "
-                f"{len(summary['merged'])} merged, {len(summary['held'])} held")
+                f"{len(summary['merged'])} merged, {len(summary['held'])} held, "
+                f"{len(summary['surfaced'])} surfaced, {len(summary['discarded'])} discarded")
             if rnd["then"]:
                 apply_actions(conn, spec.profile, rnd["then"], flag_intended, pattern_for, log)
 

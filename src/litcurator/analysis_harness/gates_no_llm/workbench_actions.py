@@ -61,7 +61,7 @@ from .. import machinery as M
 SCENARIO_PROFILE = "I follow systems neuroscience: circuits, computation, and behavior."
 ACTIVE_PROFILE = SCENARIO_PROFILE + "\n\nInvertebrate neuroethology counts as systems work."
 
-_ORDER = ("pat-carry", "pat-incorporate", "pat-reject")
+_ORDER = ("pat-carry", "pat-incorporate", "pat-reject", "pat-promote")
 
 
 class _Ctx:
@@ -168,16 +168,20 @@ def _open_ids(conn):
     return {p["id"] for p in DB.get_active_patterns(conn)}
 
 
-def _click_fate(wb, pids, pid, which, reject_notes=None):
+def _click_fate(wb, pids, pid, which, reject_notes=None, tab="active"):
     """Drive cb_pattern_fate the way Dash does: one n_clicks list per Input (one slot per
-    card, in layout order, the clicked slot set), plus the reject-note States."""
+    card, in layout order, the clicked slot set), plus the reject-note States and the tab.
+
+    `tab` is what the pane re-renders after the click. It matters for pat-promote, which is
+    only ever clicked from the Held tab."""
     notes = reject_notes or {}
     note_states = [{"id": {"type": "pat-reject-note", "pid": p}, "value": notes.get(p)}
                    for p in pids]
     wb.ctx = _Ctx({"type": which, "pid": pid}, [note_states])
     clicks = {t: [1 if (p == pid and t == which) else None for p in pids] for t in _ORDER}
     return wb.cb_pattern_fate(clicks["pat-carry"], clicks["pat-incorporate"],
-                              clicks["pat-reject"], [notes.get(p) for p in pids])
+                              clicks["pat-reject"], clicks["pat-promote"],
+                              [notes.get(p) for p in pids], tab)
 
 
 def _click_save(wb, pids, pid, values):
@@ -332,7 +336,8 @@ def test_a_render_with_no_click_writes_nothing():
         wb.ctx = _Ctx({"type": "pat-incorporate", "pid": pids[0]},
                       [[{"id": {"type": "pat-reject-note", "pid": p}, "value": None}
                         for p in pids]])
-        out = wb.cb_pattern_fate([None, None], [None, None], [None, None], [None, None])
+        out = wb.cb_pattern_fate([None, None], [None, None], [None, None], [None, None],
+                                 [None, None], "active")
 
         assert all(o is wb.no_update for o in out), f"a no-click render returned writes: {out}"
         assert {p: _events(conn, p) for p in pids} == before, "a no-click render wrote an event"
@@ -408,6 +413,37 @@ def test_save_edits_targets_the_clicked_card():
         print("save edits: only the clicked card is written, by pid not by position")
 
 
+def test_promote_moves_a_held_pattern_onto_the_active_list():
+    """The human half of the held mechanism, driven through the REAL callback.
+
+    A held pattern is one the consolidate step recorded and deliberately did not show. That is
+    only safe if there is somewhere to find it, so the workbench has a Held tab whose one extra
+    action is Promote. This drives it end to end: the Held tab lists held patterns and nothing
+    else, Promote writes an event that moves the pattern onto the Active list, and the counts
+    follow. Without this the whole held design rests on a screen nobody tested."""
+    with _world(n_patterns=3) as (conn, wb, pids):
+        held_pid = pids[1]                      # the MIDDLE card, never an extreme
+        DB.add_pattern_event(conn, held_pid, "held", note="thin for now")
+
+        assert [p["id"] for p in DB.get_held_patterns(conn)] == [held_pid]
+        assert held_pid not in _open_ids(conn), "a held pattern must leave the active list"
+        assert wb._counts(conn) == (2, 1), wb._counts(conn)
+
+        # The Held tab renders held patterns only, and their card offers Promote.
+        held_cards = wb._render_patterns(conn, "held")
+        assert len(held_cards) == 1, held_cards
+        assert "pat-promote" in str(held_cards), "a held card must offer Promote"
+        assert "pat-promote" not in str(wb._render_patterns(conn, "active")),             "an active card must NOT offer Promote"
+
+        out = _click_fate(wb, [held_pid], held_pid, "pat-promote", tab="held")
+        assert out[0] is not wb.no_update, "Promote must re-render"
+        assert _events(conn, held_pid)[-1]["event"] == "carried", _events(conn, held_pid)
+        assert held_pid in _open_ids(conn), "Promote must put it on the Active list"
+        assert not DB.get_held_patterns(conn), "and take it off the Held list"
+        assert wb._counts(conn) == (3, 0), wb._counts(conn)
+        print("promote: a held pattern is listed under Held, and Promote moves it to Active")
+
+
 CHECKS = [
     test_incorporate_stamps_the_currently_active_profile,
     test_incorporate_walks_back_to_its_papers,
@@ -420,6 +456,7 @@ CHECKS = [
     test_events_accumulate_and_the_latest_decision_wins,
     test_save_edits_changes_content_and_writes_no_event,
     test_save_edits_targets_the_clicked_card,
+    test_promote_moves_a_held_pattern_onto_the_active_list,
 ]
 
 

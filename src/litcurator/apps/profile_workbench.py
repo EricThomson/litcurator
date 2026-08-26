@@ -66,7 +66,10 @@ def _render_provenance(prov):
     return out
 
 
-def _pattern_card(conn, p):
+def _pattern_card(conn, p, held=False):
+    """One pattern, editable. `held` swaps the fate buttons: a pattern you have not been shown
+    yet cannot sensibly be Carried (it is not on your list) or Incorporated (you have not read
+    it), so it offers Promote -- put it on the list -- and Reject."""
     pid = p["id"]
     prov = db_interface.get_pattern_provenance(conn, pid)
     return html.Div(dbc.Card(dbc.CardBody([
@@ -99,10 +102,13 @@ def _pattern_card(conn, p):
                        color="primary", outline=True, size="sm", className="me-1"),
             dbc.Button("Discuss", id={"type": "pat-discuss", "pid": pid},
                        color="primary", outline=True, size="sm", className="me-1"),
-            dbc.Button("Carry", id={"type": "pat-carry", "pid": pid},
-                       color="secondary", outline=True, size="sm", className="me-1"),
-            dbc.Button("Incorporate", id={"type": "pat-incorporate", "pid": pid},
-                       color="success", size="sm", className="me-1"),
+            *([dbc.Button("Promote", id={"type": "pat-promote", "pid": pid},
+                          color="success", size="sm", className="me-1")]
+              if held else
+              [dbc.Button("Carry", id={"type": "pat-carry", "pid": pid},
+                          color="secondary", outline=True, size="sm", className="me-1"),
+               dbc.Button("Incorporate", id={"type": "pat-incorporate", "pid": pid},
+                          color="success", size="sm", className="me-1")]),
             dbc.Button("Reject", id={"type": "pat-reject", "pid": pid},
                        color="danger", outline=True, size="sm"),
         ]),
@@ -110,26 +116,41 @@ def _pattern_card(conn, p):
         id={"type": "pat-card", "pid": pid})
 
 
-def _render_patterns(conn):
-    patterns = db_interface.get_active_patterns(conn)
+def _render_patterns(conn, tab="active"):
+    held = tab == "held"
+    patterns = (db_interface.get_held_patterns(conn) if held
+                else db_interface.get_active_patterns(conn))
     if not patterns:
         return [html.Div(
+            "Nothing held. The consolidate step records a pattern here when it is real but "
+            "not yet worth your attention; it moves to Active once enough evidence arrives."
+            if held else
             "No open patterns. Flag papers in the review feed, then run "
             "`litcurator profile_analysis` to surface patterns here.",
             className="text-muted")]
-    return [_pattern_card(conn, p) for p in patterns]
+    return [_pattern_card(conn, p, held=held) for p in patterns]
+
+
+def _counts(conn):
+    """Both numbers, always. The held count is the whole safeguard: a held pattern is one you
+    were deliberately not shown, so the only thing standing between "recorded" and "invisible"
+    is a number you see every session. A held pile that climbs round after round while nothing
+    promotes is the model holding too eagerly."""
+    return len(db_interface.get_active_patterns(conn)), len(db_interface.get_held_patterns(conn))
 
 
 def _initial_patterns():
     conn = db_interface.get_connection()
     try:
-        return _render_patterns(conn), len(db_interface.get_active_patterns(conn))
+        return _render_patterns(conn), _counts(conn)
     finally:
         conn.close()
 
 
-def _count_label(n):
-    return f"{n} open pattern{'' if n == 1 else 's'}"
+def _count_label(counts):
+    n_open, n_held = counts if isinstance(counts, tuple) else (counts, 0)
+    held = f"  |  {n_held} held" if n_held else ""
+    return f"{n_open} open pattern{'' if n_open == 1 else 's'}{held}"
 
 
 def _state_value(states, pid):
@@ -221,8 +242,14 @@ app.layout = dbc.Container([
             html.Div([
                 html.Div("Active patterns from your flags. Edit the wording, then decide each "
                          "one's fate. To Incorporate: author the edit on the right, Set as active, "
-                         "then Incorporate here (it stamps that version).",
+                         "then Incorporate here (it stamps that version). HELD holds patterns the "
+                         "consolidate step judged real but not yet worth showing -- check it "
+                         "occasionally; a pile that grows while nothing promotes is over-holding.",
                          className="text-muted small mb-2"),
+                dcc.Tabs(id="pattern-tabs", value="active", className="mb-2", children=[
+                    dcc.Tab(label="Active", value="active"),
+                    dcc.Tab(label="Held", value="held"),
+                ]),
                 dbc.Alert(id="pattern-status", is_open=False, duration=4000,
                           color="success", className="py-1 px-2 small"),
                 html.Div(id="patterns-pane", children=_initial_pattern_children),
@@ -290,12 +317,14 @@ app.layout = dbc.Container([
     Output("patterns-pane", "children", allow_duplicate=True),
     Output("pattern-count", "children", allow_duplicate=True),
     Input("refresh-patterns-btn", "n_clicks"),
+    Input("pattern-tabs", "value"),
     prevent_initial_call=True,
 )
-def cb_refresh_patterns(_n):
+def cb_refresh_patterns(_n, tab):
+    """Refresh, and also the tab switch -- both just re-render the pane for the chosen list."""
     conn = db_interface.get_connection()
     try:
-        return _render_patterns(conn), _count_label(len(db_interface.get_active_patterns(conn)))
+        return _render_patterns(conn, tab or "active"), _count_label(_counts(conn))
     finally:
         conn.close()
 
@@ -308,20 +337,27 @@ def cb_refresh_patterns(_n):
     Input({"type": "pat-carry", "pid": ALL}, "n_clicks"),
     Input({"type": "pat-incorporate", "pid": ALL}, "n_clicks"),
     Input({"type": "pat-reject", "pid": ALL}, "n_clicks"),
+    Input({"type": "pat-promote", "pid": ALL}, "n_clicks"),
     State({"type": "pat-reject-note", "pid": ALL}, "value"),
+    State("pattern-tabs", "value"),
     prevent_initial_call=True,
 )
-def cb_pattern_fate(_carry, _incorp, _reject, _reject_notes):
+def cb_pattern_fate(_carry, _incorp, _reject, _promote, _reject_notes, tab):
     trig = ctx.triggered_id
-    clicks = (_carry or []) + (_incorp or []) + (_reject or [])
+    clicks = (_carry or []) + (_incorp or []) + (_reject or []) + (_promote or [])
     if not trig or not any(c for c in clicks if c):
         return no_update, no_update, no_update, no_update
     pid, typ = trig["pid"], trig["type"]
     conn = db_interface.get_connection()
     try:
-        if typ == "pat-carry":
+        if typ in ("pat-carry", "pat-promote"):
+            # The SAME event. 'carried' means "open, not decided yet", which is exactly what a
+            # promoted held pattern becomes -- so promotion needs no new event value, and the
+            # log reads created -> held -> carried, which is the story you want to read.
             db_interface.add_pattern_event(conn, pid, "carried")
-            msg = "Carried forward -- still open for a later round."
+            msg = ("Promoted -- it is on your Active list now."
+                   if typ == "pat-promote" else
+                   "Carried forward -- still open for a later round.")
         elif typ == "pat-incorporate":
             profile_id = db_interface.get_or_create_profile(
                 conn, profile_interface.read_active_or_empty())
@@ -331,8 +367,8 @@ def cb_pattern_fate(_carry, _incorp, _reject, _reject_notes):
             note = _state_value(ctx.states_list[0], pid)
             db_interface.add_pattern_event(conn, pid, "rejected", note=note or None)
             msg = "Rejected -- kept as a closed pattern; the suggester will not re-propose it."
-        children = _render_patterns(conn)
-        count = _count_label(len(db_interface.get_active_patterns(conn)))
+        children = _render_patterns(conn, tab or "active")
+        count = _count_label(_counts(conn))
     finally:
         conn.close()
     return children, count, msg, True
