@@ -44,8 +44,7 @@ CHAT_MODEL = "claude-sonnet-4-6"
 
 DIRECTIONS = list(db_interface.DIRECTIONS)
 # Badge colours, UI only. Asserted so a new direction cannot render as an unexplained grey.
-_DIR_COLOR = {"over": "danger", "under": "success",
-              "sharpen": "warning", "judge-not-applying": "info"}
+_DIR_COLOR = {"over": "danger", "under": "success"}
 assert set(_DIR_COLOR) == set(DIRECTIONS), sorted(set(DIRECTIONS) - set(_DIR_COLOR))
 
 

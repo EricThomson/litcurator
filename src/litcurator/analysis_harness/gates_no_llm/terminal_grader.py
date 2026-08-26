@@ -76,15 +76,11 @@ def test_stay_separate():
     # FAIL: one TASTE pattern absorbed >=2 of each -> the two tastes got fused
     assert _one({"stay_separate": [["A", "B"]]},
                 {"pM": Counter(A=2, B=2)}, [_pat("pM", "under")], {"A": 0}) is False
-    # PASS: a pattern spanning both is fine when it is a cross-cutting observation about the
-    # judge rather than a taste -- "the judge penalises specialist journals" HAS to span them
+    # FAIL whatever the direction. The cross-cutting exemption went with the diagnosis values
+    # on 2026-08-25 -- a pattern holding >=2 of each has fused them, full stop.
     assert _one({"stay_separate": [["A", "B"]]},
-                {"pX": Counter(A=2, B=2)}, [_pat("pX", "judge-not-applying")], {"A": 0}) is True
-    # PASS: same for a wording complaint
-    assert _one({"stay_separate": [["A", "B"]]},
-                {"pS": Counter(A=2, B=2)}, [_pat("pS", "sharpen")], {"A": 0}) is True
-    print("stay_separate: disjoint passes; a fused TASTE pattern fails; "
-          "a cross-cutting sharpen/judge-not-applying pattern passes")
+                {"pX": Counter(A=2, B=2)}, [_pat("pX", "over")], {"A": 0}) is False
+    print("stay_separate: disjoint passes; a fused pattern fails whatever its direction")
 
 
 def test_shared_flag_in_both():
@@ -107,14 +103,13 @@ def test_shared_flag_in_both():
     assert _one(spec, {"pM": Counter(B=4, C=4)}, [_pat("pM")], {"B": 0},
                 flag_patterns={1: {"pM"}, 2: {"pM"}, 3: {"pM"}},
                 flag_intended=fi) is False
-    # PASS: a pattern spanning both is fine when it is a cross-cutting observation rather than a
-    # taste. It has to span them to be true, so counting it as a chimera fails a real finding --
-    # the same carve-out stay_separate, fragmentation and min_purity already make.
+    # FAIL: a third pattern holding >=2 of each is a chimera whatever its direction, even
+    # alongside a correct split. The cross-cutting exemption went on 2026-08-25.
     assert _one(spec, {"pB": Counter(B=4, C=1), "pC": Counter(C=4, B=1),
                        "pX": Counter(B=2, C=2)},
-                [_pat("pB"), _pat("pC"), _pat("pX", "judge-not-applying")], {"B": 0, "C": 0},
+                [_pat("pB"), _pat("pC"), _pat("pX", "over")], {"B": 0, "C": 0},
                 flag_patterns={1: {"pB", "pC"}, 2: {"pB"}, 3: {"pC"}},
-                flag_intended=fi) is True
+                flag_intended=fi) is False
     # FAIL: no dual flag in the fixture at all -- nothing to verify, so this cannot pass silently
     assert _one(spec, split_pp, split_rows, {"B": 0, "C": 0},
                 flag_patterns={2: {"pB"}, 3: {"pC"}},
@@ -123,12 +118,8 @@ def test_shared_flag_in_both():
 
 
 def test_named_disinterest_not_dropped():
-    spec = {"named_disinterest_not_dropped": [
-        {"label": "A", "directions": ["judge-not-applying", "over"]}]}
-    # PASS: recorded as judge-not-applying -- the profile says it, the judge ignores it
-    assert _one(spec, {"pA": Counter(A=5)},
-                [_pat("pA", "judge-not-applying")], {"A": 0}) is True
-    # PASS: recorded as a plain over-trigger is also acceptable -- it was not dropped
+    spec = {"named_disinterest_not_dropped": [{"label": "A", "directions": ["over"]}]}
+    # PASS: recorded as a plain over-trigger -- the point is that it was not dropped
     assert _one(spec, {"pA": Counter(A=5)}, [_pat("pA", "over")], {"A": 0}) is True
     # FAIL: dropped entirely as "the profile already covers this"
     assert _one(spec, {"pB": Counter(B=3)}, [_pat("pB")], {"B": 0}) is False
@@ -145,8 +136,10 @@ def test_direction_not_inverted():
     # PASS: the model agreed with the flags
     assert _one(spec, {"pT": Counter(T=6)},
                 [_pat("pT", "over", direction_proposed="over")], {"T": 0}) is True
-    # PASS: cross-cutting reads are legitimate alternatives, not inversions -- they are claims
-    # about the profile rather than about which way a score went, so they cannot contradict a sign
+    # PASS: anything that is not the opposite sign is not an inversion. These two values were
+    # legal directions until 2026-08-25; the model can no longer propose them, but an
+    # off-schema word still reaches direction_proposed RAW (see _record_new), and it must not
+    # be read as an inversion just because the clamp rewrote the recorded value to `under`.
     assert _one(spec, {"pT": Counter(T=6)},
                 [_pat("pT", "over", direction_proposed="judge-not-applying")], {"T": 0}) is True
     assert _one(spec, {"pT": Counter(T=6)},

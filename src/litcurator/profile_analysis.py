@@ -10,9 +10,8 @@ The design separates RECORD (permissive: track everything real, into the append-
 pattern memory) from SELECT (restrictive: which patterns to act on this round, decided
 as a ranking + the human, NOT by discarding). The old middle stage fused the two and
 dumped everything it did not act on into a free-text "Considered and cut" line that no
-code read -- so real-but-not-now patterns, and the whole judge-not-applying (prompt-fix)
-signal, were silently lost and recurrence could never accumulate. Now nothing is
-dumped; every candidate gets a choice and a home.
+code read -- so real-but-not-now patterns were silently lost and recurrence could never
+accumulate. Now nothing is dumped; every candidate gets a choice and a home.
 
 Two LLM stages (the Tao of litcurator: generate cheap-and-broad, then decide):
   Step 1 (cluster, Sonnet): RECALL -- surface every candidate preference pattern from
@@ -115,7 +114,7 @@ MIN_FLAGS = 10
 # in the analysis prompt lab (it has a Set ACTIVE button) or the file itself.
 #
 # They are MINIMAL on purpose, and the split is deliberate: the prose carries only what the
-# machinery cannot enforce for itself. The four choices, the four directions and the required
+# machinery cannot enforce for itself. The four choices, the two directions and the required
 # fields are already pinned by _CONSOLIDATE_TOOL below, so the prompt does not restate them --
 # it says what they MEAN. Everything else is tuning (how eagerly to merge, how to weigh a note,
 # what counts as enough evidence), and tuning belongs in your versioned copy where it can be
@@ -210,8 +209,8 @@ def _format_existing_patterns(active, closed_patterns, examples=None):
 
     NOT shown: suggested_edit. It is the description again in imperative mood, it nearly
     doubles the block, and it is first-person profile prose arriving in a message that ends
-    with the real profile as source of truth -- which invites the model to read it as profile
-    text and file a real gap as judge-not-applying.
+    with the real profile -- which invites the model to read it as profile text rather than as
+    a description of a pattern already decided.
 
     Passing examples=None renders exactly as before, with no papers."""
     if not active and not closed_patterns:
@@ -344,8 +343,8 @@ _CONSOLIDATE_TOOL = {
 def run_consolidate_step(client, clusters_text, seed_text, existing_block, model,
                          prompt=None):
     """Assign every candidate a choice via forced tool-use (so the JSON is always
-    valid). Shown the clusters, the profile (to tell a real gap from the judge ignoring
-    clear text -> judge-not-applying), and the existing patterns + closed patterns WITH ids
+    valid). Shown the clusters, the profile (context for judging what a candidate is really
+    about), and the existing patterns + closed patterns WITH ids
     (to capture the cross-round match). Returns (candidates, cost).
 
     `prompt` defaults to the in-code seed; the live path passes the active consolidate section
@@ -355,8 +354,12 @@ def run_consolidate_step(client, clusters_text, seed_text, existing_block, model
     user_msg = (
         f"## Candidate patterns (with [N] paper numbers)\n\n{clusters_text}\n\n---\n\n"
         f"{memory}"
-        f"## CURRENT PROFILE (source of truth -- a preference already clear here that the judge "
-        f"still gets wrong is judge-not-applying, not a gap)\n\n{seed_text}"
+        # A LABEL, NOT AN INSTRUCTION. This used to append "a preference already clear here
+        # that the judge still gets wrong is judge-not-applying, not a gap" -- prompt text
+        # living in code, outside the hand-authored content-addressed prompt file, and the
+        # strongest single push toward the value removed on 2026-08-25.
+        f"## CURRENT PROFILE (the user's own prose about what they want to read)"
+        f"\n\n{seed_text}"
     )
     resp = client.messages.create(
         model=model,
@@ -421,7 +424,13 @@ def _record_consolidation(conn, candidates, ordered_flags, analysis_run_id=None)
 
         No wording fixes that, because the two questions genuinely have different answers. So
         code answers the one it can answer exactly. Returns None when the candidate cites no
-        usable papers, in which case the model's word stands -- there is nothing to compute."""
+        usable papers, in which case the model's word stands -- there is nothing to compute.
+
+        RESOLVED PROPERLY 2026-08-25: the second question was DELETED rather than re-worded.
+        `sharpen` and `judge-not-applying` asked the model for an etiology its inputs cannot
+        support (see the note beside db_interface.DIRECTIONS), so direction is now only the
+        sign, and this function owns the field outright. The history above is kept because it
+        is the evidence that produced the deletion."""
         ds = [d for d in deltas_for(c) if d is not None]
         if not ds:
             return None
@@ -467,24 +476,28 @@ def _record_consolidation(conn, candidates, ordered_flags, analysis_run_id=None)
     def _resolved_direction(c):
         """The direction actually recorded, plus a note fragment when code overrode the model.
 
-        RULE: the model keeps `sharpen` and `judge-not-applying`, which are claims about the
-        PROFILE rather than about which way a score went -- code has no opinion on those and a
-        cross-cutting read is often the better answer. For `over`/`under` the computed sign
-        wins, because that one is arithmetic.
+        RULE: the computed sign wins, because direction is arithmetic on the cited flags'
+        deltas. The model's answer survives only where the arithmetic has nothing to say --
+        no flags cited (`sign is None`), or flags pointing both ways (`mixed`).
 
-        DISAGREEMENTS ARE RECORDED, NOT SILENTLY CORRECTED. "The model said judge-not-applying,
-        the flags say over" is the signal that the prompt's definitions are off, and hiding it
-        would turn a measurable prompt defect into a mystery. It also keeps the harness honest:
-        a check asserting the RECORDED direction would now be tautologically green, so the gate
-        asserts model-vs-computed AGREEMENT instead, which is the thing that can still be wrong.
+        Since the diagnosis values went (2026-08-25), this is the whole of it. There used to be
+        a branch keeping `sharpen` / `judge-not-applying` untouched, because those were claims
+        about the PROFILE that no arithmetic could check. With direction reduced to a sign,
+        code owns the field outright.
 
-        `mixed` (the candidate's flags point both ways) is recorded in the note but falls back
-        to the model's word, because `patterns.direction` has no value for it. That is the
-        deferred "wrong in BOTH directions at once" question, and this gives it a free
-        measurement: if mixed shows up often on real flags, the fifth value has earned itself."""
+        DISAGREEMENTS ARE RECORDED, NOT SILENTLY CORRECTED. "The model said under, the flags say
+        over" is the signal that the prompt's definitions are off, and hiding it would turn a
+        measurable prompt defect into a mystery. It also keeps the harness honest: a check
+        asserting the RECORDED direction is now tautologically green, so the gate asserts
+        model-vs-computed AGREEMENT instead, which is the thing that can still be wrong.
+
+        `mixed` is recorded in the note but falls back to the model's word, because
+        `patterns.direction` has no value for it. That is the deferred "wrong in BOTH directions
+        at once" question, and this gives it a free measurement: if mixed shows up often on real
+        flags, a third value has earned itself."""
         model_dir, coerced = _direction(c)
         sign = computed_sign(c)
-        if model_dir in ("sharpen", "judge-not-applying") or sign is None:
+        if sign is None:
             return model_dir, coerced, ""
         if sign == "mixed":
             return model_dir, coerced, f" [flags point BOTH ways; recorded {model_dir}]"
@@ -517,7 +530,9 @@ def _record_consolidation(conn, candidates, ordered_flags, analysis_run_id=None)
         if disagreement:
             # What the model WANTED, kept beside what was recorded. The harness grades on this
             # -- asserting the recorded direction would be grading arithmetic, not the prompt.
-            entry["direction_proposed"] = _direction(c)[0]
+            # The RAW word, not the clamped one: an off-schema value clamps to `under`, and
+            # recording that would report an inversion the model never proposed.
+            entry["direction_proposed"] = c.get("direction") or _direction(c)[0]
             entry["direction_note"] = disagreement.strip()
         summary["new"].append(entry)
 

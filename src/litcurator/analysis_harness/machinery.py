@@ -17,22 +17,15 @@ from dataclasses import dataclass
 from litcurator import config, db_interface as DB, profile_analysis as PA
 
 
-# A pattern's direction says what KIND of claim it makes, and that matters for every check that
-# counts patterns.
+# TASTE_DIRECTIONS IS GONE (2026-08-25), and its removal is the point rather than a tidy-up.
+# It named the subset of directions that were claims about ONE taste, so that `sharpen` and
+# `judge-not-applying` patterns -- observations spanning several tastes -- could be exempted
+# from fragmentation, purity, duplicate and chimera counting. With those two values deleted
+# every direction is a taste direction and the subset is the whole set.
 #
-#   over / under        a TASTE gap: the profile misses something, or over-triggers on it. These
-#                       are per-taste, so two of them covering one taste is fragmentation and one
-#                       of them covering two tastes is a fusion.
-#   sharpen             the profile's wording is being misread.
-#   judge-not-applying  the profile is clear and the judge ignores it; the PROMPT is the problem.
-#
-# The last two are observations about the profile or the judge rather than about a taste, so they
-# legitimately span several tastes at once ("the judge is penalising specialist journals"). Counting
-# them as fragmentation or contamination punishes a real finding, so per-taste counts are restricted
-# to TASTE_DIRECTIONS. RE-EXPORTED from db_interface, which owns the vocabulary -- it used to be
-# defined here to dodge a circular import with grading, which is a placement chosen for import
-# order rather than for what the thing IS. grading imports it from here and does not care.
-TASTE_DIRECTIONS = DB.TASTE_DIRECTIONS
+# WORTH KEEPING IN MIND IF A CROSS-CUTTING EXEMPTION IS EVER WANTED AGAIN: the old one was
+# keyed on a field the MODEL wrote, so a model could exempt itself from four graders by
+# picking a label. Put the next one in the fixture, where the test author sets it.
 
 
 @dataclass
@@ -188,8 +181,8 @@ def apply_actions(conn, profile, actions, flag_intended, pattern_for, log):
 
     EVERY one, not the biggest. A gap can legitimately arrive as several patterns -- a taste
     ("over: correlational human neuroimaging") plus a different diagnosis of the same papers
-    ("sharpen: the causal-mechanism phrase is being over-applied") -- and the grading blesses
-    that split. Deciding only one left its siblings OPEN, and an open sibling is a perfectly
+    (a second reading of the same papers) -- and the grading blesses that split. Deciding only
+    one left its siblings OPEN, and an open sibling is a perfectly
     good home for the gap when it returns: the model merges into it, which records a `carried`
     event rather than `recurred`, and the recurrence check goes red for behavior that was
     correct. The old `max(owned, key=total flags)` also ranked an impure pattern (3 B + 2 A)
@@ -204,15 +197,14 @@ def apply_actions(conn, profile, actions, flag_intended, pattern_for, log):
     explicitly rather than omitted, so an unresolved decision fails LOUDLY downstream instead
     of passing vacuously.
 
-    An action may carry an optional third element, ("incorporate", "A", "taste"), to decide only
-    the taste patterns and leave meta ones open. Nothing uses it; it exists so the fixture can
-    express that case without this function changing."""
+    The ("incorporate", "A", "taste") escape hatch is GONE with the diagnosis directions
+    (2026-08-25). It existed to decide only the taste patterns and leave cross-cutting ones
+    open; with every direction now a taste direction it could only ever be a no-op. A third
+    tuple element is still accepted and ignored, so an old fixture does not crash."""
     pp = pattern_intended(conn, flag_intended)
-    for action, intended, *scope in actions:
-        taste_only = bool(scope) and scope[0] == "taste"
+    for action, intended, *_scope in actions:
         owned = [p for p in DB.get_active_patterns(conn)
-                 if dominant_intended(pp.get(p["id"], Counter())) == intended
-                 and (not taste_only or p["direction"] in TASTE_DIRECTIONS)]
+                 if dominant_intended(pp.get(p["id"], Counter())) == intended]
         pattern_for[intended] = {"action": action, "ids": {p["id"] for p in owned}}
         if not owned:
             log(f"  [human] {action} {intended}: NO open pattern covers it -- UNRESOLVED "

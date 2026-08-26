@@ -140,7 +140,7 @@ _CONNECTOME_RATIONALES = [
 # interesting -- the user's reaction to the word was "instantly interested"), and thermoregulation
 # circuits (optogenetics plus behavior plus causal manipulation, i.e. a paper he would want to
 # read). On the fish version the model never once produced the declared direction across two
-# runs: `under`, then `judge-not-applying`.
+# runs: `under`, then `judge-not-applying` (a value since deleted).
 #
 # The lesson: for `over`, pick something laughably off-scope. It is synthetic data -- there is no
 # reason to hunt for a close call. Cancer cell biology has no neurons, no circuit, no behavior

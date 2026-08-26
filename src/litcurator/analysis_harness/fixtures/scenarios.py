@@ -502,8 +502,8 @@ SESSIONS = [
             "stay_closed": ["A", "B"],
             # Convergence: round 3 re-presents gaps already tracked, so the pile must not keep
             # climbing. One new pattern is allowed because a second pattern over the same
-            # flags, making a different point (typically judge-not-applying), can be a genuine
-            # finding; a steady climb session after session is the treadmill we are watching for.
+            # flags with the opposite direction can be a genuine second finding; a steady climb
+            # session after session is the treadmill we are watching for.
             "max_open_pattern_growth": 1,
         },
     },

@@ -143,55 +143,61 @@ def test_no_duplicate_fails_loudly_when_unresolved():
     print("no-duplicate: an unresolved decision fails loudly (was: passed vacuously)")
 
 
-def test_no_duplicate_same_vs_other_diagnosis():
-    """A new pattern repeating any DECIDED direction is a duplicate; a different diagnosis of
-    the same papers (sharpen, judge-not-applying) is a second finding and stays allowed."""
+def test_no_duplicate_same_vs_opposite_direction():
+    """A new pattern repeating a DECIDED direction is a duplicate; one carrying the opposite
+    direction is a second finding and stays allowed.
+
+    Until 2026-08-25 the "second finding" case was a `sharpen` or `judge-not-applying` pattern
+    -- a different DIAGNOSIS of the same papers. Those values are gone, so the only surviving
+    way to be a second finding is the opposite sign. That is a much narrower escape, which is
+    the point: `computed_sign` forces two patterns citing the same flags to agree, so a real
+    gap can no longer be split in two and hide behind different labels."""
     conn, flag_intended, by_label = _world({"B": 6})
     decided = DB.create_pattern(conn, "decided B", "under", flag_ids=by_label["B"][:3])
     DB.add_pattern_event(conn, decided, "rejected", note="test")
-    same = DB.create_pattern(conn, "same diagnosis", "under", flag_ids=by_label["B"][3:5])
-    other = DB.create_pattern(conn, "other diagnosis", "judge-not-applying",
-                              flag_ids=by_label["B"][5:])
+    same = DB.create_pattern(conn, "same direction", "under", flag_ids=by_label["B"][3:5])
+    other = DB.create_pattern(conn, "opposite direction", "over", flag_ids=by_label["B"][5:])
     pattern_for = {"B": {"action": "reject", "ids": {decided}}}
 
     got = _grade(conn, {"no_new_pattern_for": ["B"]}, flag_intended, pattern_for, new_ids=[same])
     assert got["no-duplicate"][0] is False, "a same-direction new pattern is a duplicate"
 
     got = _grade(conn, {"no_new_pattern_for": ["B"]}, flag_intended, pattern_for, new_ids=[other])
-    assert got["no-duplicate"][0] is True, "a different diagnosis is a second finding, not a duplicate"
-    assert "judge-not-applying" in got["no-duplicate"][1], got["no-duplicate"][1]
+    assert got["no-duplicate"][0] is True, "the opposite direction is a second finding"
+    assert "over" in got["no-duplicate"][1], got["no-duplicate"][1]
     _close(conn)
-    print("no-duplicate: same direction fails, a different diagnosis passes and is named")
+    print("no-duplicate: same direction fails, the opposite direction passes and is named")
 
 
-def test_purity_exempts_cross_cutting_patterns():
-    """min_purity applies to TASTE patterns only. A sharpen or judge-not-applying pattern is an
-    observation about the profile or the judge rather than about one taste, so spanning several
-    tastes is what makes it true -- grading it as impure fails a real finding.
+def test_purity_applies_to_every_new_pattern():
+    """min_purity now covers EVERY new pattern, with no exemption.
 
-    This is not hypothetical. A live run produced "Circuit Access Filter -- Judge Not Applying"
-    from 8 A flags, 4 B and 3 D, purity 0.53, and the gate went red on the most useful pattern
-    in the run."""
+    It used to exempt `sharpen` / `judge-not-applying` patterns, because a cross-cutting
+    observation has to span tastes to be true -- a live run produced one from 8 A flags, 4 B
+    and 3 D at purity 0.53, and the gate went red on the most useful pattern in the run. Those
+    directions were deleted 2026-08-25, so the exemption has nothing to key on and every
+    pattern is a claim about one taste.
+
+    NOTE FOR WHOEVER WANTS THE EXEMPTION BACK: the old one keyed on a field the MODEL wrote, so
+    a model could exempt itself from this check by picking a label. Put the next one in the
+    fixture (an `allow_spanning` key), where the test author sets it."""
     conn, flag_intended, by_label = _world({"A": 6, "B": 4})
-    # A deliberately mixed pattern: half one taste, half another.
     mixed = by_label["A"][:3] + by_label["B"][:3]
-    taste = DB.create_pattern(conn, "impure taste pattern", "under", flag_ids=mixed)
-    meta = DB.create_pattern(conn, "cross-cutting observation", "judge-not-applying",
-                             flag_ids=mixed)
+    impure = DB.create_pattern(conn, "impure pattern", "under", flag_ids=mixed)
+    pure = DB.create_pattern(conn, "pure pattern", "under", flag_ids=by_label["A"][3:])
     expect = {"min_purity": 0.8}
 
-    got = _grade(conn, expect, flag_intended, {}, new_ids=[taste])
-    assert got["purity"][0] is False, "an impure TASTE pattern must still fail"
+    got = _grade(conn, expect, flag_intended, {}, new_ids=[impure])
+    assert got["purity"][0] is False, "an impure pattern must fail"
 
-    got = _grade(conn, expect, flag_intended, {}, new_ids=[meta])
-    assert got["purity"][0] is True, "a cross-cutting pattern is meant to span tastes"
-    assert "exempt" in got["purity"][1], got["purity"][1]
+    got = _grade(conn, expect, flag_intended, {}, new_ids=[pure])
+    assert got["purity"][0] is True, "a pure pattern must pass"
 
-    # Mixed batch: the taste pattern still decides the verdict, the meta one is set aside.
-    got = _grade(conn, expect, flag_intended, {}, new_ids=[taste, meta])
-    assert got["purity"][0] is False, "one impure taste pattern must not be masked by an exemption"
+    # Mixed batch: worst-case wins, so one impure pattern still decides the verdict.
+    got = _grade(conn, expect, flag_intended, {}, new_ids=[pure, impure])
+    assert got["purity"][0] is False, "one impure pattern must not be masked by a pure sibling"
     _close(conn)
-    print("purity: impure taste pattern fails, cross-cutting pattern is exempt and said to be")
+    print("purity: impure fails, pure passes, worst-case decides a mixed batch")
 
 
 def test_recurrence_is_any_of():
@@ -332,8 +338,8 @@ CHECKS = [
     test_every_matching_pattern_is_decided,
     test_unresolved_decision_is_recorded,
     test_no_duplicate_fails_loudly_when_unresolved,
-    test_no_duplicate_same_vs_other_diagnosis,
-    test_purity_exempts_cross_cutting_patterns,
+    test_no_duplicate_same_vs_opposite_direction,
+    test_purity_applies_to_every_new_pattern,
     test_recurrence_is_any_of,
     test_merged_into_existing_is_any_of,
     test_stay_closed_is_all_of,

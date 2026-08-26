@@ -136,7 +136,7 @@ def main():
 
     # --- 3b. LOSSLESS recovery of malformed candidates (regression: the real Sonnet run
     # emitted merge_into_open with a DIRECTION in the id field and no name, which the
-    # first version silently skipped -- losing a judge-not-applying signal) ---
+    # first version silently skipped -- losing the candidate entirely) ---
     before = len(db_interface.get_patterns(conn))
     s_bad2 = profile_analysis._record_consolidation(conn, [
         # exactly the malformed shape seen in the live dry run: bogus id, no name
@@ -209,11 +209,15 @@ def main():
     assert "from flag deltas: over" in note and "'under'" in note, note
     print("direction: model said under, flags say over -> recorded over, disagreement logged")
 
-    # (b) a cross-cutting label is NOT a sign claim, so code leaves it alone
+    # (b) an OFF-SCHEMA word clamps to `under`, but direction_proposed keeps the RAW word so
+    # the grader does not read a clamp as an inversion the model never proposed. This branch
+    # used to assert that `judge-not-applying` was kept untouched; that value was deleted
+    # 2026-08-25, and what replaced it is the recovery path for anything outside the enum.
     rec, note = _one_new("judge-not-applying", [1, 3])
-    assert rec["direction"] == "judge-not-applying", rec
-    assert "direction_proposed" not in rec and "flag deltas" not in note, (rec, note)
-    print("direction: judge-not-applying kept as-is, no override")
+    assert rec["direction"] == "over", rec                    # flags win
+    assert rec.get("direction_coerced") == "judge-not-applying", rec
+    assert rec.get("direction_proposed") == "judge-not-applying", rec
+    print("direction: an off-schema word is clamped, and reported raw, not as an inversion")
 
     # (c) agreement is silent -- no note fragment, nothing for the grader to flag
     rec, note = _one_new("over", [1, 3])

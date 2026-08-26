@@ -222,13 +222,13 @@ CREATE TABLE IF NOT EXISTS flags (
 # THE ONE PLACE THE DIRECTION VOCABULARY IS WRITTEN DOWN. It lives here, at the bottom
 # layer, because everything above imports db_interface already and nothing here imports
 # them back -- so the CHECK constraint below, the clamp in profile_analysis, the enum in
-# the consolidate tool schema, the workbench dropdown and the harness's taste-only carve-out
-# all read the same tuple instead of restating it.
+# the consolidate tool schema and the workbench dropdown all read the same tuple instead of
+# restating it.
 #
 # It was in FIVE places until 2026-08-16, and every copy was individually correct when it
 # was written: the CHECK defends the table, the clamp validates a tool argument on the way
 # back, the enum steers the model, the dropdown offers the human a choice, TASTE_DIRECTIONS
-# answers "which of these are claims about a taste". Four different purposes, four different
+# answered "which of these are claims about a taste". Four different purposes, four different
 # dates -- which is exactly why nobody saw them as copies. NOTE THE GENERAL SHAPE: a DRY
 # violation hides when the duplicates serve different purposes. Identical code gets noticed;
 # identical VOCABULARY does not. The journal-ratings table (deleted 2026-08-07) wore the same
@@ -237,17 +237,29 @@ CREATE TABLE IF NOT EXISTS flags (
 # Two of the five failed SILENTLY when they drifted: a value missing from the clamp is
 # rewritten to `under`, and a value missing from the enum is simply never proposed.
 #
-#   over                the judge scores this kind of paper too high
-#   under               too low
-#   sharpen             a boundary in the profile needs resolution
-#   judge-not-applying  the profile says it already and the judge ignores it -- fix the
-#                       PROMPT, not the profile
-DIRECTIONS = ("over", "under", "sharpen", "judge-not-applying")
-
-# The subset that are claims about ONE taste. `sharpen` and `judge-not-applying` are
-# observations about the profile's wording or the judge's behavior, so they legitimately span
-# several tastes at once and must not be counted as fragmentation or contamination.
-TASTE_DIRECTIONS = ("over", "under")
+#   over   the judge scores this kind of paper too high
+#   under   too low
+#
+# DIAGNOSIS VALUES REMOVED 2026-08-25. `sharpen` (the profile is vague here) and
+# `judge-not-applying` (the profile says it and the judge ignores it) were asking the model
+# for an ETIOLOGY, and the inputs cannot support one: consolidate sees the profile but never
+# the judge prompt, the papers or the scores, so it can check whether the profile CONTAINS
+# text on a topic but not whether that text is strong enough that the judge should have
+# followed it. Those come apart -- the neuromorphic case (see "Amplify to lift" in CLAUDE.md)
+# had the exception almost verbatim in the profile, the judge recited it and scored 0.35, and
+# the fix was still a PROFILE fix. Any reader working from the profile text alone calls that
+# judge-not-applying and points at the wrong file. What settles it is an experiment (edit,
+# re-run judge_harness, watch the score), so it was never a label to assign by reading.
+#
+# Direction is what remains, and it is arithmetic: the sign of the cited flags' deltas, which
+# `profile_analysis.computed_sign` computes and records over whatever the model proposed.
+#
+# A SECOND REASON, which only showed up on the way out: the harness exempted the two diagnosis
+# values from four checks (fragmentation, min_purity, no_new_pattern_for, the chimera
+# carve-out) because a cross-cutting pattern has to span tastes to be true. That let the model
+# exempt itself from four graders by choosing a label. An allowance like that belongs in the
+# fixture, where the test author sets it, never in a field the thing under test writes.
+DIRECTIONS = ("over", "under")
 
 # name/description/suggested_edit are editable working drafts (the human tweaks them in
 # place); the fate lives in pattern_events. The CHECK is GENERATED from DIRECTIONS rather
@@ -940,7 +952,7 @@ def create_pattern(conn, name, direction, description=None, suggested_edit=None,
                    flag_ids=(), note=None, analysis_run_id=None):
     """Create a pattern from the flags that produced it, in one transaction: the
     pattern row, its pattern_flags provenance links, and an initial 'created' event.
-    Returns the new pattern id. direction in {over, under, sharpen, judge-not-applying}.
+    Returns the new pattern id. direction in {over, under}.
     note rides the 'created' event -- the suggester passes the consolidate priority +
     rationale here so the first event carries why the pattern was minted.
 

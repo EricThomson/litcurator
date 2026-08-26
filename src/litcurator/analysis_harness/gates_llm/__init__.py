@@ -67,9 +67,9 @@ PAID_GATES = {
         1),
     "named-disinterest": (
         4, _scenario_runner(*_SCENARIOS["named-disinterest"]),
-        "a gap the profile ALREADY states was dropped as 'already covered'. It should be recorded, "
-        "ideally as judge-not-applying, because it points at the PROMPT rather than at a hole in "
-        "the profile.",
+        "a gap the profile ALREADY states was dropped as 'already covered'. It should be "
+        "recorded like any other -- the profile saying something is not a reason to discard "
+        "flags that contradict the score.",
         1),
     "accumulation": (
         4, _scenario_runner(*_SCENARIOS["accumulation"]),

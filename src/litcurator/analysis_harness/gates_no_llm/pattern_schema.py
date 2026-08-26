@@ -42,7 +42,7 @@ def main():
 
         # EVERY declared direction is actually accepted by the table. The vocabulary used to be
         # written out in five places (the CHECK, the clamp, the tool enum, the workbench
-        # dropdown, TASTE_DIRECTIONS) and two of them failed silently when they drifted -- a
+        # dropdown, the taste subset) and two of them failed silently when they drifted -- a
         # value missing from the clamp is rewritten to `under`, one missing from the enum is
         # never proposed. db_interface now owns the tuple and the CHECK is generated from it,
         # so this asserts the two cannot come apart: a value in DIRECTIONS that the table

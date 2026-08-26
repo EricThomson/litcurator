@@ -386,17 +386,19 @@ def test_save_edits_targets_the_clicked_card():
     The middle card for the same reason as the reject check above: with the clicked card at
     either end, a lookup that ignores pid and takes the first or the last state gets the right
     answer by accident half the time. The three values are made distinguishable on every field
-    so a wrong pick cannot coincide with the right one."""
+    that CAN distinguish three -- since 2026-08-25 direction has only two values, so it cannot,
+    and name / description / suggested_edit carry the discrimination. The middle card still
+    differs from the one above it on direction, which is what a positional slip would grab."""
     with _world(n_patterns=3) as (conn, wb, pids):
         untouched = {p: DB.get_pattern(conn, p) for p in (pids[0], pids[2])}
         values = {pids[0]: ("first untouched", "under", "desc one", "edit one"),
-                  pids[1]: ("second edited", "sharpen", "desc two", "edit two"),
+                  pids[1]: ("second edited", "over", "desc two", "edit two"),
                   pids[2]: ("third untouched", "over", "desc three", "edit three")}
         _click_save(wb, pids, pids[1], values)
 
         edited = DB.get_pattern(conn, pids[1])
         assert edited["name"] == "second edited", edited
-        assert edited["direction"] == "sharpen", edited
+        assert edited["direction"] == "over", edited
         assert edited["description"] == "desc two", edited
         assert edited["suggested_edit"] == "edit two", edited
         for pid, was in untouched.items():

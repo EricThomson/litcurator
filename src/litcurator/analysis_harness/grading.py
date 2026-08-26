@@ -16,9 +16,10 @@ from litcurator import db_interface as DB
 
 from .machinery import pattern_intended, dominant_intended, purity_of
 
-# TASTE_DIRECTIONS lives in machinery (which cannot import this module) -- see it there
+# The cross-cutting carve-outs that used to live here went with the diagnosis directions
+# (2026-08-25) -- see the note in machinery.py for why, and for the rule if one is ever
+# wanted again (put it in the fixture, not in a field the model writes).
 # for why direction decides whether a count is fragmentation or a second finding.
-from .machinery import TASTE_DIRECTIONS
 
 
 def _decided(pattern_for, label):
@@ -58,10 +59,11 @@ def check_round(conn, expect, summary, candidates, flag_intended, new_ids,
         chk(f"coverage: intended {t} has a pattern", hits, f"{len(hits)} pattern(s)")
 
     # FRAGMENTATION is one gap arriving as several patterns that say the SAME thing. Two
-    # patterns over the same papers making DIFFERENT diagnoses -- one saying the profile misses
-    # a taste (under/over), another saying its wording is being misapplied (sharpen) or that the
-    # judge ignores text already there (judge-not-applying) -- is not fragmentation, it is two
-    # findings. So count patterns per direction, the same way no_new_pattern_for does.
+    # patterns over the same papers with OPPOSITE directions are two findings rather than one
+    # gap fragmented, so count per direction the same way no_new_pattern_for does. Note this
+    # got STRICTER when the diagnosis directions went (2026-08-25): the split now has to be a
+    # genuine over-vs-under, and computed_sign forces both to agree when they cite the same
+    # flags, so two patterns over one gap can no longer hide behind different labels.
     if "max_produced_per_intended" in expect:
         lim = expect["max_produced_per_intended"]
         for t in expect.get("covers", []):
@@ -75,21 +77,15 @@ def check_round(conn, expect, summary, candidates, flag_intended, new_ids,
             chk(f"fragmentation: intended {t} <= {lim} new patterns per diagnosis",
                 worst <= lim, detail)
 
-    # TASTE patterns only. A sharpen or judge-not-applying pattern is an observation about the
-    # profile's wording or the judge's behavior rather than about one taste, so drawing on several
-    # tastes at once is what makes it TRUE -- "the judge is not applying the mechanistic standard,
-    # in either direction" is a claim about three gaps by construction. fragmentation and
-    # stay_separate already carve this out; this was the last check that did not, and it failed a
-    # real finding: a judge-not-applying pattern built from 8 A flags, 4 B and 3 D, purity 0.53.
+    # EVERY new pattern, no exemption. There used to be one: a `sharpen` or `judge-not-applying`
+    # pattern was an observation spanning several tastes, so counting it as impure failed a real
+    # finding (one built from 8 A flags, 4 B and 3 D, purity 0.53). Those directions are gone, so
+    # every pattern is a claim about one taste and the check applies to all of them.
     if "min_purity" in expect and new_ids:
-        taste_new = [p for p in new_ids if direction_of.get(p) in TASTE_DIRECTIONS]
-        worst = min((purity_of(pp.get(p, Counter())) for p in taste_new), default=1.0)
-        detail = f"worst {worst:.2f} over {len(taste_new)} taste pattern(s)"
-        if len(taste_new) < len(new_ids):
-            detail += (f"; {len(new_ids) - len(taste_new)} cross-cutting pattern(s) exempt "
-                       f"(they are meant to span tastes)")
-        chk(f"purity: every new taste pattern >= {expect['min_purity']}",
-            worst >= expect["min_purity"], detail)
+        worst = min((purity_of(pp.get(p, Counter())) for p in new_ids), default=1.0)
+        chk(f"purity: every new pattern >= {expect['min_purity']}",
+            worst >= expect["min_purity"],
+            f"worst {worst:.2f} over {len(new_ids)} pattern(s)")
 
     if "new_patterns" in expect:
         lo, hi = expect["new_patterns"]["min"], expect["new_patterns"]["max"]
@@ -101,12 +97,9 @@ def check_round(conn, expect, summary, candidates, flag_intended, new_ids,
         chk(f"addition: new gap {t} got a pattern", hits, f"{len(hits)}")
 
     # A DUPLICATE is a new pattern restating a gap already tracked. The other case is a new
-    # pattern
-    # over the same papers making a DIFFERENT diagnosis -- most often that the profile already
-    # says this and the judge is ignoring it (judge-not-applying), which points at the prompt
-    # rather than at the profile. One paper legitimately supports several patterns, so only the
-    # duplicate is a failure, and direction is what tells them apart: a duplicate repeats the
-    # existing pattern's direction; a different diagnosis carries a different one.
+    # pattern over the same papers with the OPPOSITE direction, which is a second finding.
+    # One paper legitimately supports several patterns, so only the duplicate is a failure,
+    # and direction is what tells them apart.
     for t in expect.get("no_new_pattern_for", []):
         decided = _decided(pattern_for, t)
         if not decided:
@@ -247,10 +240,8 @@ def check_terminal(expect, pp, patterns, first_surfaced, history,
         chk(f"surfaced: {L} has a pattern", bool(pats), f"{len(pats)} pattern(s)")
 
     # --- adjacent-but-distinct intended patterns never merge --------------------------------
-    # Only a TASTE pattern can fuse two tastes. A sharpen or judge-not-applying pattern that
-    # spans both is a cross-cutting observation about the profile's wording or the judge's
-    # behavior ("the judge penalises specialist journals"), which has to span them to be true.
-    # Fusion is the whole check. There used to be a second term, `set(patterns_for(l1)) &
+    # Any pattern drawing >=2 flags from each of two intended patterns has fused them. The
+    # cross-cutting exemption is gone with the diagnosis directions. There used to be a second term, `set(patterns_for(l1)) &
     # set(patterns_for(l2))`, meant to catch a pattern belonging to both gaps -- but patterns_for
     # keys on the DOMINANT intended pattern, which is single-valued, so that intersection is
     # empty by construction and the term could never fire. It read like a second safeguard and
@@ -259,13 +250,8 @@ def check_terminal(expect, pp, patterns, first_surfaced, history,
         l1, l2 = pair
         both = [(pid, counter) for pid, counter in pp.items()
                 if counter.get(l1, 0) >= 2 and counter.get(l2, 0) >= 2]
-        fused = [pid for pid, _ in both if direction_of.get(pid) in TASTE_DIRECTIONS]
-        crosscutting = [pid for pid, _ in both if direction_of.get(pid) not in TASTE_DIRECTIONS]
-        detail = f"{len(fused)} fused"
-        if crosscutting:
-            detail += (f"; {len(crosscutting)} cross-cutting allowed "
-                       f"({', '.join(sorted({direction_of.get(p) or '?' for p in crosscutting}))})")
-        chk(f"separate: {l1} vs {l2} stay distinct", not fused, detail)
+        fused = [pid for pid, _ in both]
+        chk(f"separate: {l1} vs {l2} stay distinct", not fused, f"{len(fused)} fused")
 
     # --- one paper, two tastes: it should land in BOTH patterns, not create a chimera -------
     # The failure this guards is the LLM inventing ONE blended pattern to hold two unrelated
@@ -277,13 +263,11 @@ def check_terminal(expect, pp, patterns, first_surfaced, history,
                  if not isinstance(lbls, str) and l1 in lbls and l2 in lbls]
         shared = [fid for fid in duals
                   if {dominant_by_pattern.get(p) for p in (flag_patterns or {}).get(fid, ())} >= {l1, l2}]
-        # A TASTE pattern holding >=2 of EACH intended pattern is the fused chimera being ruled
-        # out. The direction filter matters for the same reason it does in stay_separate above: a
-        # sharpen or judge-not-applying pattern spanning both is a cross-cutting observation,
-        # which has to span them to be true, and counting it as a chimera fails a real finding.
+        # A pattern holding >=2 of EACH intended pattern is the fused chimera being ruled out.
+        # The direction filter that used to exempt cross-cutting reads went with the diagnosis
+        # directions (2026-08-25).
         chimeras = [pid for pid, c in pp.items()
-                    if c.get(l1, 0) >= 2 and c.get(l2, 0) >= 2
-                    and direction_of.get(pid) in TASTE_DIRECTIONS]
+                    if c.get(l1, 0) >= 2 and c.get(l2, 0) >= 2]
         chk(f"shared: a {l1}+{l2} paper attaches to a pattern of each, no chimera",
             bool(duals) and bool(shared) and not chimeras,
             f"{len(shared)}/{len(duals)} dual flags in both, {len(chimeras)} chimera(s)")
@@ -350,11 +334,13 @@ def check_terminal(expect, pp, patterns, first_surfaced, history,
     # --- a gap the profile ALREADY states must be RECORDED, not dropped as "covered" --------
     # When the profile says something plainly and the judge ignores it anyway, that is a PROMPT
     # problem rather than a hole in the profile. The machinery's job is still to surface it --
-    # ideally tagged judge-not-applying -- and the failure being guarded is consolidate deciding
-    # the profile already covers this and letting the flags fall on the floor.
+    # and the failure being guarded is consolidate deciding the profile already covers this and
+    # letting the flags fall on the floor. The default used to allow judge-not-applying; with
+    # that value gone the fixture states which direction it expects, defaulting to every legal
+    # one (i.e. recording it AT ALL is the check).
     for spec in expect.get("named_disinterest_not_dropped", []):
         L = spec["label"]
-        allowed = tuple(spec.get("directions", ("judge-not-applying", "over")))
+        allowed = tuple(spec.get("directions", DB.DIRECTIONS))
         pats = patterns_for(L)
         right = [pid for pid in pats if by_id.get(pid, {}).get("direction") in allowed]
         got = [by_id.get(pid, {}).get("direction") for pid in pats]
@@ -371,11 +357,10 @@ def check_terminal(expect, pp, patterns, first_surfaced, history,
     # carve-out keys on it) while NOTHING ever validated it. So a wrong direction did not merely
     # slip through, it quietly made those four compare the wrong things.
     #
-    # WHAT THIS ASSERTS, and deliberately no more: never the OPPOSITE taste direction. A pool
-    # declared `over` may legitimately come back `sharpen` or `judge-not-applying` -- those are
-    # statements about the profile's wording or the judge's behavior rather than about which way
-    # a score went, and a cross-cutting read is often the BETTER answer. What is never
-    # defensible is `under` on a pool whose flags all have negative deltas.
+    # WHAT THIS ASSERTS, and deliberately no more: never the OPPOSITE direction. `under` on a
+    # pool whose flags all have negative deltas is never defensible. Since the diagnosis
+    # directions went (2026-08-25) there is no third answer to fall back on, so this is now a
+    # straight two-way call.
     #
     # NB the failure this caught was a PROMPT defect, not a model one: the consolidate prompt
     # defines under/over by the PROFILE's state ("the profile is MISSING coverage") while the
@@ -390,9 +375,8 @@ def check_terminal(expect, pp, patterns, first_surfaced, history,
     # part that can still be wrong, it is what tells you the prompt's definitions are off, and
     # it stays red until they are fixed.
     #
-    # `sharpen` and `judge-not-applying` remain legal: they are claims about the profile rather
-    # than about which way a score went, so they cannot contradict a sign. What fails is the
-    # model proposing the OPPOSITE taste direction to the flags that built the pattern.
+    # What fails is the model proposing the OPPOSITE direction to the flags that built the
+    # pattern.
     for spec in expect.get("direction_not_inverted", []):
         L, taste = spec["label"], spec["taste"]
         opposite = "under" if taste == "over" else "over"

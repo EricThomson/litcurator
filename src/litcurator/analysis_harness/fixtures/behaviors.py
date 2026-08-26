@@ -192,12 +192,13 @@ def note_carry():
             "intended_patterns_surface": ["CANCER"],
             "stay_separate": [["CANCER", "B"]],
             # B ONLY, and CANCER deliberately absent. Cancer biology sits outside the profile's
-            # STATED domain ("I follow systems and circuit neuroscience"), so
-            # `judge-not-applying` is the correct answer for it -- the judge really is failing
-            # to apply something the profile says. The check allows cross-cutting labels, so on
-            # CANCER it could only ever pass: a check that cannot fail is the vacuous shape this
-            # suite has already been bitten by twice. Direction is covered where it
-            # discriminates -- A and D (over), B, C and CONNECTOME (under).
+            # STATED domain, so when this was written the correct answer for it was
+            # `judge-not-applying` and the check could only ever pass -- the vacuous shape this
+            # suite has been bitten by twice. That value was deleted 2026-08-25, so CANCER now
+            # has a real two-way answer and could be added. Left out until a run shows what the
+            # model actually proposes for it; adding it on prediction is how vacuous checks get
+            # written. Direction is covered where it discriminates -- A and D (over), B, C and
+            # CONNECTOME (under).
             "direction_not_inverted": [{"label": "B", "taste": "under"}],
             # Three depths of the same question, kept separate so a red LOCALISES the loss.
             # term green + directive red  -> the note wall is eating the actionable half.
@@ -255,9 +256,10 @@ def named_disinterest():
 
     One session of clinical-EEG flags (intended pattern A, over-scored) against a profile that names that
     disinterest outright. The judge scoring them high anyway is a PROMPT problem, not a hole in
-    the profile -- so the right outcome is a recorded pattern, ideally with direction
-    judge-not-applying, and the wrong outcome is consolidate reasoning "the profile already
-    covers this" and letting the flags fall on the floor.
+    the profile -- so the right outcome is a recorded pattern at all, and the wrong outcome is
+    consolidate reasoning "the profile already covers this" and letting the flags fall on the
+    floor. It used to expect direction `judge-not-applying`; with that value gone the check is
+    simply that the gap was RECORDED, which was always the property under test.
 
     This is the one property the old test_suggest_patterns.py checked that nothing else did. It
     cannot run on the plain fixture profile, which is why it carries its own."""
@@ -269,7 +271,7 @@ def named_disinterest():
         streams=[GEN.Stream("A", [0], count_per_session=5)],
         terminal_expect={
             "named_disinterest_not_dropped": [
-                {"label": "A", "directions": ["judge-not-applying", "over"]}],
+                {"label": "A", "directions": ["over"]}],
             # Compatible with the check above rather than a duplicate of it: that one requires
             # a specific allowed set, this one only forbids the inversion. Both must hold.
             "direction_not_inverted": [{"label": "A", "taste": "over"}],
