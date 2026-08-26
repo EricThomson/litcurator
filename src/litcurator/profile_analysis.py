@@ -222,8 +222,15 @@ def _format_existing_patterns(active, closed_patterns, examples=None, held=()):
 
     def rows(p, bracket):
         seen = f", returned {p['recurred_count']}x" if p.get("recurred_count") else ""
+        # HOW BADLY, not just how many. Without it the model weighing whether a returning gap
+        # has become worth showing sees the head count of what it already holds and nothing
+        # about the size of it -- so it judges accumulation with half the evidence. A fresh
+        # candidate arrives with its magnitude described in cluster's prose; until now the
+        # remembered side had none at all.
+        size = (f", |delta| avg {p['mean_abs_delta']:.2f} max {p['max_abs_delta']:.2f}"
+                if p.get("mean_abs_delta") is not None else "")
         out = [f"  - id={p['id']}  [{bracket}]  {p['name']}  "
-               f"({p.get('flag_count', 0)} flags{seen})"]
+               f"({p.get('flag_count', 0)} flags{size}{seen})"]
         if p.get("description"):
             out.append(f"      {p['description']}")
         papers = examples.get(p["id"]) or []
@@ -356,6 +363,26 @@ _CONSOLIDATE_TOOL = {
         "required": ["candidates"],
     },
 }
+
+
+def build_memory_block(conn):
+    """THE pattern memory block, assembled in ONE place.
+
+    Both the live path (suggest_edits) and the harness (machinery.run_round) show the model the
+    same three lists, and until 2026-08-26 each built it by hand. When held patterns were added
+    only the live path was updated, so every paid gate ran with held patterns invisible -- and a
+    held pattern the model cannot see is one it cannot merge into, so it mints a duplicate and
+    the gap fragments. That is not a cosmetic omission, it is the mechanism the held design
+    depends on, and it was silently absent for a whole $0.73 sweep.
+
+    So the assembly lives here and the callers pass a connection. Two hand-built copies of the
+    same block is the DRY violation that caused it; one function is the fix."""
+    active = db_interface.get_active_patterns(conn)
+    held = db_interface.get_held_patterns(conn)
+    closed = db_interface.get_patterns(conn, statuses=db_interface.CLOSED_STATUSES)
+    examples = db_interface.get_pattern_examples(
+        conn, [p["id"] for p in active + held + closed])
+    return _format_existing_patterns(active, closed, examples, held=held), active, held, closed
 
 
 def run_consolidate_step(client, clusters_text, seed_text, existing_block, model,
@@ -702,16 +729,7 @@ def suggest_edits(start=None, end=None,
 
         # The pattern memory, shown to consolidate WITH ids so it captures cross-round
         # matches (merge into an open pattern / recurs against a closed pattern).
-        active_patterns = db_interface.get_active_patterns(conn)
-        held_patterns = db_interface.get_held_patterns(conn)
-        closed_patterns = db_interface.get_patterns(conn, statuses=db_interface.CLOSED_STATUSES)
-        # The example papers are the strongest identity signal in the memory block -- see
-        # _format_existing_patterns. One batched query for all three lists.
-        examples = db_interface.get_pattern_examples(
-            conn, [p["id"] for p in active_patterns] + [p["id"] for p in held_patterns]
-                  + [p["id"] for p in closed_patterns])
-        existing_block = _format_existing_patterns(active_patterns, closed_patterns, examples,
-                                                   held=held_patterns)
+        existing_block, active_patterns, held_patterns, closed_patterns =             build_memory_block(conn)
 
         rng = f"{start or 'all'} to {end or 'all'}"
         print(f"{n} unattached flags ({rng})  |  memory: {len(active_patterns)} open + "

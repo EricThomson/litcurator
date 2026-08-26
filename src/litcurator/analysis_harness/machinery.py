@@ -157,11 +157,9 @@ def run_round(conn, client, profile, cluster_model, consolidate_model, cluster_p
     `profile` is the scenario's own synthetic profile (see build_db)."""
     flags = DB.get_flags(conn, exclude_attached=True)
     papers_block, ordered = PA._format_papers(flags)
-    open_patterns = DB.get_active_patterns(conn)
-    closed_patterns = DB.get_patterns(conn, statuses=("incorporated", "rejected"))
-    existing = PA._format_existing_patterns(
-        open_patterns, closed_patterns,
-        DB.get_pattern_examples(conn, [p["id"] for p in open_patterns + closed_patterns]))
+    # ONE assembler, shared with the live path -- see PA.build_memory_block for why this is
+    # not built here any more.
+    existing, _open, _held, _closed = PA.build_memory_block(conn)
     clusters, c1, hit = cached_cluster(client, papers_block, len(flags), profile,
                                        cluster_model, use_cache, cluster_prompt)
     if hit:

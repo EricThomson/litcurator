@@ -357,6 +357,72 @@ def test_scripted_human_can_decide_a_held_pattern():
     print("apply_actions: a held pattern is visible to the scripted human and can be decided")
 
 
+def test_memory_block_includes_held_patterns():
+    """The block the model is shown must contain HELD patterns, with their papers.
+
+    This is the check that would have caught the 2026-08-26 bug. Held patterns were added to
+    the live path and not to machinery.run_round, so every paid gate ran with them invisible:
+    accumulation held the connectome flag at session 0, saw "(empty -- no history yet)" at
+    session 1, and minted a second pattern for the same gap. The fragmentation looked like
+    model behaviour and was a missing argument.
+
+    It tests build_memory_block, which is now the ONE assembler both callers use -- so this
+    cannot go stale for one path while passing for the other."""
+    conn, flag_intended, by_label = _world({"A": 4, "B": 2})
+    shown = DB.create_pattern(conn, "shown gap", "under", flag_ids=by_label["A"][:2])
+    held = DB.create_pattern(conn, "held gap", "under", description="thin but real",
+                             flag_ids=by_label["B"])
+    DB.add_pattern_event(conn, held, "held", note="not yet")
+
+    block, active, held_list, closed = PA.build_memory_block(conn)
+    assert [p["id"] for p in held_list] == [held], held_list
+    assert [p["id"] for p in active] == [shown], active
+    assert "HELD patterns" in block, block
+    assert "held gap" in block and held[:12] in block, block
+    # The papers are the identity signal that makes a returning gap recognisable at all.
+    titles = [f["title"] for f in DB.get_pattern_provenance(conn, held)]
+    assert any(t and t[:40] in block for t in titles), block
+
+    # MAGNITUDE, on every remembered pattern. A fresh candidate arrives with its size described
+    # in cluster's prose; without this the remembered side has a head count and nothing else, so
+    # the model decides whether an accumulating gap is worth showing while blind to how badly
+    # the judge was wrong on what it already holds.
+    assert "|delta|" in block, block
+    for row in DB.get_patterns(conn):
+        assert row["mean_abs_delta"] is not None and row["total_delta"] is not None, dict(row)
+        assert f"{row['mean_abs_delta']:.2f}" in block, (row["name"], block)
+    _close(conn)
+    print("memory block: every remembered pattern carries its |delta| size, not just a count")
+
+
+def test_held_is_ranked_by_evidence_weight_not_head_count():
+    """The Held tab is a ranked what-is-nearly-ready list, so its order has to mean something.
+
+    Sorting on flag_count put a three-flag trivial pattern above a one-flag severe one, which is
+    the volume criterion this project removed from the definition of a pattern, reintroduced in
+    a sort. total_delta is the quantity the analysis prompt already describes: a steady small
+    bias across many papers weighs the same as one big delta on a lone paper."""
+    conn, flag_intended, by_label = _world({"A": 3, "B": 3}, over=("A",))
+    many = DB.create_pattern(conn, "many small", "over", flag_ids=by_label["A"])
+    one = DB.create_pattern(conn, "one large", "under", flag_ids=by_label["B"][:1])
+    for pid in (many, one):
+        DB.add_pattern_event(conn, pid, "held", note="thin")
+    # Make the single-flag pattern carry the heavier evidence.
+    conn.execute("UPDATE flags SET delta = 0.05 WHERE id IN (%s)"
+                 % ",".join(str(i) for i in by_label["A"]))
+    conn.execute("UPDATE flags SET delta = 0.60 WHERE id = ?", (by_label["B"][0],))
+    conn.commit()
+
+    order = [p["id"] for p in DB.get_held_patterns(conn)]
+    assert order[0] == one, (
+        "the heavier pattern must rank first; got head-count order "
+        f"{[(p['name'], p['flag_count'], p['total_delta']) for p in DB.get_held_patterns(conn)]}")
+    _close(conn)
+    print("held ranking: ordered by evidence weight, so one big delta outranks three small ones")
+    _close(conn)
+    print("memory block: held patterns are shown, with their ids and papers")
+
+
 CHECKS = [
     test_every_matching_pattern_is_decided,
     test_unresolved_decision_is_recorded,
@@ -364,6 +430,8 @@ CHECKS = [
     test_no_duplicate_same_vs_opposite_direction,
     test_purity_applies_to_every_new_pattern,
     test_scripted_human_can_decide_a_held_pattern,
+    test_memory_block_includes_held_patterns,
+    test_held_is_ranked_by_evidence_weight_not_head_count,
     test_recurrence_is_any_of,
     test_merged_into_existing_is_any_of,
     test_stay_closed_is_all_of,

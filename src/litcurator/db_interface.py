@@ -1102,6 +1102,28 @@ def get_patterns(conn, statuses=None):
                (SELECT COUNT(DISTINCT f2.pmid) FROM pattern_flags pf
                     JOIN flags f2 ON f2.id = pf.flag_id
                     WHERE pf.pattern_id = p.id) AS flag_count,
+               -- HOW BADLY, alongside how many. `direction` is a sign and `flag_count` is a
+               -- head count, so without these a pattern built from three 0.50 deltas and one
+               -- built from three 0.08 deltas read identically everywhere -- on the workbench
+               -- card, in the memory block the model matches against, and in any ranking.
+               --
+               -- COMPUTED AND SHOWN, NEVER BRANCHED ON. That is the whole distinction from
+               -- DELTA_THRESHOLD (deleted 2026-08-07): a number in code that reshaped the
+               -- evidence before anyone saw it. Magnitude is continuous, so it belongs to
+               -- judgment -- the model's and the user's -- and both need to be able to see it.
+               -- `total_delta` is the quantity the analysis prompt already describes in prose:
+               -- "a steady ~0.1 bias across many papers ... can be worth as much as one big
+               -- delta on a lone paper". Five flags at 0.1 and one at 0.5 come out equal,
+               -- which is exactly what that sentence claims.
+               (SELECT ROUND(AVG(ABS(f3.delta)), 3) FROM pattern_flags pf
+                    JOIN flags f3 ON f3.id = pf.flag_id
+                    WHERE pf.pattern_id = p.id) AS mean_abs_delta,
+               (SELECT ROUND(MAX(ABS(f4.delta)), 3) FROM pattern_flags pf
+                    JOIN flags f4 ON f4.id = pf.flag_id
+                    WHERE pf.pattern_id = p.id) AS max_abs_delta,
+               (SELECT ROUND(SUM(ABS(f5.delta)), 3) FROM pattern_flags pf
+                    JOIN flags f5 ON f5.id = pf.flag_id
+                    WHERE pf.pattern_id = p.id) AS total_delta,
                (SELECT COUNT(*) FROM pattern_events c WHERE c.pattern_id = p.id
                     AND c.event = 'carried') AS carried_count,
                (SELECT COUNT(*) FROM pattern_events r WHERE r.pattern_id = p.id
@@ -1141,7 +1163,11 @@ def get_held_patterns(conn):
     Most-accumulated first, which is what makes the workbench's Held tab a ranked
     what-is-nearly-ready list rather than a log."""
     held = get_patterns(conn, statuses=HELD_STATUSES)
-    held.sort(key=lambda p: (p.get("flag_count", 0), p.get("carried_count", 0)), reverse=True)
+    # By EVIDENCE WEIGHT, not head count. Sorting on flag_count put a three-flag trivial
+    # pattern above a one-flag severe one -- the volume criterion this project spent a while
+    # removing from the definition of a pattern, reintroduced in a sort. total_delta combines
+    # breadth and depth the way the analysis prompt already describes them.
+    held.sort(key=lambda p: (p.get("total_delta") or 0.0, p.get("flag_count", 0)), reverse=True)
     return held
 
 

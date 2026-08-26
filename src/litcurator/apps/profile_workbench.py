@@ -78,6 +78,11 @@ def _pattern_card(conn, p, held=False):
                       className="me-2", style={"flex": "0 0 auto"}),
             dbc.Input(id={"type": "pat-name", "pid": pid}, value=p["name"], size="sm",
                       style={"flex": "1 1 auto", "minWidth": 0}),
+            *([dbc.Badge(f"|d| {p['mean_abs_delta']:.2f}", color="light", text_color="dark",
+                         title="mean |delta| over this pattern's papers; max "
+                               f"{p.get('max_abs_delta') or 0:.2f}",
+                         className="ms-2", style={"flex": "0 0 auto"})]
+              if p.get("mean_abs_delta") is not None else []),
             dbc.Badge(p["status"], color="light", text_color="dark", className="ms-2",
                       style={"flex": "0 0 auto"}),
         ], className="d-flex align-items-center mb-2"),
