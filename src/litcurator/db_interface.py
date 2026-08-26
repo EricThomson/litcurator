@@ -301,6 +301,34 @@ CREATE TABLE IF NOT EXISTS pattern_flags (
 # which profile version absorbed the pattern (so profile -> pattern -> flags ->
 # papers is answerable). note carries the reasoning, especially why a pattern was
 # rejected.
+# THE EVENT VOCABULARY, written down once, for the same reason DIRECTIONS is: the CHECK, the
+# status subquery in get_patterns and the migration below all read these instead of restating
+# them. A DECISION event becomes the pattern's status (latest wins); an ANNOTATION never does.
+#
+#   created       minted this round
+#   carried       still open, not decided yet -- also what PROMOTES a held pattern, since it
+#                 is an active status and status is latest-decision-wins
+#   held          recorded but NOT shown to the user (added 2026-08-26; see below)
+#   incorporated  folded into the profile, stamped with the profile version
+#   rejected      not a real gap
+#   recurred      ANNOTATION: a closed pattern's taste came back. Never becomes status, so a
+#                 rejected pattern stays rejected while its provenance and counters grow.
+#
+# WHY `held` EXISTS. Until 2026-08-26 the consolidate step's `hold` choice wrote NOTHING -- no
+# row, no flags, no event, only a line in a markdown report no code reads. That is precisely the
+# failure profile_analysis's own docstring says the redesign killed ("dumped everything it did
+# not act on into a free-text line that no code read"), and it meant a recognized-but-not-yet-
+# actionable pattern was lost every round and re-derived from scratch. A held pattern is an
+# ordinary pattern row with ordinary provenance whose status keeps it off the workbench queue.
+DECISION_EVENTS = ("created", "carried", "held", "incorporated", "rejected")
+ANNOTATION_EVENTS = ("recurred",)
+PATTERN_EVENTS = DECISION_EVENTS + ANNOTATION_EVENTS
+
+# The status groupings, so no caller writes a status tuple by hand.
+ACTIVE_STATUSES = ("created", "carried")     # the workbench queue
+HELD_STATUSES = ("held",)                    # recorded, deliberately not shown
+CLOSED_STATUSES = ("incorporated", "rejected")
+
 _CREATE_PATTERN_EVENTS = """
 CREATE TABLE IF NOT EXISTS pattern_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -309,9 +337,9 @@ CREATE TABLE IF NOT EXISTS pattern_events (
     note TEXT,
     profile_id TEXT REFERENCES profiles(id),
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    CHECK (event IN ('created', 'carried', 'incorporated', 'rejected', 'recurred'))
+    CHECK (event IN (%s))
 )
-"""
+""" % ", ".join(f"'{e}'" for e in PATTERN_EVENTS)
 
 _CREATE_STATEMENTS = [
     _CREATE_ARTICLES,
@@ -406,29 +434,25 @@ def _drop_stale_pattern_tables(conn):
 
 
 def _migrate_pattern_events(conn):
-    """Add the 'recurred' event value to an EXISTING pattern_events table's CHECK.
-    'recurred' is an append-only annotation (a closed pattern's taste resurfaced)
-    that must never become status. SQLite cannot ALTER a CHECK, so rebuild the table
-    preserving every row. Nothing references pattern_events (its FKs are outbound to
-    patterns/profiles), so the drop+rename is safe; the dropped index is recreated by
-    _CREATE_INDEXES right after. Idempotent: a no-op once the CHECK allows 'recurred'
-    (and on a fresh DB, where CREATE already used the new shape)."""
+    """Rebuild an EXISTING pattern_events table whenever its CHECK no longer matches
+    PATTERN_EVENTS. SQLite cannot ALTER a CHECK, so the only way to widen the vocabulary is
+    drop-and-recreate preserving every row. Nothing references pattern_events (its FKs are
+    outbound to patterns/profiles), so that is safe; the dropped index is recreated by
+    _CREATE_INDEXES right after.
+
+    GENERALISED 2026-08-26. It used to test for the literal string "'recurred'", which meant
+    the next value added would have silently not migrated -- the table would keep the old
+    CHECK and reject the new event at write time, in the record step, mid-consolidation. Now
+    it compares every declared value against the stored SQL, so adding one to PATTERN_EVENTS
+    is all that adding one takes. Idempotent, and a no-op on a fresh DB where CREATE already
+    used the current shape."""
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='pattern_events'"
     ).fetchone()
-    if not row or "'recurred'" in row[0]:
+    if not row or all(f"'{e}'" in row[0] for e in PATTERN_EVENTS):
         return
-    conn.execute("""
-        CREATE TABLE pattern_events__new (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            pattern_id TEXT NOT NULL REFERENCES patterns(id),
-            event TEXT NOT NULL,
-            note TEXT,
-            profile_id TEXT REFERENCES profiles(id),
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            CHECK (event IN ('created', 'carried', 'incorporated', 'rejected', 'recurred'))
-        )
-    """)
+    conn.execute(_CREATE_PATTERN_EVENTS.replace(
+        "CREATE TABLE IF NOT EXISTS pattern_events", "CREATE TABLE pattern_events__new"))
     conn.execute(
         "INSERT INTO pattern_events__new (id, pattern_id, event, note, profile_id, created_at) "
         "SELECT id, pattern_id, event, note, profile_id, created_at FROM pattern_events")
@@ -921,8 +945,21 @@ def get_flags(conn, start=None, end=None, exclude_attached=False):
     feed keeps the default (exclude_attached=False) so it still shows every flag. If the
     user re-flags a paper AFTER it was patterned, the new latest flag is unattached again
     and correctly re-enters the pool."""
-    unattached_only = (
-        "AND NOT EXISTS (SELECT 1 FROM pattern_flags pf WHERE pf.flag_id = f.id)"
+    # ATTACHED IS NOT THE SAME AS HANDLED (2026-08-26). A flag attached to a HELD pattern keeps
+    # its provenance but STAYS IN THE POOL, so cluster keeps seeing the paper. That is the whole
+    # reason a held pattern can grow: CLUSTER is the only step that reads titles, abstracts and
+    # notes, and accumulation works because thin flags pile up until it sees several together.
+    # Draining them at first sight would move that job to CONSOLIDATE, which never sees a paper.
+    # A flag attached to any NON-held pattern is handled and drops out, exactly as before.
+    unattached_only = ("""
+        AND NOT EXISTS (
+            SELECT 1 FROM pattern_flags pf
+            WHERE pf.flag_id = f.id
+              AND (SELECT e.event FROM pattern_events e
+                   WHERE e.pattern_id = pf.pattern_id AND e.event IN (%(decisions)s)
+                   ORDER BY e.created_at DESC, e.id DESC LIMIT 1) NOT IN (%(held)s)
+        )""" % {"decisions": ", ".join(f"'{e}'" for e in DECISION_EVENTS),
+                "held": ", ".join(f"'{e}'" for e in HELD_STATUSES)}
         if exclude_attached else "")
     rows = conn.execute(f"""
         SELECT f.*, a.title, a.journal, a.abstract, a.issue_date_iso, a.pub_date_iso,
@@ -983,18 +1020,30 @@ def attach_flags_to_pattern(conn, pattern_id, flag_ids):
     """Attach additional flags to an EXISTING pattern -- the MERGE primitive: a later
     round's flags attaching to a pattern already tracked (create_pattern only attaches
     at creation). Dedups on the pattern_flags primary key; returns the count NEWLY
-    attached (0 if all were already attached). Adds NO fate event on its own -- the caller
-    decides whether new provenance warrants a 'carried'/'recurred' event, and skips it
-    when this returns 0, so re-running an overlapping window never inflates recurrence."""
-    n = 0
+    attached. Adds NO fate event on its own -- the caller decides whether new provenance
+    warrants a 'carried'/'recurred' event, and skips it when this returns 0, so re-running an
+    overlapping window never inflates recurrence.
+
+    RETURNS NEWLY-COVERED PAPERS, NOT NEW ROWS (changed 2026-08-26). A re-flag of a paper this
+    pattern already holds is a new flag row, so the row count was non-zero and the caller fired
+    a 'carried' / 'recurred' event for a paper the pattern already had -- a recurrence signal
+    manufactured by the user editing his own note. 11 of the 20 live flagged papers are
+    re-flagged, one of them four times, so this fired routinely. The rows are still written
+    (provenance is append-only and the newer flag is the better record); only the return
+    changed, and with it what counts as "something new arrived"."""
+    before = {r[0] for r in conn.execute(
+        "SELECT DISTINCT f.pmid FROM pattern_flags pf JOIN flags f ON f.id = pf.flag_id "
+        "WHERE pf.pattern_id = ?", (pattern_id,)).fetchall()}
     for fid in dict.fromkeys(flag_ids):
-        cur = conn.execute(
+        conn.execute(
             "INSERT OR IGNORE INTO pattern_flags (pattern_id, flag_id) VALUES (?, ?)",
             (pattern_id, fid),
         )
-        n += cur.rowcount
     conn.commit()
-    return n
+    after = {r[0] for r in conn.execute(
+        "SELECT DISTINCT f.pmid FROM pattern_flags pf JOIN flags f ON f.id = pf.flag_id "
+        "WHERE pf.pattern_id = ?", (pattern_id,)).fetchall()}
+    return len(after - before)
 
 
 def add_pattern_event(conn, pattern_id, event, note=None, profile_id=None):
@@ -1046,7 +1095,13 @@ def get_patterns(conn, statuses=None):
                ev.created_at AS status_at,
                ev.note AS status_note,
                ev.profile_id AS status_profile_id,
-               (SELECT COUNT(*) FROM pattern_flags pf WHERE pf.pattern_id = p.id) AS flag_count,
+               -- PAPERS, not pattern_flags rows. A re-flag of an already-attached paper is a
+               -- new flag row, so COUNT(*) counted the same paper twice and inflated every
+               -- evidence signal that reads this. 11 of the 20 live flagged papers are
+               -- re-flagged, so that was not a corner case.
+               (SELECT COUNT(DISTINCT f2.pmid) FROM pattern_flags pf
+                    JOIN flags f2 ON f2.id = pf.flag_id
+                    WHERE pf.pattern_id = p.id) AS flag_count,
                (SELECT COUNT(*) FROM pattern_events c WHERE c.pattern_id = p.id
                     AND c.event = 'carried') AS carried_count,
                (SELECT COUNT(*) FROM pattern_events r WHERE r.pattern_id = p.id
@@ -1054,14 +1109,14 @@ def get_patterns(conn, statuses=None):
         FROM patterns p
         JOIN pattern_events ev ON ev.id = (
             SELECT e2.id FROM pattern_events e2 WHERE e2.pattern_id = p.id
-            AND e2.event IN ('created', 'carried', 'incorporated', 'rejected')
+            AND e2.event IN (%(decisions)s)
             ORDER BY e2.created_at DESC, e2.id DESC LIMIT 1
         )
         -- id breaks the tie: created_at is second-resolution, and every pattern minted in one
         -- consolidation pass shares a timestamp, so without this their order is arbitrary and
         -- changes between runs. Same lesson get_closed_recurrences already records.
         ORDER BY ev.created_at DESC, ev.id DESC
-    """).fetchall()
+    """ % {"decisions": ", ".join(f"'{e}'" for e in DECISION_EVENTS)}).fetchall()
     result = [dict(r) for r in rows]
     if statuses is not None:
         keep = set(statuses)
@@ -1070,9 +1125,24 @@ def get_patterns(conn, statuses=None):
 
 
 def get_active_patterns(conn):
-    """The active list: patterns whose latest event is 'created' or 'carried' --
-    the ones still awaiting a decision."""
-    return get_patterns(conn, statuses=("created", "carried"))
+    """The workbench queue: patterns whose latest decision is 'created' or 'carried' --
+    the ones the user is shown and still has to decide. HELD patterns are deliberately
+    excluded; they are real and recorded but not yet worth the user's attention."""
+    return get_patterns(conn, statuses=ACTIVE_STATUSES)
+
+
+def get_held_patterns(conn):
+    """Recorded but NOT shown: patterns the consolidate step judged real and not yet
+    actionable. They stay in the pattern memory (so the model can recognise the gap when it
+    returns) and their flags stay in the clustering pool (so CLUSTER keeps accumulating
+    evidence for them). A later merge that brings a genuinely new paper writes 'carried',
+    which is an active status, and the pattern surfaces.
+
+    Most-accumulated first, which is what makes the workbench's Held tab a ranked
+    what-is-nearly-ready list rather than a log."""
+    held = get_patterns(conn, statuses=HELD_STATUSES)
+    held.sort(key=lambda p: (p.get("flag_count", 0), p.get("carried_count", 0)), reverse=True)
+    return held
 
 
 def get_pattern(conn, pattern_id):
@@ -1121,14 +1191,21 @@ def get_pattern_examples(conn, pattern_ids, limit=3):
     marks = ",".join("?" * len(ids))
     rows = conn.execute(f"""
         SELECT pattern_id, title, journal, pmid, delta FROM (
-            SELECT pf.pattern_id AS pattern_id, a.title AS title, a.journal AS journal,
-                   f.pmid AS pmid, f.delta AS delta,
-                   ROW_NUMBER() OVER (PARTITION BY pf.pattern_id
-                                      ORDER BY ABS(f.delta) DESC, f.id) AS rn
-            FROM pattern_flags pf
-            JOIN flags f ON f.id = pf.flag_id
-            JOIN articles a ON a.pmid = f.pmid
-            WHERE pf.pattern_id IN ({marks})
+            SELECT pattern_id, title, journal, pmid, delta,
+                   ROW_NUMBER() OVER (PARTITION BY pattern_id
+                                      ORDER BY ABS(delta) DESC, fid) AS rn
+            FROM (
+                -- One row per PAPER first: a re-flagged paper has several flag rows attached,
+                -- and without this it could fill two of the three example slots with itself.
+                SELECT pf.pattern_id AS pattern_id, a.title AS title, a.journal AS journal,
+                       f.pmid AS pmid, f.delta AS delta, f.id AS fid,
+                       ROW_NUMBER() OVER (PARTITION BY pf.pattern_id, f.pmid
+                                          ORDER BY ABS(f.delta) DESC, f.id) AS prn
+                FROM pattern_flags pf
+                JOIN flags f ON f.id = pf.flag_id
+                JOIN articles a ON a.pmid = f.pmid
+                WHERE pf.pattern_id IN ({marks})
+            ) WHERE prn = 1
         ) WHERE rn <= ?
         ORDER BY pattern_id, rn
     """, (*ids, limit)).fetchall()

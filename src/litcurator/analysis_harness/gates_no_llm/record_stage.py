@@ -116,13 +116,13 @@ def main():
          "paper_numbers": [3, 5], "rationale": "same taste"},           # +F2,F3
         {"choice": "merge_into_closed", "existing_pattern_id": p_tomb,
          "paper_numbers": [4], "rationale": "came back"},               # +F5 (new)
-        {"choice": "hold", "name": "quirk", "paper_numbers": [], "rationale": "one-off"},
+        {"choice": "discard", "name": "quirk", "paper_numbers": [], "rationale": "not a pattern"},
         {"choice": "merge_into_open", "existing_pattern_id": "deadbeefdeadbeef",
          "name": "Recovered", "direction": "over", "paper_numbers": [6], "rationale": "bad id"},
     ], ordered)
     assert len(s2["merged"]) == 1 and s2["merged"][0]["added"] == 2, s2["merged"]
     assert len(s2["recurred"]) == 1 and s2["recurred"][0]["added"] == 1, s2["recurred"]
-    assert len(s2["held"]) == 1, s2["held"]
+    assert len(s2["discarded"]) == 1, s2["discarded"]
     assert any(c.get("recovered") for c in s2["new"]), s2["new"]
 
     def pat(pid):
@@ -237,6 +237,89 @@ def main():
     rec, note = _one_new("under", [])
     assert rec["direction"] == "under" and "flag deltas" not in note, (rec, note)
     print("direction: no usable papers -> model's word stands")
+
+    # --- 8. HELD PATTERNS: recorded, not shown, and their flags stay in the pool -----------
+    # Added 2026-08-26 with the `held` status. Until then a `hold` wrote nothing at all -- the
+    # exact "dumped it where no code reads" failure profile_analysis's own docstring says the
+    # redesign killed -- so a recognized-but-thin pattern was lost every round and re-derived
+    # from raw papers. These checks pin the four properties that make the fix worth having.
+    for t in ("pattern_flags", "pattern_events", "patterns"):
+        conn.execute(f"DELETE FROM {t}")
+    conn.commit()
+    ordered = profile_analysis._format_papers(db_interface.get_flags(conn))[1]
+    by_pos = {f["id"]: i + 1 for i, f in enumerate(ordered)}      # flag id -> paper number
+
+    def _consolidate(*candidates):
+        return profile_analysis._record_consolidation(conn, list(candidates), ordered)
+
+    # (a) new + priority=hold mints a REAL row that the workbench never sees.
+    s8 = _consolidate({"choice": "new", "name": "thin gap", "direction": "under",
+                       "priority": "hold", "paper_numbers": [by_pos[flag_id["F1"]]],
+                       "rationale": "real but not actionable yet"})
+    assert len(s8["held"]) == 1 and not s8["new"], s8
+    held_id = s8["held"][0]["id"]
+    assert db_interface.get_pattern(conn, held_id) is not None, "a hold must write a row"
+    assert [p["id"] for p in db_interface.get_held_patterns(conn)] == [held_id]
+    assert held_id not in {p["id"] for p in db_interface.get_active_patterns(conn)}, \
+        "a held pattern must NOT reach the workbench queue"
+    print("held: new+hold writes a real pattern that stays off the active list")
+
+    # (b) THE CRUX. Its flags keep their provenance AND stay in the clustering pool. Cluster is
+    # the only step that reads papers, and accumulation works because thin flags pile up until
+    # it sees several together -- draining them here would move that job to consolidate, which
+    # never sees a paper at all.
+    assert db_interface.get_pattern_provenance(conn, held_id), "held pattern must own its flags"
+    pool = {f["id"] for f in db_interface.get_flags(conn, exclude_attached=True)}
+    assert flag_id["F1"] in pool, "a HELD pattern's flags must stay in the clustering pool"
+    print("held: flags are attached for provenance and still returned by the unattached pool")
+
+    # (c) Coming back and still being thin logs another `held` -- so "sitting for three rounds"
+    # is answerable -- and does NOT surface it.
+    s8b = _consolidate({"choice": "merge_into_open", "existing_pattern_id": held_id,
+                        "priority": "hold", "paper_numbers": [by_pos[flag_id["F2"]]],
+                        "rationale": "came back, still thin"})
+    assert len(s8b["held"]) == 1 and s8b["held"][0].get("returned"), s8b
+    assert [e["event"] for e in db_interface.get_pattern_events(conn, held_id)] \
+        == ["created", "held", "held"], db_interface.get_pattern_events(conn, held_id)
+    assert held_id not in {p["id"] for p in db_interface.get_active_patterns(conn)}
+    print("held: a return that is still thin re-holds and is logged, not silently skipped")
+
+    # (d) PROMOTION, and it needs no threshold: `carried` is an active status, so the pattern
+    # simply becomes visible. This is why no count constant is required anywhere.
+    s8c = _consolidate({"choice": "merge_into_open", "existing_pattern_id": held_id,
+                        "priority": "act_now", "paper_numbers": [by_pos[flag_id["F3"]]],
+                        "rationale": "enough to act on now"})
+    assert len(s8c["surfaced"]) == 1 and s8c["surfaced"][0]["id"] == held_id, s8c
+    assert held_id in {p["id"] for p in db_interface.get_active_patterns(conn)}
+    assert not db_interface.get_held_patterns(conn), "it must leave the held list"
+    pool = {f["id"] for f in db_interface.get_flags(conn, exclude_attached=True)}
+    assert flag_id["F1"] not in pool, "once surfaced, its flags are handled and leave the pool"
+    print("held: act_now on a return promotes it, and its flags then leave the pool")
+
+    # (e) A RE-FLAG is not new evidence. The user re-flags routinely (11 of 20 live papers), and
+    # until this was fixed the extra flag row counted as an arrival and fired a carried event
+    # for a paper the pattern already held.
+    f1_pmid = conn.execute("SELECT pmid FROM flags WHERE id=?", (flag_id["F1"],)).fetchone()[0]
+    ev1 = conn.execute("SELECT evaluation_id FROM flags WHERE id=?",
+                       (flag_id["F1"],)).fetchone()[0]
+    refl = db_interface.insert_flag(conn, ev1, 0.11, note="same paper, longer note")
+    before = len(db_interface.get_pattern_events(conn, held_id))
+    assert db_interface.attach_flags_to_pattern(conn, held_id, [refl]) == 0, \
+        "a re-flag of an already-covered PAPER is not a new arrival"
+    assert len(db_interface.get_pattern_events(conn, held_id)) == before
+    assert db_interface.get_patterns(conn, statuses=("carried",))[0]["flag_count"] == 3, \
+        "flag_count must count papers, not pattern_flags rows"
+    print(f"held: a re-flag of pmid {f1_pmid} adds provenance but is not an arrival")
+
+    # (f) discard is the one outcome that records nothing -- and that is correct, because the
+    # model judged the candidate not to be a pattern at all.
+    n_before = len(db_interface.get_patterns(conn))
+    s8d = _consolidate({"choice": "discard", "name": "not a pattern",
+                        "paper_numbers": [by_pos[flag_id["F6"]]], "rationale": "cluster noise"})
+    assert len(s8d["discarded"]) == 1 and len(db_interface.get_patterns(conn)) == n_before
+    assert flag_id["F6"] in {f["id"] for f in
+                             db_interface.get_flags(conn, exclude_attached=True)}
+    print("discard: records nothing and leaves its flags in the pool")
 
     conn.close()
     SCRATCH.unlink(missing_ok=True)

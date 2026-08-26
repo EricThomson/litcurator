@@ -60,6 +60,9 @@ DEFAULT_CONSOLIDATE_MODEL = "claude-sonnet-4-6"
 # `under` -- see the note beside db_interface.DIRECTIONS.
 VALID_DIRECTIONS = db_interface.DIRECTIONS
 
+# Rendered once for the status subquery below; db_interface owns the vocabulary.
+_DECISIONS = ", ".join(f"'{e}'" for e in db_interface.DECISION_EVENTS)
+
 # Approximate API prices, ($/M input, $/M output). Update if pricing changes.
 MODEL_COSTS = {
     "claude-opus-4-8": (15.0, 75.0),
@@ -189,7 +192,7 @@ def _format_papers(flags):
     return "\n\n".join(lines), ordered
 
 
-def _format_existing_patterns(active, closed_patterns, examples=None):
+def _format_existing_patterns(active, closed_patterns, examples=None, held=()):
     """The pattern memory, shown to the consolidate step WITH ids so it can name the exact
     pattern a candidate merges into (open) or recurs against (closed). Empty string when
     there is no history yet.
@@ -213,7 +216,7 @@ def _format_existing_patterns(active, closed_patterns, examples=None):
     a description of a pattern already decided.
 
     Passing examples=None renders exactly as before, with no papers."""
-    if not active and not closed_patterns:
+    if not active and not closed_patterns and not held:
         return ""
     examples = examples or {}
 
@@ -234,6 +237,14 @@ def _format_existing_patterns(active, closed_patterns, examples=None):
         lines.append("\nOPEN patterns (still awaiting a decision) -- a candidate that is the same "
                      "gap is merge_into_open with that id:")
         for p in active:
+            lines += rows(p, p["direction"])
+    if held:
+        # Between open and closed, which is where they sit: undecided, but not yet shown. The
+        # model needs them for the same reason it needs the open ones -- so a returning gap is
+        # recognised rather than minted again -- and merging into one is what promotes it.
+        lines.append("\nHELD patterns (recorded from earlier flags, NOT yet shown to the user) -- "
+                     "a candidate that is the same gap is merge_into_open with that id:")
+        for p in held:
             lines += rows(p, p["direction"])
     if closed_patterns:
         lines.append("\nCLOSED patterns (already INCORPORATED or REJECTED) -- a candidate that matches "
@@ -303,7 +314,7 @@ def run_cluster_step(client, papers_block, n_flags, seed_text, model, prompt=Non
 
 _CONSOLIDATE_TOOL = {
     "name": "record_consolidation",
-    "description": "Record a choice for EVERY candidate pattern (new / merge / recurs / hold).",
+    "description": "Record a choice for every REAL pattern (new / merge / recurs / discard).",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -313,7 +324,7 @@ _CONSOLIDATE_TOOL = {
                     "type": "object",
                     "properties": {
                         "choice": {"type": "string",
-                            "enum": ["new", "merge_into_open", "merge_into_closed", "hold"]},
+                            "enum": ["new", "merge_into_open", "merge_into_closed", "discard"]},
                         "existing_pattern_id": {"type": "string",
                             "description": "id of the open pattern (merge_into_open) or closed pattern "
                                            "(merge_into_closed) this matches; omit for new / hold"},
@@ -324,8 +335,15 @@ _CONSOLIDATE_TOOL = {
                         "description": {"type": "string", "description": "one sentence (for new)"},
                         "suggested_edit": {"type": "string",
                             "description": "the directive as the researcher would author it (for new)"},
-                        "priority": {"type": "string", "enum": ["act_now", "defer"],
-                            "description": "act_now only if it clearly beats do-nothing; else defer"},
+                        # SURFACING, not urgency (2026-08-26). This is the only field that
+                        # decides whether the user is SHOWN a pattern; everything real is
+                        # recorded either way. It replaced an act_now/defer pair where both
+                        # values produced an identical screen -- nothing in the workbench read
+                        # the field at all, so it was a label with no consumer.
+                        "priority": {"type": "string", "enum": ["act_now", "hold"],
+                            "description": "act_now shows it in the user's queue this round; "
+                                           "hold records it and keeps it out until later "
+                                           "evidence makes it actionable"},
                         "paper_numbers": {"type": "array", "items": {"type": "integer"},
                             "description": "supporting [N] paper numbers from the clusters"},
                         "rationale": {"type": "string",
@@ -392,7 +410,18 @@ def _record_consolidation(conn, candidates, ordered_flags, analysis_run_id=None)
     silently dropped candidate is exactly the signal-into-the-void failure this redesign
     exists to prevent. Returns a summary dict."""
     n = len(ordered_flags)
-    summary = {"new": [], "merged": [], "recurred": [], "held": [], "skipped": []}
+    # `held` now holds RECORDED patterns (rows, provenance, a 'held' event) rather than the
+    # name-only ghosts it held until 2026-08-26, when a hold wrote nothing at all. `surfaced`
+    # is a held pattern promoted this round; `discarded` is a candidate judged not to be a real
+    # pattern, which is the only outcome that records nothing.
+    summary = {"new": [], "merged": [], "recurred": [], "held": [], "surfaced": [],
+               "discarded": [], "skipped": []}
+
+    def surface_of(c):
+        """act_now | hold -- the ONLY field deciding whether the user is shown this pattern.
+        Anything unrecognized shows it: failing toward visible is the safe direction, since a
+        pattern the user can see is one they can reject in a second."""
+        return "hold" if (c.get("priority") or "").strip() == "hold" else "act_now"
 
     def flag_ids_for(c):
         nums = c.get("paper_numbers") or []
@@ -443,7 +472,7 @@ def _record_consolidation(conn, candidates, ordered_flags, analysis_run_id=None)
     def status_of(pid):
         row = conn.execute(
             "SELECT event FROM pattern_events WHERE pattern_id = ? "
-            "AND event IN ('created','carried','incorporated','rejected') "
+            f"AND event IN ({_DECISIONS}) "
             "ORDER BY created_at DESC, id DESC LIMIT 1", (pid,)).fetchone()
         return row["event"] if row else None
 
@@ -520,7 +549,16 @@ def _record_consolidation(conn, candidates, ordered_flags, analysis_run_id=None)
 
     def _record_new(c, flag_ids, extra_note="", recovered=False):
         direction, coerced, disagreement = _resolved_direction(c)
-        entry = {"id": _create(c, flag_ids, extra_note), "name": _fallback_name(c),
+        pid = _create(c, flag_ids, extra_note)
+        surface = surface_of(c)
+        if surface == "hold":
+            # A REAL pattern, recorded with full provenance, that the user is simply not shown.
+            # 'created' stays as the minting fact and 'held' is the decision on top of it, so the
+            # log reads created -> held -> carried -> incorporated for a gap noticed early,
+            # promoted when it recurred, and folded in. Collapsing the two would save a row and
+            # lose "when was this first recognized".
+            db_interface.add_pattern_event(conn, pid, "held", note=c.get("rationale"))
+        entry = {"id": pid, "name": _fallback_name(c),
                  "direction": direction, "priority": c.get("priority"),
                  "n_flags": len(flag_ids)}
         if recovered:
@@ -534,7 +572,8 @@ def _record_consolidation(conn, candidates, ordered_flags, analysis_run_id=None)
             # recording that would report an inversion the model never proposed.
             entry["direction_proposed"] = c.get("direction") or _direction(c)[0]
             entry["direction_note"] = disagreement.strip()
-        summary["new"].append(entry)
+        # Both are minted rows; the bucket says whether the user is shown it this round.
+        summary["held" if surface == "hold" else "new"].append(entry)
 
     for c in candidates:
         choice = c.get("choice")
@@ -556,19 +595,37 @@ def _record_consolidation(conn, candidates, ordered_flags, analysis_run_id=None)
                 continue
             added = db_interface.attach_flags_to_pattern(conn, eid, flag_ids)
             if not added:
-                # Target already holds every one of these flags: nothing new, so no event.
-                # This is the re-run idempotency guard, not a lost candidate.
-                summary["skipped"].append({"id": eid, "why": "no new flags to attach"})
+                # Target already covers every one of these PAPERS: nothing new arrived, so no
+                # event. This is the re-run idempotency guard, not a lost candidate -- and
+                # since 2026-08-26 `added` counts papers rather than pattern_flags rows, so a
+                # re-flag of a paper the pattern already holds no longer fires one either.
+                summary["skipped"].append({"id": eid, "why": "no new papers to attach"})
                 continue
-            if st in ("incorporated", "rejected"):
+            if st in db_interface.CLOSED_STATUSES:
                 db_interface.add_pattern_event(conn, eid, "recurred", note=c.get("rationale"))
                 summary["recurred"].append({"id": eid, "name": _fallback_name(c), "added": added})
+            elif st in db_interface.HELD_STATUSES and surface_of(c) == "hold":
+                # Came back, still not actionable. Logged rather than silent, so the history
+                # reads held -> held -> carried and "this has been sitting for three rounds"
+                # is answerable.
+                db_interface.add_pattern_event(conn, eid, "held",
+                                               note=f"returned: {c.get('rationale', '')}")
+                summary["held"].append({"id": eid, "name": _fallback_name(c), "added": added,
+                                        "returned": True})
             else:
+                # PROMOTION happens here, and needs no threshold: 'carried' is an active status,
+                # so a held pattern the model now wants shown simply becomes visible. An
+                # already-open pattern was visible anyway and stays so.
                 db_interface.add_pattern_event(conn, eid, "carried",
                                                note=f"recurred: {c.get('rationale', '')}")
-                summary["merged"].append({"id": eid, "name": _fallback_name(c), "added": added})
-        elif choice == "hold":
-            summary["held"].append({"name": _fallback_name(c), "rationale": c.get("rationale")})
+                bucket = "surfaced" if st in db_interface.HELD_STATUSES else "merged"
+                summary[bucket].append({"id": eid, "name": _fallback_name(c), "added": added})
+        elif choice == "discard":
+            # The ONLY outcome that records nothing, and the only one where that is right: the
+            # model judged this candidate not to be a real pattern at all. Its flags were never
+            # attached, so they stay in the pool and cluster reads the papers again next round.
+            summary["discarded"].append({"name": _fallback_name(c),
+                                         "rationale": c.get("rationale")})
         else:
             # Unrecognized choice -- record rather than lose it; the human can reject.
             _record_new(c, flag_ids, recovered=True,
@@ -610,7 +667,8 @@ def _summary_line(summary):
     if not summary:
         return "recorded nothing"
     return (f"recorded {len(summary['new'])} new, {len(summary['merged'])} merged, "
-            f"{len(summary['recurred'])} recurred; {len(summary['held'])} held")
+            f"{len(summary['recurred'])} recurred, {len(summary['held'])} held, "
+            f"{len(summary['surfaced'])} surfaced; {len(summary['discarded'])} discarded")
 
 
 def suggest_edits(start=None, end=None,
@@ -645,16 +703,19 @@ def suggest_edits(start=None, end=None,
         # The pattern memory, shown to consolidate WITH ids so it captures cross-round
         # matches (merge into an open pattern / recurs against a closed pattern).
         active_patterns = db_interface.get_active_patterns(conn)
-        closed_patterns = db_interface.get_patterns(conn, statuses=("incorporated", "rejected"))
+        held_patterns = db_interface.get_held_patterns(conn)
+        closed_patterns = db_interface.get_patterns(conn, statuses=db_interface.CLOSED_STATUSES)
         # The example papers are the strongest identity signal in the memory block -- see
-        # _format_existing_patterns. One batched query for both lists.
+        # _format_existing_patterns. One batched query for all three lists.
         examples = db_interface.get_pattern_examples(
-            conn, [p["id"] for p in active_patterns] + [p["id"] for p in closed_patterns])
-        existing_block = _format_existing_patterns(active_patterns, closed_patterns, examples)
+            conn, [p["id"] for p in active_patterns] + [p["id"] for p in held_patterns]
+                  + [p["id"] for p in closed_patterns])
+        existing_block = _format_existing_patterns(active_patterns, closed_patterns, examples,
+                                                   held=held_patterns)
 
         rng = f"{start or 'all'} to {end or 'all'}"
         print(f"{n} unattached flags ({rng})  |  memory: {len(active_patterns)} open + "
-              f"{len(closed_patterns)} decided")
+              f"{len(held_patterns)} held + {len(closed_patterns)} decided")
         print(f"Models: cluster={cluster_model}  consolidate={consolidate_model}\n")
 
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
@@ -701,8 +762,14 @@ def suggest_edits(start=None, end=None,
                     _echo(f"  ~ merged into {c['id'][:12]} (+{c['added']} flags -> carried)\n")
                 for c in summary["recurred"]:
                     _echo(f"  ! closed pattern {c['id'][:12]} recurred (+{c['added']} flags)\n")
+                for c in summary["surfaced"]:
+                    _echo(f"  ^ held pattern {c['id'][:12]} SURFACED (+{c['added']} papers)\n")
                 for c in summary["held"]:
-                    _echo(f"  . held (unattached): {c.get('name') or c.get('rationale')}\n")
+                    back = " (returned)" if c.get("returned") else ""
+                    _echo(f"  . held{back}: {c.get('name') or c.get('rationale')}\n")
+                for c in summary["discarded"]:
+                    _echo(f"  x discarded (not a real pattern): "
+                          f"{c.get('name') or c.get('rationale')}\n")
                 for c in summary["skipped"]:
                     _echo(f"  x skipped: {c.get('why')}\n")
                 _echo(f"[{_summary_line(summary)}  |  total cost: ${total:.4f}]\n")
