@@ -301,14 +301,33 @@ _SESSION_2 = [
      "A very small nervous system, distant from the profile's emphasis.", ""),
 
     # One paper again, opposite sign: a clean NAMED interest with an explicit note.
-    ("U2", "Corollary discharge cancels self-generated input in the electrosensory lobe",
-     "Recordings in the weakly electric fish show a negative image of the animal's own "
-     "discharge is subtracted at the first sensory relay, and that the cancellation "
-     "adapts within seconds when the motor command changes.",
-     "Journal of Neurophysiology", 0.40, 0.88,
-     "A sensory circuit result, though in a specialist journal and an unusual model.",
-     "efference copy / corollary discharge in sensory systems is a core interest -- "
-     "always surface these, this is exactly what I want"),
+    #
+    # REWRITTEN 2026-08-26, and the old version is worth recording because it broke Rule 1 in a
+    # way that took a paid run to see. It was corollary discharge in a WEAKLY ELECTRIC FISH, in
+    # a specialist journal, with the judge's rationale calling it "an unusual model" -- and
+    # intended pattern C is non-mammalian model organisms penalised for distance from mammalian
+    # circuits. The two shared four properties: non-mammalian organism, sensory circuit tied to
+    # behavior, specialist journal, under-scored. On 2026-08-26 the model folded it straight
+    # into C, and C's own description ("model organisms treated as liabilities due to distance
+    # from mammalian circuits") covers an electric fish without strain. Defending the old
+    # version needed an argument -- fish are vertebrates, so it is not invertebrate
+    # neuroethology -- and a case that needs an argument is a coin flip wearing a verdict.
+    # Pool C had already eaten one fixture this way (see the TIDAL note in paper_pools).
+    #
+    # WHY THIS ONE IS CLEAN. It is mammalian (not C), empirical and causal (not B), not human
+    # (not A), not a disease model (not D), not sleep (not U1). And the REASON it is
+    # under-scored is the venue, an axis no other pool in this fixture touches -- so it is not
+    # a fourth entry in the crowded under-scored-interest category, which is what made the old
+    # one confusable in the first place. U1 was always easy because it is the only named
+    # disinterest here; a unicorn needs an empty neighbourhood, not just a distinct label.
+    ("U2", "Optogenetic silencing of barrel cortex abolishes a learned whisker discrimination",
+     "Mice trained on a two-alternative whisker discrimination task lose performance when "
+     "layer 4 of barrel cortex is silenced on single trials, and recover within one session "
+     "when silencing stops, tying the cortical column causally to the perceptual decision.",
+     "Somatosensory Research Letters", 0.42, 0.90,
+     "A competent circuit study, but published in a minor specialist journal with limited reach.",
+     "this is exactly my core interest -- causal circuit manipulation tied to a perceptual "
+     "decision. the venue should not drag it down."),
 
     ("D", "Deep brain stimulation restores gait in a parkinsonian primate model",
      "Stimulation of the pedunculopontine nucleus in MPTP-treated primates restored "

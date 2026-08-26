@@ -48,10 +48,15 @@ COLD_CACHE_GATES = {"accumulation"}
 PAID_GATES = {
     "pool-calibration": (
         2, pool_calibration.run,
-        "the synthetic PAPERS are miscalibrated, not the machinery. A pool that shattered has "
-        "papers too varied; two pools that fused have papers too alike. Fix "
-        "fixtures/paper_pools.py, and do not read the layer 3 and 4 results until this is green.",
-        2),
+        "the synthetic PAPERS are miscalibrated, not the machinery. Two fixtures are graded, "
+        "the generated pools and the hand-written lifecycle sessions -- the second was added "
+        "2026-08-26 after a colliding unicorn cost a full paid sweep to find. "
+        "A pool that shattered has "
+        "papers too varied; two pools that fused have papers too alike. Fix the offending "
+        "fixture -- paper_pools.py for [pools], scenarios.py for [lifecycle] -- and do not "
+        "read the layer 3 and 4 results until this is green.",
+        # 4, not 2: two fat sessions now, one per fixture, each a cluster + a consolidate call.
+        4),
     "pattern-lifecycle": (
         3, _scenario_runner(*_SCENARIOS["pattern-lifecycle"]),
         "the memory behaviors: a repeat merged into a twin instead of into the pattern it already "

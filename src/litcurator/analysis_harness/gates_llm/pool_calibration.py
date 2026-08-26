@@ -38,27 +38,54 @@ MIN_COVERAGE = 0.7      # of an intended pattern's papers, how many its produced
 MIN_PURITY = 0.6        # of that produced pattern's flags, how many must be from the intended one
 
 
-def run(ctx):
-    """Run the one fat session and grade each intended pattern. Returns (checks, cost, transcript)."""
+def _generated_papers():
+    """Every paper from the generated POOLS, one of each, in a single session."""
     pools = paper_pools.POOLS_BY_INTENDED_PATTERN
     streams = [GEN.Stream(label, [0], len(pool.papers)) for label, pool in pools.items()]
     spec = GEN.ScenarioSpec("calibration", n_sessions=1, profile=SC.PROFILE,
                             pools_by_intended_pattern=pools, streams=streams)
-    papers = GEN.build_rounds(spec, random.Random(0))[0]["papers"]
+    return GEN.build_rounds(spec, random.Random(0))[0]["papers"], list(pools)
+
+
+def _lifecycle_papers():
+    """Every paper from the HAND-WRITTEN lifecycle fixture, all four sessions flattened.
+
+    Added 2026-08-26, and it should have existed from the start. This gate read only
+    POOLS_BY_INTENDED_PATTERN, which feeds the generated scenarios -- so the fixture behind
+    pattern-lifecycle, written by hand in scenarios.py, was never calibrated at all. That is
+    how U2 shipped as an electric fish sharing four properties with intended pattern C: the
+    one gate whose entire job is catching confusable fixtures had never looked at it, and the
+    collision cost a full paid sweep to discover.
+
+    Flattening four sessions into one is deliberately harder than any real round, which is the
+    whole method here. It is especially sharp on the UNICORNS: a single-paper intended pattern
+    absorbed into an eight-flag neighbour scores purity 0.11 and fails loudly, which is exactly
+    the shape that got through."""
+    papers, labels = [], []
+    for session in SC.SESSIONS:
+        for paper in session["papers"]:
+            papers.append(paper)
+            if paper["intended"] not in labels:
+                labels.append(paper["intended"])
+    return papers, labels
+
+
+def _calibrate(ctx, name, papers, labels):
+    """Run one fat session over `papers` and grade each intended pattern."""
 
     papers_emitted = defaultdict(int)
     for p in papers:
         papers_emitted[p["intended"]] += 1
 
-    lines = [f"calibration: {len(papers)} flags across {len(pools)} intended patterns  ("
-             + ", ".join(f"{label}x{papers_emitted[label]}" for label in pools) + ")"]
+    lines = [f"calibration [{name}]: {len(papers)} flags across {len(labels)} intended "
+             f"patterns  (" + ", ".join(f"{l}x{papers_emitted[l]}" for l in labels) + ")"]
 
-    conn, run_id, _ = H.build_db(CALIB_DB, spec.profile)
+    conn, run_id, _ = H.build_db(CALIB_DB, SC.PROFILE)
     flag_intended = {}
     try:
         H.add_round_flags(conn, run_id, papers, flag_intended)
         n_flags, _candidates, summary, cost, _ = H.run_round(
-            conn, ctx.client, spec.profile, ctx.cluster_model, ctx.consolidate_model,
+            conn, ctx.client, SC.PROFILE, ctx.cluster_model, ctx.consolidate_model,
             ctx.cluster_prompt, ctx.consolidate_prompt, use_cache=ctx.use_cache)
         pp = H.pattern_intended(conn, flag_intended)
     finally:
@@ -73,15 +100,15 @@ def run(ctx):
 
     stats = coverage_by_intended_pattern(pp, papers_emitted)
     checks, recovered = [], set()
-    for label in pools:
+    for label in labels:
         recovered_as, coverage, purity = stats.get(label, (None, 0.0, 0.0))
         if recovered_as is None:
-            checks.append((False, f"calibration: intended pattern {label} recovered as one pattern",
+            checks.append((False, f"calibration [{name}]: {label} recovered as one pattern",
                            "MISSING -- no pattern holds it"))
             continue
         recovered.add(recovered_as)
         checks.append((coverage >= MIN_COVERAGE and purity >= MIN_PURITY,
-                       f"calibration: intended pattern {label} recovered as one pattern",
+                       f"calibration [{name}]: {label} recovered as one pattern",
                        f"coverage {coverage:.2f} (>= {MIN_COVERAGE}), "
                        f"purity {purity:.2f} (>= {MIN_PURITY})"))
 
@@ -89,3 +116,17 @@ def run(ctx):
     lines.append(f"\nintended patterns recovered: {len(recovered)}   "
                  f"extra patterns (one intended pattern split across more than one): {len(extra)}")
     return checks, cost, "\n".join(lines)
+
+
+def run(ctx):
+    """Calibrate BOTH bodies of synthetic papers: the generated pools and the hand-written
+    lifecycle sessions. Two fat sessions rather than one, because the suite has two independent
+    fixtures and only the first was ever checked. Returns (checks, cost, transcript)."""
+    checks, cost, parts = [], 0.0, []
+    for name, source in (("pools", _generated_papers), ("lifecycle", _lifecycle_papers)):
+        papers, labels = source()
+        c, k, text = _calibrate(ctx, name, papers, labels)
+        checks += c
+        cost += k
+        parts.append(text)
+    return checks, cost, "\n\n".join(parts)
