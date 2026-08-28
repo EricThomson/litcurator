@@ -480,32 +480,7 @@ def _record_consolidation(conn, candidates, ordered_flags, analysis_run_id=None)
     summary = {"new": [], "merged": [], "recurred": [], "held": [], "surfaced": [],
                "discarded": [], "skipped": []}
 
-    # THE QUEUE CAP, applied here rather than asked for. The model ranks; code cuts.
-    #
-    # Instructing it did not work: two January dry runs put TEN patterns in the queue against a
-    # stated cap of eight, at exactly ten both times. Asking one forced tool call to hold a
-    # running total across output it has not finished emitting is a poor shape for a generator,
-    # and the instruction sat where positioning is worst. Ranking is something it CAN do while
-    # emitting, so the tool asks for a rank and the arithmetic happens here -- the same division
-    # as computed_sign, where the model judges and code owns what is computable.
-    #
-    # Only `new` candidates are capped, because only they add a card to the queue: a merge into
-    # an open pattern lands on one already there. Overflow is DEMOTED to hold, never dropped --
-    # it keeps its row, its provenance and its place in the Held tab, and returns next round.
-    # The model's own word is preserved beside it so a demotion is legible in the report and a
-    # model that ranks badly is visible rather than silently corrected.
-    wants_queue = [c for c in candidates
-                   if c.get("choice") == "new" and (c.get("priority") or "act_now") != "hold"]
-    if len(wants_queue) > MAX_ACT_NOW:
-        ranked = sorted(
-            enumerate(wants_queue),
-            key=lambda ic: (ic[1]["rank"] if isinstance(ic[1].get("rank"), int) else 10 ** 6,
-                            ic[0]))
-        for _pos, c in ranked[MAX_ACT_NOW:]:
-            c["priority_asked"] = c.get("priority") or "act_now"
-            c["priority"] = "hold"
-            c["rationale"] = ((c.get("rationale") or "").rstrip()
-                              + f" [demoted: over the {MAX_ACT_NOW}-pattern queue cap]").strip()
+    _apply_queue_cap(candidates)
 
     def surface_of(c):
         """act_now | hold -- the ONLY field deciding whether the user is shown this pattern.
@@ -730,6 +705,42 @@ def _looks_like_pattern_id(value):
     return len(v) == 32 and all(ch in "0123456789abcdef" for ch in v.lower())
 
 
+def _apply_queue_cap(candidates):
+    """Demote the act_now overflow to hold, by the model's own RANK. Mutates in place.
+
+    THE MODEL RANKS, CODE CUTS. Instructing the limit did not work: two January dry runs put ten
+    patterns in the queue against a stated cap of eight, at exactly ten both times. Asking one
+    forced tool call to hold a running total across output it has not finished emitting is a
+    poor shape for a generator. Ranking is something it CAN do while emitting, so the tool asks
+    for a rank and the arithmetic happens here -- the same division as computed_sign, where the
+    model judges and code owns what is computable.
+
+    CALLED FROM BOTH PATHS, which is the point of it living out here. It used to sit inside
+    _record_consolidation, so a DRY RUN -- the mode whose entire purpose is previewing what
+    would happen -- was the one mode the cap never applied in, and its report showed twelve
+    act_now patterns that a real run would have cut to eight. A preview that does not preview
+    is worse than none.
+
+    Only `new` candidates are capped: only they add a card to the queue, since a merge lands on
+    one already there. A model `hold` is never overridden -- this is a ceiling, not a quota, so
+    it demotes and never promotes. Overflow keeps its row, its provenance and its place in the
+    Held tab, and returns next round. The model's own word is preserved beside it so a demotion
+    is legible rather than a silent correction, and idempotent: re-running finds the demoted
+    ones already held and does nothing."""
+    wants_queue = [c for c in candidates
+                   if c.get("choice") == "new" and (c.get("priority") or "act_now") != "hold"]
+    if len(wants_queue) <= MAX_ACT_NOW:
+        return
+    ranked = sorted(
+        enumerate(wants_queue),
+        key=lambda ic: (ic[1]["rank"] if isinstance(ic[1].get("rank"), int) else 10 ** 6, ic[0]))
+    for _pos, c in ranked[MAX_ACT_NOW:]:
+        c["priority_asked"] = c.get("priority") or "act_now"
+        c["priority"] = "hold"
+        c["rationale"] = ((c.get("rationale") or "").rstrip()
+                          + f" [demoted: over the {MAX_ACT_NOW}-pattern queue cap]").strip()
+
+
 def _format_consolidation_md(candidates):
     """Render the consolidate decisions as a readable markdown list -- ALL choices,
     holds included (transparency, not a discard sink)."""
@@ -742,8 +753,12 @@ def _format_consolidation_md(candidates):
             head += f" -- {c['name']}"
         if c.get("direction"):
             head += f" ({c['direction']})"
+        if isinstance(c.get("rank"), int):
+            head += f" #{c['rank']}"
         if c.get("priority"):
             head += f" [{c['priority']}]"
+            if c.get("priority_asked") and c["priority_asked"] != c["priority"]:
+                head += f" (asked {c['priority_asked']})"
         if c.get("existing_pattern_id"):
             # A REAL id is truncated for readability; anything else is shown WHOLE and marked.
             # It used to truncate unconditionally, which is fine for a 32-char uuid and actively
@@ -826,6 +841,9 @@ def suggest_edits(start=None, end=None,
         candidates, cost2 = run_consolidate_step(client, clusters, seed_text, existing_block,
                                                consolidate_model, prompt=consolidate_prompt)
         total = cost1 + cost2
+        # BEFORE the persist branch, so the dry-run report previews the real outcome. Recording
+        # calls it again; it is idempotent.
+        _apply_queue_cap(candidates)
 
         # Everything below has already been PAID FOR, and the report is the only place some
         # of it ever lands: the raw cluster text, and every `hold` (a held candidate touches
