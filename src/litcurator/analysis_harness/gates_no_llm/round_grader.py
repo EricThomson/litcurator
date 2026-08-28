@@ -68,12 +68,13 @@ def _close(conn):
     M.scratch_db_path("round_grader").unlink(missing_ok=True)
 
 
-def _grade(conn, expect, flag_intended, pattern_for, new_ids=(), summary=None, open_before=0):
+def _grade(conn, expect, flag_intended, pattern_for, new_ids=(), summary=None, open_before=0,
+           candidates=(), memory_empty=False):
     """Run check_round and return {label_prefix: (ok, detail)} keyed on the part of each check
     label before the first colon, which is the property being checked."""
     summary = summary or {"new": [], "merged": [], "recurred": [], "held": [], "skipped": []}
-    results = G.check_round(conn, expect, summary, [], flag_intended,
-                            set(new_ids), open_before, pattern_for)
+    results = G.check_round(conn, expect, summary, list(candidates), flag_intended,
+                            set(new_ids), open_before, pattern_for, memory_empty=memory_empty)
     return {label.split(":", 1)[0]: (ok, detail) for ok, label, detail in results}
 
 
@@ -423,6 +424,37 @@ def test_held_is_ranked_by_evidence_weight_not_head_count():
     print("memory block: held patterns are shown, with their ids and papers")
 
 
+def test_merge_on_an_empty_memory_is_caught():
+    """With nothing recorded, every existing_pattern_id is invented -- so a merge is always
+    wrong and needs no fixture judgement.
+
+    The record step RECOVERS these (the bogus target becomes a new pattern rather than being
+    lost, which record_stage pins), so nothing is dropped and nothing fails loudly. That is
+    precisely why it needs its own check: the machinery handles it correctly and silently, and
+    the only symptom is a duplicate card the model told you it was trying to avoid.
+
+    Observed on real flags 2026-08-27, in the January dry run: empty memory, and the model
+    emitted merge_into_open against an invented slug while explaining that it was folding two
+    of THIS round's candidates together."""
+    conn, flag_intended, _by = _world({"A": 2})
+    clean = [{"choice": "new", "name": "a gap", "paper_numbers": [1], "rationale": "r"}]
+    bogus = clean + [{"choice": "merge_into_open", "existing_pattern_id": "human-only-studies",
+                      "paper_numbers": [2], "rationale": "same as the one above"}]
+
+    got = _grade(conn, {}, flag_intended, {}, candidates=bogus, memory_empty=True)
+    assert got["empty memory"][0] is False, got["empty memory"]
+    assert "human-only-studies" in got["empty memory"][1], got["empty memory"][1]
+
+    got = _grade(conn, {}, flag_intended, {}, candidates=clean, memory_empty=True)
+    assert got["empty memory"][0] is True, got["empty memory"]
+
+    # And it must NOT fire once there is a memory: merging is the correct move then.
+    got = _grade(conn, {}, flag_intended, {}, candidates=bogus, memory_empty=False)
+    assert "empty memory" not in got, got
+    _close(conn)
+    print("empty memory: a merge with nothing to merge into is caught, and only then")
+
+
 CHECKS = [
     test_every_matching_pattern_is_decided,
     test_unresolved_decision_is_recorded,
@@ -431,6 +463,7 @@ CHECKS = [
     test_purity_applies_to_every_new_pattern,
     test_scripted_human_can_decide_a_held_pattern,
     test_memory_block_includes_held_patterns,
+    test_merge_on_an_empty_memory_is_caught,
     test_held_is_ranked_by_evidence_weight_not_head_count,
     test_recurrence_is_any_of,
     test_merged_into_existing_is_any_of,

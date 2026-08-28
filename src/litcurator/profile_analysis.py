@@ -660,6 +660,13 @@ def _record_consolidation(conn, candidates, ordered_flags, analysis_run_id=None)
     return summary
 
 
+def _looks_like_pattern_id(value):
+    """A real pattern id is a 32-char hex uuid. Anything else the model put in that field is a
+    hallucination, and the report must show it WHOLE."""
+    v = (value or "").strip()
+    return len(v) == 32 and all(ch in "0123456789abcdef" for ch in v.lower())
+
+
 def _format_consolidation_md(candidates):
     """Render the consolidate decisions as a readable markdown list -- ALL choices,
     holds included (transparency, not a discard sink)."""
@@ -675,7 +682,15 @@ def _format_consolidation_md(candidates):
         if c.get("priority"):
             head += f" [{c['priority']}]"
         if c.get("existing_pattern_id"):
-            head += f"  -> {c['existing_pattern_id'][:12]}"
+            # A REAL id is truncated for readability; anything else is shown WHOLE and marked.
+            # It used to truncate unconditionally, which is fine for a 32-char uuid and actively
+            # misleading for an invented target: the 2026-08-27 dry run rendered a hallucinated
+            # value as "human-only-s", which reads like a real id prefix and hid what the model
+            # actually emitted. The report is the only record of a dry run, so it has to show
+            # the evidence rather than a tidy-looking slice of it.
+            eid = c["existing_pattern_id"]
+            head += (f"  -> {eid[:12]}" if _looks_like_pattern_id(eid)
+                     else f"  -> NOT A PATTERN ID: {eid!r}")
         lines.append(head)
         if c.get("suggested_edit"):
             lines.append(f"    - edit: {c['suggested_edit']}")

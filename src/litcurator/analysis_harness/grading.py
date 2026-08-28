@@ -34,11 +34,13 @@ def _decided(pattern_for, label):
 
 
 def check_round(conn, expect, summary, candidates, flag_intended, new_ids,
-                open_before, pattern_for):
-    """Grade ONE session. `candidates` is the raw consolidate output; every caller passes it
-    and no check reads it right now -- the act_now check that did was removed as untestable
-    against this fixture, and anything about what the model SAID rather than what got recorded
-    would need it back."""
+                open_before, pattern_for, memory_empty=False):
+    """Grade ONE session. `candidates` is the raw consolidate output -- read now by the
+    empty-memory check below, which grades what the model SAID rather than what got recorded.
+
+    `memory_empty` says the model was shown no pattern memory at all this round. It is not a
+    fixture key: it is a fact about the input, so the caller supplies it and the check applies
+    automatically wherever it is true."""
     pp = pattern_intended(conn, flag_intended)
     dominant_by_pattern = {pid: dominant_intended(c) for pid, c in pp.items()}   # produced pattern -> its intended pattern
     merged_ids = {c["id"] for c in summary["merged"]}
@@ -86,6 +88,27 @@ def check_round(conn, expect, summary, candidates, flag_intended, new_ids,
         chk(f"purity: every new pattern >= {expect['min_purity']}",
             worst >= expect["min_purity"],
             f"worst {worst:.2f} over {len(new_ids)} pattern(s)")
+
+    # --- NOTHING TO MERGE INTO: a merge on an empty memory is always wrong ---------------
+    # Not a fixture expectation, because it needs no judgement -- with no patterns recorded,
+    # every existing_pattern_id is invented. The record step already RECOVERS these (the bogus
+    # target is minted as a new pattern rather than lost, which record_stage pins), so nothing
+    # is dropped and nothing failed loudly; that is exactly why it needed a check of its own.
+    #
+    # Seen on real flags first, 2026-08-27: the January dry run had an empty memory and the
+    # model still emitted merge_into_open against an invented slug, its rationale saying it was
+    # folding two candidates of THIS round together. That is a step-1 collapse, which has no
+    # representation in the output -- you express it by emitting one entry and staying silent
+    # about the other -- so a model wanting to say it reaches for the value that looks like
+    # merging. Worth remembering when reading a red here: the cause may be step 1, not step 2.
+    if memory_empty:
+        bad = [c for c in (candidates or [])
+               if str(c.get("choice", "")).startswith("merge_into")]
+        chk("empty memory: no candidate merged into a pattern that does not exist",
+            not bad,
+            f"{len(bad)} merge(s): "
+            + "; ".join(f"{c.get('choice')} -> {c.get('existing_pattern_id')!r}" for c in bad)
+            if bad else "no merges proposed")
 
     if "new_patterns" in expect:
         lo, hi = expect["new_patterns"]["min"], expect["new_patterns"]["max"]

@@ -109,7 +109,8 @@ def run_scenario(spec, rng, client, cluster_model, consolidate_model, cluster_pr
                             "active_count": len(active_now), "held_count": len(held_ids)})
 
             per_round += check_round(conn, rnd["expect"], summary, candidates, flag_intended,
-                                     new_ids, open_before, pattern_for)
+                                     new_ids, open_before, pattern_for,
+                                     memory_empty=not (memory_shown or "").strip())
             log(f"  session {s}: {n_flags} unattached -> {len(summary['new'])} new, "
                 f"{len(summary['merged'])} merged, {len(summary['held'])} held, "
                 f"{len(summary['surfaced'])} surfaced, {len(summary['discarded'])} discarded")
