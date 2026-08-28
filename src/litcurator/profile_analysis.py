@@ -388,7 +388,10 @@ _CONSOLIDATE_TOOL = {
                         "rationale": {"type": "string",
                             "description": "one line: why this choice/priority"},
                     },
-                    "required": ["choice", "paper_numbers", "rationale"],
+                    # rank is REQUIRED. Left optional it would be silently omissible, and the cap
+                    # would quietly degrade from "cut by the model's judgment" to "cut in
+                    # cluster's arrival order" -- a fallback that looks like it works.
+                    "required": ["choice", "rank", "paper_numbers", "rationale"],
                 },
             }
         },
