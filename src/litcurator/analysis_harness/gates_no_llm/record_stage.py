@@ -321,6 +321,51 @@ def main():
                              db_interface.get_flags(conn, exclude_attached=True)}
     print("discard: records nothing and leaves its flags in the pool")
 
+    # --- 9. THE QUEUE CAP: the model ranks, code cuts, nothing is dropped ------------------
+    # Instructing this failed twice on real flags -- ten patterns queued against a stated cap of
+    # eight, at exactly ten both times -- so it moved into code. Overflow is DEMOTED, never lost.
+    for t in ("pattern_flags", "pattern_events", "patterns"):
+        conn.execute(f"DELETE FROM {t}")
+    conn.commit()
+    n_over = config.MAX_ACT_NOW + 4
+    # Ranks handed over SHUFFLED (worst first), so a cap that merely truncated the list in
+    # arrival order would look correct by accident.
+    cands = [{"choice": "new", "name": f"p{i}", "direction": "under", "priority": "act_now",
+              "rank": n_over - i, "paper_numbers": [], "rationale": "r"} for i in range(n_over)]
+    s9 = profile_analysis._record_consolidation(conn, cands, [])
+    assert len(s9["new"]) == config.MAX_ACT_NOW, len(s9["new"])
+    assert len(s9["held"]) == n_over - config.MAX_ACT_NOW, len(s9["held"])
+    kept = sorted(c["rank"] for c in cands if c["priority"] == "act_now")
+    assert kept == list(range(1, config.MAX_ACT_NOW + 1)), kept
+    assert all(c.get("priority_asked") == "act_now" for c in cands if c["priority"] == "hold"), \
+        "a demotion must keep the model's own word beside it"
+    assert len(db_interface.get_patterns(conn)) == n_over, "nothing may be DROPPED, only demoted"
+    print(f"cap: {n_over} wanted, {config.MAX_ACT_NOW} surfaced by rank, "
+          f"{n_over - config.MAX_ACT_NOW} demoted and still recorded")
+
+    for t in ("pattern_flags", "pattern_events", "patterns"):
+        conn.execute(f"DELETE FROM {t}")
+    conn.commit()
+    few = [{"choice": "new", "name": f"q{i}", "direction": "under", "priority": "act_now",
+            "rank": i + 1, "paper_numbers": [], "rationale": "r"} for i in range(3)]
+    s9b = profile_analysis._record_consolidation(conn, few, [])
+    assert len(s9b["new"]) == 3 and not s9b["held"], s9b
+    print("cap: inert when fewer patterns want the queue than the cap allows")
+
+    # --- 10. AN EMPTY MEMORY CANNOT OFFER A MERGE -----------------------------------------
+    # Structural, not instructed: with zero patterns every existing_pattern_id is invented, so
+    # the values come out of the enum and forced tool-use makes them unemittable. Both January
+    # dry runs produced exactly one spurious merge while the prompt already forbade it.
+    def _enum(tool):
+        return (tool["input_schema"]["properties"]["candidates"]["items"]
+                ["properties"]["choice"]["enum"])
+
+    assert _enum(profile_analysis._consolidate_tool(has_memory=False)) == ["new", "discard"]
+    full = _enum(profile_analysis._consolidate_tool(has_memory=True))
+    assert "merge_into_open" in full and "merge_into_closed" in full, full
+    assert _enum(profile_analysis._CONSOLIDATE_TOOL) == full, "the constant must not be mutated"
+    print("empty memory: merge values are removed from the enum, and the constant is untouched")
+
     conn.close()
     SCRATCH.unlink(missing_ok=True)
     print("\nALL CHECKS PASSED")

@@ -35,6 +35,7 @@ profile from profile_interface. Streams the recall to console and saves a dated
 markdown report to ~/.litcurator/suggestions/. See starry-brewing-horizon.md.
 """
 
+import copy
 import os
 import sys
 from datetime import datetime
@@ -43,7 +44,7 @@ import anthropic
 from dotenv import load_dotenv
 
 from litcurator import analysis_prompt_interface, db_interface, profile_interface
-from litcurator.config import DATA_DIR
+from litcurator.config import DATA_DIR, MAX_ACT_NOW
 
 load_dotenv()
 
@@ -299,6 +300,33 @@ def _stream(client, model, system, user_msg, max_tokens):
     return "".join(parts), _cost(model, final.usage)
 
 
+def _consolidate_tool(has_memory):
+    """The output contract, narrowed to what is POSSIBLE this round.
+
+    With no pattern memory there is nothing to merge into, so `merge_into_open` and
+    `merge_into_closed` come out of the enum and forced tool-use makes them unemittable. That
+    is not a preference: with zero recorded patterns, every existing_pattern_id is necessarily
+    invented.
+
+    STRUCTURAL RATHER THAN INSTRUCTED, deliberately. Both January dry runs produced exactly one
+    spurious merge against an empty memory -- in the second, the target was the NAME of a
+    pattern minted in the same round. The prompt already said there was nothing to merge into,
+    so the instruction was present and ignored; the record step recovered them, so nothing was
+    lost and nothing failed loudly. Narrowing the enum removes the possibility instead of
+    restating the rule.
+
+    Invisible from the second round onward, when a memory exists."""
+    if has_memory:
+        return _CONSOLIDATE_TOOL
+    tool = copy.deepcopy(_CONSOLIDATE_TOOL)
+    props = tool["input_schema"]["properties"]["candidates"]["items"]["properties"]
+    props["choice"]["enum"] = [c for c in props["choice"]["enum"]
+                               if not c.startswith("merge_into")]
+    props["existing_pattern_id"]["description"] = (
+        "unused this round -- there is no pattern memory yet, so there is nothing to merge into")
+    return tool
+
+
 def run_cluster_step(client, papers_block, n_flags, seed_text, model, prompt=None):
     """`prompt` is the CLUSTER section of the active analysis prompt, passed in by the caller.
     Taking it as an argument rather than reading a module global is what lets the harness and
@@ -347,6 +375,10 @@ _CONSOLIDATE_TOOL = {
                         # recorded either way. It replaced an act_now/defer pair where both
                         # values produced an identical screen -- nothing in the workbench read
                         # the field at all, so it was a label with no consumer.
+                        "rank": {"type": "integer",
+                            "description": "1 = the pattern whose fix would improve the judge "
+                                           "most. Rank ALL candidates against each other, no "
+                                           "ties; only the top few are shown to the user"},
                         "priority": {"type": "string", "enum": ["act_now", "hold"],
                             "description": "act_now shows it in the user's queue this round; "
                                            "hold records it and keeps it out until later "
@@ -396,6 +428,7 @@ def run_consolidate_step(client, clusters_text, seed_text, existing_block, model
     from disk, the harness passes a draft. See run_cluster_step."""
     prompt = _require_prompt(prompt, "consolidate")
     memory = f"{existing_block}\n\n---\n\n" if existing_block else ""
+    tool = _consolidate_tool(has_memory=bool(memory))
     user_msg = (
         f"## Candidate patterns (with [N] paper numbers)\n\n{clusters_text}\n\n---\n\n"
         f"{memory}"
@@ -411,7 +444,7 @@ def run_consolidate_step(client, clusters_text, seed_text, existing_block, model
         max_tokens=4000,
         system=prompt,
         messages=[{"role": "user", "content": user_msg}],
-        tools=[_CONSOLIDATE_TOOL],
+        tools=[tool],
         tool_choice={"type": "tool", "name": "record_consolidation"},
     )
     candidates = []
@@ -443,6 +476,33 @@ def _record_consolidation(conn, candidates, ordered_flags, analysis_run_id=None)
     # pattern, which is the only outcome that records nothing.
     summary = {"new": [], "merged": [], "recurred": [], "held": [], "surfaced": [],
                "discarded": [], "skipped": []}
+
+    # THE QUEUE CAP, applied here rather than asked for. The model ranks; code cuts.
+    #
+    # Instructing it did not work: two January dry runs put TEN patterns in the queue against a
+    # stated cap of eight, at exactly ten both times. Asking one forced tool call to hold a
+    # running total across output it has not finished emitting is a poor shape for a generator,
+    # and the instruction sat where positioning is worst. Ranking is something it CAN do while
+    # emitting, so the tool asks for a rank and the arithmetic happens here -- the same division
+    # as computed_sign, where the model judges and code owns what is computable.
+    #
+    # Only `new` candidates are capped, because only they add a card to the queue: a merge into
+    # an open pattern lands on one already there. Overflow is DEMOTED to hold, never dropped --
+    # it keeps its row, its provenance and its place in the Held tab, and returns next round.
+    # The model's own word is preserved beside it so a demotion is legible in the report and a
+    # model that ranks badly is visible rather than silently corrected.
+    wants_queue = [c for c in candidates
+                   if c.get("choice") == "new" and (c.get("priority") or "act_now") != "hold"]
+    if len(wants_queue) > MAX_ACT_NOW:
+        ranked = sorted(
+            enumerate(wants_queue),
+            key=lambda ic: (ic[1]["rank"] if isinstance(ic[1].get("rank"), int) else 10 ** 6,
+                            ic[0]))
+        for _pos, c in ranked[MAX_ACT_NOW:]:
+            c["priority_asked"] = c.get("priority") or "act_now"
+            c["priority"] = "hold"
+            c["rationale"] = ((c.get("rationale") or "").rstrip()
+                              + f" [demoted: over the {MAX_ACT_NOW}-pattern queue cap]").strip()
 
     def surface_of(c):
         """act_now | hold -- the ONLY field deciding whether the user is shown this pattern.

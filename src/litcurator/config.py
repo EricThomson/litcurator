@@ -234,3 +234,17 @@ at this stage.
 
 Return a JSON object with two fields: "score" (a number between 0.0 and 1.0) and "reasoning" (one sentence explaining your score).
 """.strip()
+
+# How many patterns reach the workbench queue in one round. The overflow is HELD, not
+# discarded: it keeps its row and provenance, shows in the workbench's Held tab, and returns
+# next round. So this is a queue length, not an evidence filter -- the distinction that makes
+# it different in kind from the DELTA_THRESHOLD deleted 2026-08-07, which reshaped what the
+# model was shown before anyone saw it.
+#
+# It is enforced in code because instructing it did not work: two January dry runs put ten
+# patterns in the queue against a stated cap of eight, at exactly ten both times. Asking one
+# forced tool call to hold a running total across output it has not finished generating is a
+# poor shape for a generator. So the model supplies a RANK -- a judgment it can make while
+# emitting -- and code applies the cutoff. Same division as `computed_sign`: the model judges,
+# the arithmetic is ours.
+MAX_ACT_NOW = 8
