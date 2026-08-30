@@ -455,6 +455,34 @@ def test_merge_on_an_empty_memory_is_caught():
     print("empty memory: a merge with nothing to merge into is caught, and only then")
 
 
+def test_queue_is_ordered_by_the_models_rank():
+    """The workbench queue shows the round in the order consolidate RANKED it.
+
+    Before 2026-08-30 get_active_patterns ordered by most-recent decision event, so whatever
+    you last clicked jumped to the top and the model's ordering was thrown away entirely --
+    `rank` was consumed by the queue cap and never stored. Sorting by a magnitude proxy was the
+    obvious alternative and is wrong for this project: magnitude is the criterion the ranking
+    prompt was rewritten to STOP using, since the point is to surface easy generalizable fixes
+    ahead of large semantically tricky ones.
+
+    Unranked patterns sort last rather than first, so anything created outside a consolidation
+    cannot displace a ranked queue."""
+    conn, flag_intended, by_label = _world({"A": 4})
+    made = {}
+    for name, rank in (("third", 3), ("first", 1), ("unranked", None), ("second", 2)):
+        made[name] = DB.create_pattern(conn, name, "under", rank=rank,
+                                       flag_ids=by_label["A"][:1])
+    order = [p["name"] for p in DB.get_active_patterns(conn)]
+    assert order == ["first", "second", "third", "unranked"], order
+
+    # A later decision must NOT reorder the queue: clicking something is not a ranking.
+    DB.add_pattern_event(conn, made["third"], "carried", note="touched last")
+    order = [p["name"] for p in DB.get_active_patterns(conn)]
+    assert order == ["first", "second", "third", "unranked"],         f"a fresh event reordered the queue -- recency is back in charge: {order}"
+    _close(conn)
+    print("queue: ordered by the model's rank, unranked last, and a click does not reorder it")
+
+
 CHECKS = [
     test_every_matching_pattern_is_decided,
     test_unresolved_decision_is_recorded,
@@ -463,6 +491,7 @@ CHECKS = [
     test_purity_applies_to_every_new_pattern,
     test_scripted_human_can_decide_a_held_pattern,
     test_memory_block_includes_held_patterns,
+    test_queue_is_ordered_by_the_models_rank,
     test_merge_on_an_empty_memory_is_caught,
     test_held_is_ranked_by_evidence_weight_not_head_count,
     test_recurrence_is_any_of,

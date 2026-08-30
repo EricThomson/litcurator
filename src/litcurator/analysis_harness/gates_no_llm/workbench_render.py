@@ -15,12 +15,25 @@ from litcurator import config, db_interface
 SCRATCH = Path(config.DATA_DIR) / "_scratch_wb.db"
 
 
+def _wipe_patterns(conn):
+    """Empty the pattern tables in the SCRATCH copy. These gates copy the live database for its
+    real articles and then assert on counts they create themselves, so they only worked while
+    the live pattern tables happened to be empty. The first real profile_analysis run put 15
+    patterns in them (2026-08-29) and both gates went red on their own fixtures. Predicted in
+    CLAUDE.md: "record_stage, pattern_schema and workbench_render must be made hermetic first."
+    record_stage already wiped; these two did not."""
+    for t in ("pattern_flags", "pattern_events", "patterns"):
+        conn.execute(f"DELETE FROM {t}")
+    conn.commit()
+
+
 def main():
     shutil.copy(config.LITCURATOR_DB, SCRATCH)
     db_interface.LITCURATOR_DB = SCRATCH   # reroute get_connection's default
 
     # seed a flag + pattern so the workbench renders a real card
     conn = db_interface.get_connection(SCRATCH)
+    _wipe_patterns(conn)
     pmid = conn.execute("SELECT pmid FROM articles LIMIT 1").fetchone()[0]
     pid = db_interface.get_or_create_profile(conn, "wb test profile")
     run_id = db_interface.find_or_create_scoring_run(
@@ -56,7 +69,7 @@ def main():
         # walk the component tree collecting dict ids
         ids = _collect_ids(children)
         for t in ["pat-name", "pat-dir", "pat-desc", "pat-sugg", "pat-reject-note",
-                  "pat-save", "pat-discuss", "pat-carry", "pat-incorporate", "pat-reject",
+                  "pat-save", "pat-discuss", "pat-hold", "pat-incorporate", "pat-reject",
                   "pat-card"]:
             assert any(i.get("type") == t and i.get("pid") == pat for i in ids), f"missing {t}"
         print(f"pattern card OK: {len([i for i in ids if i.get('pid')==pat])} pattern-matched ids for pid {pat[:8]}")

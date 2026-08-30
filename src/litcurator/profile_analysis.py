@@ -37,6 +37,8 @@ markdown report to ~/.litcurator/suggestions/. See starry-brewing-horizon.md.
 
 import copy
 import os
+import random
+import re
 import sys
 from datetime import datetime
 
@@ -327,6 +329,37 @@ def _consolidate_tool(has_memory):
     return tool
 
 
+_CANDIDATE_START = re.compile(r"^[ 	]*(?:\*\*)?NAME[ 	]*:", re.M)
+
+
+def shuffle_cluster_candidates(text, seed):
+    """Reorder the candidate blocks cluster produced. Returns (text, order), where order[i] is
+    the ORIGINAL 1-based position of the candidate now presented i+1th. order is [] if the text
+    could not be split, in which case the text comes back untouched.
+
+    A DIAGNOSTIC, not machinery, and off unless --shuffle-candidates is passed.
+
+    WHAT IT IS FOR. The consolidate step supplies a `rank`, and on the first real run that rank
+    correlated with the order cluster happened to present its candidates in at rho = 0.79 --
+    seven of cluster's first eight got ranks 1-6 and 8, seven of its last eight got 9-14. The
+    pattern with the MOST evidence in the set (3 papers) came out 13th, because cluster
+    mentioned it last. Nothing asks cluster to order by importance, so that sequence is
+    arbitrary, and a rank anchored to it is not a judgment.
+
+    Shuffling separates two explanations that look identical in one run: consolidate ANCHORS on
+    presentation order (rank will follow the shuffle), or it ranks genuinely and the first run
+    was coincidence (rank will hold roughly steady against the shuffle). One dry run either way,
+    and it decides whether ranking has to move to a step of its own."""
+    marks = [m.start() for m in _CANDIDATE_START.finditer(text)]
+    if len(marks) < 2:
+        return text, []
+    preamble = text[:marks[0]]
+    blocks = [text[a:b] for a, b in zip(marks, marks[1:] + [len(text)])]
+    order = list(range(len(blocks)))
+    random.Random(seed).shuffle(order)
+    return preamble + "".join(blocks[i] for i in order), [i + 1 for i in order]
+
+
 def run_cluster_step(client, papers_block, n_flags, seed_text, model, prompt=None):
     """`prompt` is the CLUSTER section of the active analysis prompt, passed in by the caller.
     Taking it as an argument rather than reading a module global is what lets the harness and
@@ -610,7 +643,9 @@ def _record_consolidation(conn, candidates, ordered_flags, analysis_run_id=None)
             conn, name=(_fallback_name(c) or "(unnamed pattern)"),
             direction=direction,
             description=c.get("description"), suggested_edit=c.get("suggested_edit"),
-            flag_ids=flag_ids, note=note or None, analysis_run_id=analysis_run_id)
+            flag_ids=flag_ids, note=note or None, analysis_run_id=analysis_run_id,
+            # Kept so the workbench can show the queue in the order the model ranked it.
+            rank=c["rank"] if isinstance(c.get("rank"), int) else None)
 
     def _record_new(c, flag_ids, extra_note="", recovered=False):
         direction, coerced, disagreement = _resolved_direction(c)
@@ -793,7 +828,7 @@ def _summary_line(summary):
 
 def suggest_edits(start=None, end=None,
                   cluster_model=DEFAULT_CLUSTER_MODEL, consolidate_model=DEFAULT_CONSOLIDATE_MODEL,
-                  persist=True):
+                  persist=True, shuffle_seed=None):
     """Cluster the UNATTACHED (not-yet-patterned) flags in [start, end], consolidate each
     candidate against the pattern memory, and RECORD every real one (new / merge into an
     open pattern / recurs against a closed pattern); a genuine one-paper hold is kept unattached, not recorded.
@@ -838,7 +873,15 @@ def suggest_edits(start=None, end=None,
         print(f"\n[step 1 cost: ${cost1:.4f}]\n")
 
         print("=== Step 2: consolidate (choice) ===")
-        candidates, cost2 = run_consolidate_step(client, clusters, seed_text, existing_block,
+        # DIAGNOSTIC. Reorders the candidate blocks so `rank` can be correlated against the
+        # order they were PRESENTED in rather than the order cluster wrote them. See
+        # shuffle_cluster_candidates.
+        shown, shuffle_order = ((clusters, []) if shuffle_seed is None
+                                else shuffle_cluster_candidates(clusters, shuffle_seed))
+        if shuffle_order:
+            print(f"[candidates shuffled, seed {shuffle_seed}: presentation order = "
+                  f"{shuffle_order}]")
+        candidates, cost2 = run_consolidate_step(client, shown, seed_text, existing_block,
                                                consolidate_model, prompt=consolidate_prompt)
         total = cost1 + cost2
         # BEFORE the persist branch, so the dry-run report previews the real outcome. Recording
@@ -893,8 +936,9 @@ def suggest_edits(start=None, end=None,
                       f"|  total cost: ${total:.4f}]")
                 recorded = True
         finally:
-            out = _save_report(start, end, n, rng, total, clusters, candidates,
-                               cluster_model, consolidate_model, persist, summary, recorded)
+            out = _save_report(start, end, n, rng, total, shown, candidates,
+                               cluster_model, consolidate_model, persist, summary, recorded,
+                               shuffle_seed, shuffle_order)
     finally:
         conn.close()
 
@@ -903,7 +947,8 @@ def suggest_edits(start=None, end=None,
 
 
 def _save_report(start, end, n, rng, total, clusters, candidates,
-                 cluster_model, consolidate_model, persist, summary, recorded):
+                 cluster_model, consolidate_model, persist, summary, recorded,
+                 shuffle_seed=None, shuffle_order=()):
     """Write the suggestions markdown and return its path. Called from a finally, so it must
     tolerate a run that died partway: `summary` is None and `recorded` False in that case."""
     SUGGESTIONS_DIR.mkdir(parents=True, exist_ok=True)
@@ -936,7 +981,11 @@ def _save_report(start, end, n, rng, total, clusters, candidates,
         f"# Pattern suggestions\n\n"
         f"Unattached flags: {n}  |  range: {rng}  |  cluster: {cluster_model}  "
         f"consolidate: {consolidate_model}  |  cost: ${total:.4f}  |  {tail}\n\n"
-        f"---\n\n## Raw clusters (recall)\n\n{clusters}\n\n"
+        + (f"CANDIDATES SHUFFLED (seed {shuffle_seed}). The clusters below are in the order "
+           f"consolidate SAW them; their original positions in cluster's own output were "
+           f"{list(shuffle_order)}. Correlate `rank` against BOTH orders to tell anchoring "
+           f"from judgement.\n\n" if shuffle_order else "")
+        + f"---\n\n## Raw clusters (recall)\n\n{clusters}\n\n"
         f"---\n\n## Consolidation (choices)\n\n{_format_consolidation_md(candidates)}\n",
         encoding="utf-8",
     )

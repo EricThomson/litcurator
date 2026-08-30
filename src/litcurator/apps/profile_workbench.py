@@ -7,7 +7,10 @@ papers behind it. Per pattern you can edit its wording and then decide its fate,
 which is written to the append-only pattern_events log (nothing is ever deleted):
   - Incorporate: you folded it into the profile. Stamps the currently-active
     profile version, drops the pattern off the active list.
-  - Carry: not yet -- keep it open for a later round.
+  - Hold: not yet. Keeps the pattern, its provenance and its event log, takes it
+    off the queue, and returns its flags to the clustering pool so the taste is
+    re-decided next round on the evidence. Shown in the Held tab meanwhile.
+    (Replaced "Carry", which kept the queue slot and made the list grow forever.)
   - Reject (with a reason): not a real gap. Drops off the active list, kept as a
     closed pattern so the suggester will not re-propose it.
 
@@ -110,8 +113,11 @@ def _pattern_card(conn, p, held=False):
             *([dbc.Button("Promote", id={"type": "pat-promote", "pid": pid},
                           color="success", size="sm", className="me-1")]
               if held else
-              [dbc.Button("Carry", id={"type": "pat-carry", "pid": pid},
-                          color="secondary", outline=True, size="sm", className="me-1"),
+              [dbc.Button("Hold", id={"type": "pat-hold", "pid": pid},
+                          color="secondary", outline=True, size="sm",
+                          title="not this round -- keeps the pattern and its evidence, takes it "
+                                "off the queue, and puts its flags back in the clustering pool",
+                          className="me-1"),
                dbc.Button("Incorporate", id={"type": "pat-incorporate", "pid": pid},
                           color="success", size="sm", className="me-1")]),
             dbc.Button("Reject", id={"type": "pat-reject", "pid": pid},
@@ -339,7 +345,7 @@ def cb_refresh_patterns(_n, tab):
     Output("pattern-count", "children", allow_duplicate=True),
     Output("pattern-status", "children"),
     Output("pattern-status", "is_open"),
-    Input({"type": "pat-carry", "pid": ALL}, "n_clicks"),
+    Input({"type": "pat-hold", "pid": ALL}, "n_clicks"),
     Input({"type": "pat-incorporate", "pid": ALL}, "n_clicks"),
     Input({"type": "pat-reject", "pid": ALL}, "n_clicks"),
     Input({"type": "pat-promote", "pid": ALL}, "n_clicks"),
@@ -347,22 +353,35 @@ def cb_refresh_patterns(_n, tab):
     State("pattern-tabs", "value"),
     prevent_initial_call=True,
 )
-def cb_pattern_fate(_carry, _incorp, _reject, _promote, _reject_notes, tab):
+def cb_pattern_fate(_hold, _incorp, _reject, _promote, _reject_notes, tab):
     trig = ctx.triggered_id
-    clicks = (_carry or []) + (_incorp or []) + (_reject or []) + (_promote or [])
+    clicks = (_hold or []) + (_incorp or []) + (_reject or []) + (_promote or [])
     if not trig or not any(c for c in clicks if c):
         return no_update, no_update, no_update, no_update
     pid, typ = trig["pid"], trig["type"]
     conn = db_interface.get_connection()
     try:
-        if typ in ("pat-carry", "pat-promote"):
-            # The SAME event. 'carried' means "open, not decided yet", which is exactly what a
-            # promoted held pattern becomes -- so promotion needs no new event value, and the
-            # log reads created -> held -> carried, which is the story you want to read.
+        if typ == "pat-promote":
+            # 'carried' means "open, not decided yet", which is exactly what a promoted held
+            # pattern becomes -- so promotion needs no new event value, and the log reads
+            # created -> held -> carried, which is the story you want to read.
             db_interface.add_pattern_event(conn, pid, "carried")
-            msg = ("Promoted -- it is on your Active list now."
-                   if typ == "pat-promote" else
-                   "Carried forward -- still open for a later round.")
+            msg = "Promoted -- it is on your Active list now."
+        elif typ == "pat-hold":
+            # REPLACED "Carry" 2026-08-30. Carry wrote `carried`, an ACTIVE status, so a
+            # carried pattern kept its queue slot until incorporated or rejected -- and the
+            # queue cap only bounds NEW patterns, so carried ones accumulated uncapped round
+            # after round. That is the treadmill this project exists to avoid.
+            #
+            # From the human's side there was never a difference: carry and hold both mean "not
+            # writing this into my profile today". The only difference was that one guaranteed a
+            # queue slot, which removes the decision rather than deferring it. Holding keeps
+            # everything -- row, provenance, event log, its place in the Held tab -- and returns
+            # its flags to the clustering pool, so the taste is re-decided next round on the
+            # evidence rather than by squatting.
+            db_interface.add_pattern_event(conn, pid, "held")
+            msg = ("Held -- off the queue, kept in memory, and its papers go back into the "
+                   "pool for next round.")
         elif typ == "pat-incorporate":
             profile_id = db_interface.get_or_create_profile(
                 conn, profile_interface.read_active_or_empty())

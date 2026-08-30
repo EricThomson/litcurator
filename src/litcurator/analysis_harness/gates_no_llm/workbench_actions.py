@@ -61,7 +61,7 @@ from .. import machinery as M
 SCENARIO_PROFILE = "I follow systems neuroscience: circuits, computation, and behavior."
 ACTIVE_PROFILE = SCENARIO_PROFILE + "\n\nInvertebrate neuroethology counts as systems work."
 
-_ORDER = ("pat-carry", "pat-incorporate", "pat-reject", "pat-promote")
+_ORDER = ("pat-hold", "pat-incorporate", "pat-reject", "pat-promote")
 
 
 class _Ctx:
@@ -179,7 +179,7 @@ def _click_fate(wb, pids, pid, which, reject_notes=None, tab="active"):
                    for p in pids]
     wb.ctx = _Ctx({"type": which, "pid": pid}, [note_states])
     clicks = {t: [1 if (p == pid and t == which) else None for p in pids] for t in _ORDER}
-    return wb.cb_pattern_fate(clicks["pat-carry"], clicks["pat-incorporate"],
+    return wb.cb_pattern_fate(clicks["pat-hold"], clicks["pat-incorporate"],
                               clicks["pat-reject"], clicks["pat-promote"],
                               [notes.get(p) for p in pids], tab)
 
@@ -298,17 +298,35 @@ def test_reject_with_no_reason_stores_null():
         print("reject: a blank reason is stored as NULL, not as an empty string")
 
 
-def test_carry_keeps_the_pattern_open():
-    """Carry means 'not yet', so it must record the decision AND leave the pattern on the
-    open list. Recording nothing loses the fact that it was looked at; closing it loses the
-    pattern."""
+def test_hold_takes_it_off_the_queue_and_keeps_everything():
+    """Hold means 'not yet' -- record the decision, take the queue slot back, lose nothing.
+
+    It REPLACED Carry on 2026-08-30. Carry wrote `carried`, an ACTIVE status, so the pattern
+    kept its slot until incorporated or rejected -- and the queue cap only bounds NEW patterns,
+    so carried ones piled up uncapped round after round. That is the treadmill this project
+    exists to avoid, and from the human's side carry and hold always meant the same thing:
+    not writing this into the profile today.
+
+    Four things must all hold, and the middle three are what stop this being a delete: the
+    event is logged, the pattern and its provenance survive, it is findable in the Held tab,
+    and its flags return to the clustering pool so the taste can be re-decided on evidence."""
     with _world() as (conn, wb, pids):
-        _click_fate(wb, pids, pids[0], "pat-carry")
+        before = {f["flag_id"] for f in DB.get_pattern_provenance(conn, pids[0])}
+        assert before, "fixture: the pattern must own some flags"
+
+        _click_fate(wb, pids, pids[0], "pat-hold")
+
         ev = _events(conn, pids[0])
-        assert [e["event"] for e in ev] == ["created", "carried"], ev
-        assert pids[0] in _open_ids(conn), \
-            "a carried pattern fell off the open list -- 'not yet' became 'never'"
-        print("carry: logs the decision and the pattern stays open")
+        assert [e["event"] for e in ev] == ["created", "held"], ev
+        assert pids[0] not in _open_ids(conn), "Hold must give up the queue slot"
+        assert pids[0] in {p["id"] for p in DB.get_held_patterns(conn)}, \
+            "a held pattern must be findable in the Held tab, or Hold is a delete"
+        assert {f["flag_id"] for f in DB.get_pattern_provenance(conn, pids[0])} == before, \
+            "Hold must not detach the pattern's papers"
+        pool = {f["id"] for f in DB.get_flags(conn, exclude_attached=True)}
+        assert before <= pool, \
+            "a held pattern's flags must return to the clustering pool, or it can never grow"
+        print("hold: logs the decision, leaves the queue, keeps everything, flags back in pool")
 
 
 def test_only_the_clicked_pattern_is_decided():
@@ -345,17 +363,17 @@ def test_a_render_with_no_click_writes_nothing():
 
 
 def test_events_accumulate_and_the_latest_decision_wins():
-    """Carry, then Incorporate, on one pattern. Both events survive in order and the status
+    """Hold, then Incorporate, on one pattern. Both events survive in order and the status
     is the later one. Append-only is what makes 'how did this line get into my profile' an
     answerable question, so it is worth pinning through the real buttons and not only
     through add_pattern_event."""
     with _world() as (conn, wb, pids):
-        _click_fate(wb, pids, pids[0], "pat-carry")
-        _click_fate(wb, pids, pids[0], "pat-carry")
+        _click_fate(wb, pids, pids[0], "pat-hold")
+        _click_fate(wb, pids, pids[0], "pat-hold")
         _click_fate(wb, pids, pids[0], "pat-incorporate")
 
         ev = _events(conn, pids[0])
-        assert [e["event"] for e in ev] == ["created", "carried", "carried", "incorporated"], ev
+        assert [e["event"] for e in ev] == ["created", "held", "held", "incorporated"], ev
         assert _status(conn, pids[0]) == "incorporated"
         assert ev[-1]["profile_id"] == DB._sha256(ACTIVE_PROFILE)
         print("fate: decisions append and never overwrite; status is the latest one")
@@ -450,7 +468,7 @@ CHECKS = [
     test_incorporate_closes_the_pattern,
     test_reject_records_the_reason_from_the_right_card,
     test_reject_with_no_reason_stores_null,
-    test_carry_keeps_the_pattern_open,
+    test_hold_takes_it_off_the_queue_and_keeps_everything,
     test_only_the_clicked_pattern_is_decided,
     test_a_render_with_no_click_writes_nothing,
     test_events_accumulate_and_the_latest_decision_wins,

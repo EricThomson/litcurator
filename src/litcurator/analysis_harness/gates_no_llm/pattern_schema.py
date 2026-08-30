@@ -14,11 +14,24 @@ from litcurator import config, db_interface
 SCRATCH = Path(config.DATA_DIR) / "_scratch_pattern_test.db"
 
 
+def _wipe_patterns(conn):
+    """Empty the pattern tables in the SCRATCH copy. These gates copy the live database for its
+    real articles and then assert on counts they create themselves, so they only worked while
+    the live pattern tables happened to be empty. The first real profile_analysis run put 15
+    patterns in them (2026-08-29) and both gates went red on their own fixtures. Predicted in
+    CLAUDE.md: "record_stage, pattern_schema and workbench_render must be made hermetic first."
+    record_stage already wiped; these two did not."""
+    for t in ("pattern_flags", "pattern_events", "patterns"):
+        conn.execute(f"DELETE FROM {t}")
+    conn.commit()
+
+
 def main():
     shutil.copy(config.LITCURATOR_DB, SCRATCH)
     ok = True
 
     conn = db_interface.get_connection(SCRATCH)   # triggers the guarded migration + new schema
+    _wipe_patterns(conn)
     try:
         # 1. schema shape
         tables = {r[0] for r in conn.execute(

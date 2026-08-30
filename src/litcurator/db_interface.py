@@ -275,6 +275,11 @@ CREATE TABLE IF NOT EXISTS patterns (
     description TEXT,
     suggested_edit TEXT,
     analysis_run_id TEXT REFERENCES analysis_runs(id),
+    -- The consolidate step's own ordering of the round it came from, 1 = act on this first.
+    -- Stored so the workbench can show you the queue in the order the model ranked it, rather
+    -- than by most-recent-event (which put whatever you last clicked on top) or by a magnitude
+    -- proxy (which is the criterion the ranking prompt was rewritten to stop using).
+    rank INTEGER,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     CHECK (direction IN (%s))
@@ -498,6 +503,7 @@ def _drop_dead_columns(conn):
 _LATE_COLUMNS = [
     "ALTER TABLE prompts ADD COLUMN kind TEXT NOT NULL DEFAULT 'judge'",
     "ALTER TABLE patterns ADD COLUMN analysis_run_id TEXT REFERENCES analysis_runs(id)",
+    "ALTER TABLE patterns ADD COLUMN rank INTEGER",
 ]
 
 
@@ -986,7 +992,7 @@ def get_flags(conn, start=None, end=None, exclude_attached=False):
 # ---------------------------------------------------------------------------
 
 def create_pattern(conn, name, direction, description=None, suggested_edit=None,
-                   flag_ids=(), note=None, analysis_run_id=None):
+                   flag_ids=(), note=None, analysis_run_id=None, rank=None):
     """Create a pattern from the flags that produced it, in one transaction: the
     pattern row, its pattern_flags provenance links, and an initial 'created' event.
     Returns the new pattern id. direction in {over, under}.
@@ -999,9 +1005,9 @@ def create_pattern(conn, name, direction, description=None, suggested_edit=None,
     it."""
     pattern_id = uuid.uuid4().hex
     conn.execute(
-        "INSERT INTO patterns (id, name, direction, description, suggested_edit, "
-        "analysis_run_id) VALUES (?, ?, ?, ?, ?, ?)",
-        (pattern_id, name, direction, description, suggested_edit, analysis_run_id),
+        "INSERT INTO patterns (id, name, direction, description, suggested_edit, rank, "
+        "analysis_run_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (pattern_id, name, direction, description, suggested_edit, rank, analysis_run_id),
     )
     for fid in dict.fromkeys(flag_ids):   # dedup, preserve order
         conn.execute(
@@ -1137,7 +1143,11 @@ def get_patterns(conn, statuses=None):
         -- id breaks the tie: created_at is second-resolution, and every pattern minted in one
         -- consolidation pass shares a timestamp, so without this their order is arbitrary and
         -- changes between runs. Same lesson get_closed_recurrences already records.
-        ORDER BY ev.created_at DESC, ev.id DESC
+        -- BY THE MODEL'S OWN RANK, 1 first. Unranked patterns (pre-2026-08-30, or anything
+        -- created outside a consolidation) sort last and keep the old recency order among
+        -- themselves. Recency remains the tiebreak, which still matters for patterns minted in
+        -- one pass: they share a timestamp, so ev.id keeps their order stable between runs.
+        ORDER BY (p.rank IS NULL), p.rank ASC, ev.created_at DESC, ev.id DESC
     """ % {"decisions": ", ".join(f"'{e}'" for e in DECISION_EVENTS)}).fetchall()
     result = [dict(r) for r in rows]
     if statuses is not None:

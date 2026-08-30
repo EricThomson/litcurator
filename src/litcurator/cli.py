@@ -193,7 +193,8 @@ def _cmd_profile_analysis(args):
     overrides = {k: v for k, v in (("cluster_model", args.cluster_model),
                                    ("consolidate_model", args.consolidate_model)) if v}
     profile_analysis.suggest_edits(start=args.start, end=args.end,
-                                   persist=not args.dry_run, **overrides)
+                                   persist=not args.dry_run,
+                                   shuffle_seed=args.shuffle_candidates, **overrides)
 
 
 def _cmd_profile_workbench(args):
@@ -376,6 +377,13 @@ def main():
                            help="cluster flags -> consolidate into tracked profile patterns")
     pa_p.add_argument("--start", default=None, help="scope flags to pub dates >= this (YYYY-MM-DD)")
     pa_p.add_argument("--end", default=None, help="scope flags to pub dates <= this (YYYY-MM-DD)")
+    pa_p.add_argument("--shuffle-candidates", type=int, default=None, metavar="SEED",
+                      help="DIAGNOSTIC: present cluster's candidates to consolidate in a "
+                           "shuffled order, so `rank` can be correlated against the order they "
+                           "were shown in. On the first real run rank tracked cluster's own "
+                           "order at rho=0.79, which would make it anchoring rather than "
+                           "judgement; this tells the two apart. The permutation is printed and "
+                           "saved in the report.")
     pa_p.add_argument("--dry-run", action="store_true",
                       help="write the suggestions markdown but do NOT persist patterns")
     pa_p.add_argument("--cluster-model", default=None,
