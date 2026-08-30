@@ -67,9 +67,23 @@ VALID_DIRECTIONS = db_interface.DIRECTIONS
 _DECISIONS = ", ".join(f"'{e}'" for e in db_interface.DECISION_EVENTS)
 
 # Approximate API prices, ($/M input, $/M output). Update if pricing changes.
+#
+# CORRECTED 2026-08-30: claude-opus-4-8 was listed at (15.0, 75.0), three times its actual
+# price. Nothing used Opus, so the error was invisible -- until the first Opus consolidate run
+# would have reported a cost near triple the truth, on the one number you would use to decide
+# whether the upgrade is affordable. Verified against the Anthropic pricing table.
+# NOT LISTED, DELIBERATELY: claude-fable-5. It refuses biology content -- `refusal` is a real
+# stop reason with a `bio` category -- and every paper this system reads is neuroscience. Working
+# around it means server-side fallbacks, which is machinery added to accommodate a model that
+# should not be in this loop. Opus is the ceiling here.
 MODEL_COSTS = {
-    "claude-opus-4-8": (15.0, 75.0),
+    "claude-opus-5": (5.0, 25.0),
+    "claude-opus-4-8": (5.0, 25.0),
+    "claude-opus-4-7": (5.0, 25.0),
+    "claude-opus-4-6": (5.0, 25.0),
+    "claude-sonnet-5": (2.0, 10.0),
     "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-haiku-4-5": (1.0, 5.0),
     "claude-haiku-4-5-20251001": (1.0, 5.0),
 }
 
@@ -270,6 +284,8 @@ def _format_existing_patterns(active, closed_patterns, examples=None, held=()):
 # ---------------------------------------------------------------------------
 
 def _cost(model, usage):
+    # An unlisted model is priced as Sonnet 4.6, which UNDER-reports every Opus-tier model.
+    # Add the row rather than trusting the fallback when trying a new one.
     cin, cout = MODEL_COSTS.get(model, (3.0, 15.0))
     return (usage.input_tokens * cin + usage.output_tokens * cout) / 1_000_000
 
@@ -828,7 +844,7 @@ def _summary_line(summary):
 
 def suggest_edits(start=None, end=None,
                   cluster_model=DEFAULT_CLUSTER_MODEL, consolidate_model=DEFAULT_CONSOLIDATE_MODEL,
-                  persist=True, shuffle_seed=None):
+                  persist=True, shuffle_seed=None, include_attached=False):
     """Cluster the UNATTACHED (not-yet-patterned) flags in [start, end], consolidate each
     candidate against the pattern memory, and RECORD every real one (new / merge into an
     open pattern / recurs against a closed pattern); a genuine one-paper hold is kept unattached, not recorded.
@@ -840,6 +856,11 @@ def suggest_edits(start=None, end=None,
     the judge prompt: every pattern this produces points at an analysis_run, which points at
     the prompt content that made it. Without that, "which prompt produced this pattern" is
     unanswerable, which was the one provenance gap in the system."""
+    if include_attached and persist:
+        raise ValueError(
+            "include_attached is a comparison mode and cannot be recorded: clustering flags that "
+            "are already attached would mint duplicate patterns over the same papers. Re-run with "
+            "--dry-run.")
     seed_text = profile_interface.load_active()
     analysis_prompt = analysis_prompt_interface.load_active()
     cluster_prompt, consolidate_prompt = analysis_prompt_interface.split(analysis_prompt)
@@ -848,7 +869,16 @@ def suggest_edits(start=None, end=None,
     try:
         # UNATTACHED flags only: a flag already attached to a pattern is "handled" and must
         # not re-cluster into a duplicate candidate. This is the bloat/idempotency bound.
-        flags = db_interface.get_flags(conn, start=start, end=end, exclude_attached=True)
+        # INCLUDE_ATTACHED is a COMPARISON mode, not a round. It clusters every flag in the
+        # window rather than only the unattached ones, so the same evidence can be re-run under a
+        # different prompt or model without disturbing state -- the need that kept arising as
+        # resetting the database, which is heavier and costs whatever else happened since.
+        #
+        # It CANNOT persist, and that is enforced below rather than documented: recording a
+        # round over papers already attached to patterns would mint duplicates of them, which is
+        # the one thing the unattached pool exists to prevent.
+        flags = db_interface.get_flags(conn, start=start, end=end,
+                                       exclude_attached=not include_attached)
         n = len(flags)
         if n < MIN_FLAGS:
             print(f"Only {n} unattached (not-yet-patterned) flags in range -- need at least "
@@ -858,9 +888,21 @@ def suggest_edits(start=None, end=None,
         # The pattern memory, shown to consolidate WITH ids so it captures cross-round
         # matches (merge into an open pattern / recurs against a closed pattern).
         existing_block, active_patterns, held_patterns, closed_patterns =             build_memory_block(conn)
+        if include_attached:
+            # FRESH EYES, not just the old flags. The point of the mode is to re-run past
+            # evidence under a different prompt or model and compare against what a previous
+            # round produced -- and that round saw an EMPTY memory. Leaving the memory in place
+            # made the first Opus comparison (2026-08-30) meaningless: it was shown twelve
+            # patterns built from these very flags, correctly merged all twelve, and produced
+            # nothing comparable to the Sonnet runs it was meant to be measured against.
+            existing_block = ""
+            active_patterns = held_patterns = closed_patterns = []
 
         rng = f"{start or 'all'} to {end or 'all'}"
-        print(f"{n} unattached flags ({rng})  |  memory: {len(active_patterns)} open + "
+        if include_attached:
+            print("[COMPARISON RUN: all flags, attached included, and NO pattern memory -- "
+                  "same evidence, fresh eyes. Nothing will be recorded.]")
+        print(f"{n} flags ({rng})  |  memory: {len(active_patterns)} open + "
               f"{len(held_patterns)} held + {len(closed_patterns)} decided")
         print(f"Models: cluster={cluster_model}  consolidate={consolidate_model}\n")
 

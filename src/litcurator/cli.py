@@ -194,7 +194,50 @@ def _cmd_profile_analysis(args):
                                    ("consolidate_model", args.consolidate_model)) if v}
     profile_analysis.suggest_edits(start=args.start, end=args.end,
                                    persist=not args.dry_run,
-                                   shuffle_seed=args.shuffle_candidates, **overrides)
+                                   shuffle_seed=args.shuffle_candidates,
+                                   include_attached=args.include_attached, **overrides)
+
+
+def _cmd_reset_patterns(args):
+    """Drop the pattern memory and NOTHING ELSE, so a bad consolidation round can be redone.
+
+    WHY THIS EXISTS. The obvious way to undo a round is to restore a database snapshot, and on
+    2026-08-30 that quietly cost an afternoon of flag edits: the backup predated them, so
+    rolling back the patterns rolled back the notes too, and the flag count going 38 -> 33 was
+    the only sign. A snapshot is the wrong granularity -- it undoes everything since, not the
+    thing you meant.
+
+    This touches four tables and no others. Flags, human labels, evaluations, articles,
+    profiles and prompts are all untouched by construction, so the mistake above cannot
+    recur. Re-running profile_analysis afterwards starts the round again from the same flags."""
+    from litcurator import db_interface
+
+    conn = db_interface.get_connection()
+    try:
+        before = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                  for t in ("patterns", "pattern_flags", "pattern_events", "analysis_runs")}
+        n_flags = conn.execute("SELECT COUNT(*) FROM flags").fetchone()[0]
+        if not before["patterns"] and not before["analysis_runs"]:
+            print("Nothing to reset -- the pattern memory is already empty.")
+            return
+        print("This will delete the pattern memory:")
+        for t, n in before.items():
+            print(f"  {t:<16} {n}")
+        print(f"\nFlags ({n_flags} rows), labels, evaluations and profiles are NOT touched.")
+        if not args.yes:
+            if input("Type 'reset' to confirm: ").strip().lower() != "reset":
+                print("Cancelled -- nothing was deleted.")
+                return
+        # Children before parents: pattern_flags and pattern_events both reference patterns,
+        # and patterns references analysis_runs.
+        for t in ("pattern_flags", "pattern_events", "patterns", "analysis_runs"):
+            conn.execute(f"DELETE FROM {t}")
+        conn.commit()
+        unattached = len(db_interface.get_flags(conn, exclude_attached=True))
+        print(f"Pattern memory cleared. {n_flags} flag rows kept; {unattached} papers are "
+              f"unattached and ready to re-cluster.")
+    finally:
+        conn.close()
 
 
 def _cmd_profile_workbench(args):
@@ -384,6 +427,12 @@ def main():
                            "order at rho=0.79, which would make it anchoring rather than "
                            "judgement; this tells the two apart. The permutation is printed and "
                            "saved in the report.")
+    pa_p.add_argument("--include-attached", action="store_true",
+                      help="COMPARISON MODE: cluster every flag in the window, not just the "
+                           "unattached ones, so the same evidence can be re-run under a different "
+                           "prompt or model without resetting the database. Requires --dry-run; "
+                           "recording it would mint duplicate patterns over papers that already "
+                           "have them.")
     pa_p.add_argument("--dry-run", action="store_true",
                       help="write the suggestions markdown but do NOT persist patterns")
     pa_p.add_argument("--cluster-model", default=None,
@@ -391,6 +440,15 @@ def main():
     pa_p.add_argument("--consolidate-model", default=None,
                       help="override the consolidate (choice) model, e.g. claude-opus-4-8")
     pa_p.set_defaults(func=_cmd_profile_analysis)
+
+    rp_p = sub.add_parser("reset_patterns",
+                          help="delete the pattern memory (patterns / provenance / events / "
+                               "analysis runs) so a bad consolidation round can be redone. "
+                               "Flags, labels and profiles are untouched -- restoring a whole "
+                               "database snapshot is the wrong granularity and has already "
+                               "cost a round of flag edits once.")
+    rp_p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    rp_p.set_defaults(func=_cmd_reset_patterns)
 
     pw_p = sub.add_parser("profile_workbench",
                            help="launch the profile workbench (review patterns, edit the profile, set active)")
