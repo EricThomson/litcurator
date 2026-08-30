@@ -37,6 +37,7 @@ markdown report to ~/.litcurator/suggestions/. See starry-brewing-horizon.md.
 
 import copy
 import os
+import pathlib
 import random
 import re
 import sys
@@ -374,6 +375,28 @@ def shuffle_cluster_candidates(text, seed):
     order = list(range(len(blocks)))
     random.Random(seed).shuffle(order)
     return preamble + "".join(blocks[i] for i in order), [i + 1 for i in order]
+
+
+def clusters_from_report(path):
+    """Pull the raw cluster text back out of a saved suggestions report.
+
+    THE REPORT IS THE CACHE. Re-running cluster to compare two consolidate models wastes the
+    expensive half of the run -- and worse, confounds the comparison: cluster is stochastic, so
+    each run hands the models a DIFFERENT candidate set. The 2026-08-30 Sonnet pair both produced
+    14 candidates, but not the same 14, so even that A/B was measuring two things at once.
+
+    Returns (clusters_text, n_flags_at_the_time). The flag count comes from the report header and
+    is checked by the caller: the [N] paper numbers inside the cluster text index into the ordered
+    flag list, so reusing them against a different flag set would silently mis-map every pattern
+    to the wrong papers."""
+    text = pathlib.Path(path).read_text(encoding="utf-8")
+    if "## Raw clusters (recall)" not in text or "## Consolidation" not in text:
+        raise ValueError(f"{path} does not look like a suggestions report "
+                         f"(no '## Raw clusters (recall)' / '## Consolidation' sections)")
+    body = text.split("## Raw clusters (recall)", 1)[1].split("## Consolidation", 1)[0]
+    body = body.rstrip().removesuffix("---").rstrip()
+    m = re.search(r"Unattached flags:\s*(\d+)", text)
+    return body.strip(), (int(m.group(1)) if m else None)
 
 
 def run_cluster_step(client, papers_block, n_flags, seed_text, model, prompt=None):
@@ -792,6 +815,77 @@ def _apply_queue_cap(candidates):
                           + f" [demoted: over the {MAX_ACT_NOW}-pattern queue cap]").strip()
 
 
+_HEAD = re.compile(
+    r"^- \*\*(?P<choice>\w+)\*\*"
+    r"(?: -- (?P<name>.*?))?"
+    r"(?: \((?P<direction>over|under)\))?"
+    r"(?: #(?P<rank>\d+))?"
+    r"(?: \[(?P<priority>\w+)\])?"
+    r"(?: \(asked (?P<asked>\w+)\))?"
+    r"(?:  -> (?P<target>.*))?$")
+
+_FIELD_LABELS = {"desc": "description", "edit": "suggested_edit", "why": "rationale"}
+
+
+def parse_consolidation_md(path):
+    """Read a suggestions report back into the candidate list that produced it.
+
+    THE REPORT IS THE RECORD. A dry run makes both LLM calls and then throws the parsed
+    candidates away, so a run you LIKED could only be recovered by paying again -- and
+    consolidate is stochastic enough that you would get a different one. On 2026-08-30 a run
+    the user called a shit show was followed immediately by one he called amazing, with
+    NOTHING changed between them. At that variance best-of-N is the sensible workflow, and it
+    only works if a good run can be kept.
+
+    Parsing our own prose is safe only because record_stage round-trips it -- it renders
+    candidates, parses them back and asserts they match -- so a renderer change fails loudly
+    instead of silently mis-recording a round.
+
+    Returns (candidates, n_flags_at_the_time)."""
+    text = pathlib.Path(path).read_text(encoding="utf-8")
+    if "## Consolidation (choices)" not in text:
+        raise ValueError(f"{path} has no '## Consolidation (choices)' section -- "
+                         f"not a suggestions report?")
+    m = re.search(r"Unattached flags:\s*(\d+)", text)
+    n_then = int(m.group(1)) if m else None
+
+    out, cur = [], None
+    for line in text.split("## Consolidation (choices)", 1)[1].splitlines():
+        head = _HEAD.match(line)
+        if head:
+            if cur:
+                out.append(cur)
+            g = head.groupdict()
+            cur = {"choice": g["choice"]}
+            if g["name"]:
+                cur["name"] = g["name"]
+            if g["direction"]:
+                cur["direction"] = g["direction"]
+            if g["rank"]:
+                cur["rank"] = int(g["rank"])
+            if g["priority"]:
+                # The RENDERED priority is post-cap; `asked` carries what the model wanted.
+                # Restoring the model's own word means re-recording reproduces the demotion
+                # from the rank, rather than baking in a cap that may since have changed.
+                cur["priority"] = g["asked"] or g["priority"]
+            if g["target"]:
+                t = g["target"].strip()
+                if t.startswith("NOT A PATTERN ID: "):
+                    t = t[len("NOT A PATTERN ID: "):].strip().strip("'\"")
+                cur["existing_pattern_id"] = t
+        elif cur is not None and line.startswith("    - "):
+            label, _, value = line[6:].partition(": ")
+            if label == "papers":
+                cur["paper_numbers"] = [int(x) for x in re.findall(r"\d+", value)]
+            elif label in _FIELD_LABELS:
+                cur[_FIELD_LABELS[label]] = value
+    if cur:
+        out.append(cur)
+    if not out:
+        raise ValueError(f"{path}: found the Consolidation section but no candidates in it")
+    return out, n_then
+
+
 def _format_consolidation_md(candidates):
     """Render the consolidate decisions as a readable markdown list -- ALL choices,
     holds included (transparency, not a discard sink)."""
@@ -817,14 +911,24 @@ def _format_consolidation_md(candidates):
             # value as "human-only-s", which reads like a real id prefix and hid what the model
             # actually emitted. The report is the only record of a dry run, so it has to show
             # the evidence rather than a tidy-looking slice of it.
+            # IN FULL, not truncated. It used to show a 12-char prefix, which is fine for
+            # reading and wrong for a file that `promote_suggestions` parses back: a prefix
+            # cannot be re-recorded without a database lookup, and the report is meant to be
+            # self-contained. An invalid target is still marked, which is why truncation was
+            # removed in the first place -- a hallucinated value rendered as "human-only-s"
+            # reads exactly like a real id prefix.
             eid = c["existing_pattern_id"]
-            head += (f"  -> {eid[:12]}" if _looks_like_pattern_id(eid)
+            head += (f"  -> {eid}" if _looks_like_pattern_id(eid)
                      else f"  -> NOT A PATTERN ID: {eid!r}")
         lines.append(head)
-        if c.get("suggested_edit"):
-            lines.append(f"    - edit: {c['suggested_edit']}")
-        if c.get("rationale"):
-            lines.append(f"    - why: {c['rationale']}")
+        # ONE LINE EACH, whitespace collapsed. The report is not only for reading: it is the
+        # input to `promote_suggestions`, which parses it back to re-record a run you liked
+        # rather than paying to re-roll one. A model-written field containing a newline would
+        # split into two lines and silently truncate on the way back.
+        for label, key in (("desc", "description"), ("edit", "suggested_edit"),
+                           ("why", "rationale")):
+            if c.get(key):
+                lines.append(f"    - {label}: {' '.join(str(c[key]).split())}")
         if c.get("paper_numbers"):
             lines.append(f"    - papers: {c['paper_numbers']}")
     return "\n".join(lines)
@@ -844,7 +948,8 @@ def _summary_line(summary):
 
 def suggest_edits(start=None, end=None,
                   cluster_model=DEFAULT_CLUSTER_MODEL, consolidate_model=DEFAULT_CONSOLIDATE_MODEL,
-                  persist=True, shuffle_seed=None, include_attached=False):
+                  persist=True, shuffle_seed=None, include_attached=False,
+                  reuse_clusters=None):
     """Cluster the UNATTACHED (not-yet-patterned) flags in [start, end], consolidate each
     candidate against the pattern memory, and RECORD every real one (new / merge into an
     open pattern / recurs against a closed pattern); a genuine one-paper hold is kept unattached, not recorded.
@@ -887,7 +992,8 @@ def suggest_edits(start=None, end=None,
 
         # The pattern memory, shown to consolidate WITH ids so it captures cross-round
         # matches (merge into an open pattern / recurs against a closed pattern).
-        existing_block, active_patterns, held_patterns, closed_patterns =             build_memory_block(conn)
+        existing_block, active_patterns, held_patterns, closed_patterns = (
+            build_memory_block(conn))
         if include_attached:
             # FRESH EYES, not just the old flags. The point of the mode is to re-run past
             # evidence under a different prompt or model and compare against what a previous
@@ -909,10 +1015,21 @@ def suggest_edits(start=None, end=None,
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         papers_block, ordered_flags = _format_papers(flags)
 
-        print("=== Step 1: cluster (recall) ===\n")
-        clusters, cost1 = run_cluster_step(client, papers_block, n, seed_text, cluster_model,
-                                           prompt=cluster_prompt)
-        print(f"\n[step 1 cost: ${cost1:.4f}]\n")
+        if reuse_clusters:
+            clusters, n_then = clusters_from_report(reuse_clusters)
+            if n_then is not None and n_then != n:
+                raise ValueError(
+                    f"{reuse_clusters} clustered {n_then} flags but this run has {n}. The [N] "
+                    f"paper numbers in that report index into the ordered flag list, so reusing "
+                    f"them here would map every pattern to the wrong papers.")
+            cost1 = 0.0
+            print(f"=== Step 1: SKIPPED, clusters reused from "
+                  f"{pathlib.Path(reuse_clusters).name} ===\n")
+        else:
+            print("=== Step 1: cluster (recall) ===\n")
+            clusters, cost1 = run_cluster_step(client, papers_block, n, seed_text, cluster_model,
+                                               prompt=cluster_prompt)
+            print(f"\n[step 1 cost: ${cost1:.4f}]\n")
 
         print("=== Step 2: consolidate (choice) ===")
         # DIAGNOSTIC. Reorders the candidate blocks so `rank` can be correlated against the

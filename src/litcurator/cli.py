@@ -195,7 +195,68 @@ def _cmd_profile_analysis(args):
     profile_analysis.suggest_edits(start=args.start, end=args.end,
                                    persist=not args.dry_run,
                                    shuffle_seed=args.shuffle_candidates,
-                                   include_attached=args.include_attached, **overrides)
+                                   include_attached=args.include_attached,
+                                   reuse_clusters=args.reuse_clusters, **overrides)
+
+
+def _cmd_promote_suggestions(args):
+    """Record a run you already have, from its report, instead of paying to re-roll one.
+
+    WHY. Consolidate is stochastic enough that quality swings hard on identical input -- on
+    2026-08-30 a run the user called a shit show was followed immediately by one he called
+    amazing, with nothing changed between them. That makes best-of-N the sensible workflow:
+    dry-run two or three times, read them, keep the one you like. Which only works if liking
+    one lets you keep it, and until now a dry run threw its parsed candidates away.
+
+    The report is the record -- no second file, no JSON sidecar. This parses it back and hands
+    the candidates to the SAME `_record_consolidation` the live path uses, so nothing can
+    diverge between what you previewed and what gets written.
+
+    THE GUARD THAT MATTERS. The [N] paper numbers index into the ordered flag list, which
+    `_format_papers` derives deterministically from the unattached flags. Re-derive it and the
+    numbering reproduces exactly -- but only if the flag set has not moved. So the report's own
+    flag count is compared against the live one, and a mismatch refuses rather than silently
+    attaching every pattern to the wrong papers."""
+    from litcurator import db_interface, profile_analysis, profile_interface
+    from litcurator import analysis_prompt_interface
+
+    candidates, n_then = profile_analysis.parse_consolidation_md(args.report)
+    conn = db_interface.get_connection()
+    try:
+        flags = db_interface.get_flags(conn, start=args.start, end=args.end,
+                                       exclude_attached=True)
+        n_now = len(flags)
+        if n_then is not None and n_then != n_now:
+            print(f"REFUSED: that report clustered {n_then} flags; {n_now} are unattached now.\n"
+                  f"The [N] paper numbers index into the ordered flag list, so recording it "
+                  f"against a different set would attach every pattern to the wrong papers.")
+            raise SystemExit(1)
+
+        _papers, ordered_flags = profile_analysis._format_papers(flags)
+        print(f"{args.report}\n  {len(candidates)} candidates over {n_now} flags")
+        if not args.yes:
+            if input("Type 'record' to write this into the pattern memory: ").strip().lower() \
+                    != "record":
+                print("Cancelled -- nothing was written.")
+                return
+
+        # Same provenance as a live run: the analysis_run row exists before any pattern, and
+        # the prompt is registered (content-addressed, so an unchanged one adds no row).
+        analysis_prompt = analysis_prompt_interface.load_active()
+        seed_text = profile_interface.load_active()
+        run_id = db_interface.create_analysis_run(
+            conn,
+            db_interface.get_or_create_prompt(conn, analysis_prompt, kind="analysis"),
+            profile_analysis.DEFAULT_CLUSTER_MODEL,
+            profile_analysis.DEFAULT_CONSOLIDATE_MODEL,
+            profile_id=db_interface.get_or_create_profile(conn, seed_text),
+            date_start=args.start, date_end=args.end, n_flags=n_now, cost_usd=0.0)
+        summary = profile_analysis._record_consolidation(
+            conn, candidates, ordered_flags, analysis_run_id=run_id)
+        print(profile_analysis._summary_line(summary))
+        print(f"Recorded from {args.report} -- no model calls, $0.")
+    finally:
+        conn.close()
 
 
 def _cmd_reset_patterns(args):
@@ -427,6 +488,12 @@ def main():
                            "order at rho=0.79, which would make it anchoring rather than "
                            "judgement; this tells the two apart. The permutation is printed and "
                            "saved in the report.")
+    pa_p.add_argument("--reuse-clusters", default=None, metavar="REPORT.md",
+                      help="skip step 1 and reuse the cluster output from a previous suggestions "
+                           "report. Saves the expensive half of the run, and -- the real point -- "
+                           "removes cluster's own stochasticity from a comparison, so two "
+                           "consolidate models see the SAME candidates instead of two different "
+                           "draws. Refuses if the flag count has changed since that report.")
     pa_p.add_argument("--include-attached", action="store_true",
                       help="COMPARISON MODE: cluster every flag in the window, not just the "
                            "unattached ones, so the same evidence can be re-run under a different "
@@ -440,6 +507,17 @@ def main():
     pa_p.add_argument("--consolidate-model", default=None,
                       help="override the consolidate (choice) model, e.g. claude-opus-4-8")
     pa_p.set_defaults(func=_cmd_profile_analysis)
+
+    ps_p = sub.add_parser("promote_suggestions",
+                          help="record a dry run you liked, from its report, with no model "
+                               "calls. Consolidate is stochastic enough that quality swings on "
+                               "identical input, so the workflow is: dry-run two or three "
+                               "times, read them, promote the good one.")
+    ps_p.add_argument("report", help="path to a suggestions markdown report")
+    ps_p.add_argument("--start", default=None, help="the window the report was run over")
+    ps_p.add_argument("--end", default=None)
+    ps_p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    ps_p.set_defaults(func=_cmd_promote_suggestions)
 
     rp_p = sub.add_parser("reset_patterns",
                           help="delete the pattern memory (patterns / provenance / events / "

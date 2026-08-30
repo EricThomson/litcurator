@@ -366,6 +366,49 @@ def main():
     assert _enum(profile_analysis._CONSOLIDATE_TOOL) == full, "the constant must not be mutated"
     print("empty memory: merge values are removed from the enum, and the constant is untouched")
 
+    # --- 11. THE REPORT ROUND-TRIPS ------------------------------------------------------
+    # `promote_suggestions` re-records a run you liked by parsing its own markdown report, which
+    # is only safe because of this check. Render candidates, parse them back, assert they match.
+    # A change to _format_consolidation_md then fails HERE, loudly, instead of silently
+    # mis-recording a round -- which is the difference between parsing your own prose being a
+    # reasonable design and being a trap.
+    #
+    # Every shape the renderer can emit is covered, because the ones that broke it during
+    # development were the unusual ones: a real 32-char merge target (which used to render
+    # truncated and could not be parsed back), a hallucinated target (rendered with a marker),
+    # and a demoted candidate (whose RENDERED priority is post-cap, so the parser has to restore
+    # the model's own `asked` word or promoting would bake in a cap that may since have changed).
+    shapes = [
+        {"choice": "new", "name": "A Gap", "direction": "under", "rank": 1,
+         "priority": "act_now", "description": "one sentence", "suggested_edit": "add this",
+         "rationale": "because", "paper_numbers": [1, 2]},
+        {"choice": "new", "name": "Demoted", "direction": "over", "rank": 9, "priority": "hold",
+         "priority_asked": "act_now", "rationale": "r [demoted: over the cap]",
+         "paper_numbers": [3]},
+        {"choice": "merge_into_open", "existing_pattern_id": "66e72f0dba644749b17e977616b3089f",
+         "rank": 2, "priority": "act_now", "rationale": "same taste", "paper_numbers": [4]},
+        {"choice": "merge_into_open", "existing_pattern_id": "human-only-studies", "rank": 3,
+         "priority": "act_now", "rationale": "invented target", "paper_numbers": [6]},
+        {"choice": "discard", "name": "Not real", "rank": 13, "priority": "hold",
+         "rationale": "noise", "paper_numbers": [5]},
+    ]
+    md = ("# Pattern suggestions\n\nUnattached flags: 20  |  x\n\n"
+          "## Consolidation (choices)\n\n" + profile_analysis._format_consolidation_md(shapes))
+    report = Path(config.DATA_DIR) / "_scratch_roundtrip.md"
+    report.write_text(md, encoding="utf-8")
+    try:
+        back, n_then = profile_analysis.parse_consolidation_md(report)
+        assert n_then == 20, n_then
+        assert len(back) == len(shapes), (len(back), len(shapes))
+        for orig, got in zip(shapes, back):
+            want = {k: v for k, v in orig.items() if k != "priority_asked"}
+            if orig.get("priority_asked"):
+                want["priority"] = orig["priority_asked"]
+            assert got == want, ("round trip lost or changed a field", got, want)
+    finally:
+        report.unlink(missing_ok=True)
+    print(f"report round-trips: {len(shapes)} candidate shapes render and parse back identically")
+
     conn.close()
     SCRATCH.unlink(missing_ok=True)
     print("\nALL CHECKS PASSED")
