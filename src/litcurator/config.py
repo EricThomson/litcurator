@@ -248,3 +248,19 @@ Return a JSON object with two fields: "score" (a number between 0.0 and 1.0) and
 # emitting -- and code applies the cutoff. Same division as `computed_sign`: the model judges,
 # the arithmetic is ours.
 MAX_ACT_NOW = 8
+
+# How many independent rounds `profile_analysis` runs before picking one. Consolidation is
+# unreliable enough that a single round is a lottery: two runs on identical input, minutes
+# apart, produced one the user called a shit show and one he called amazing. So the round is
+# run three times and a picker chooses, rather than the user reading all three.
+#
+# THREE FULL ROUNDS, cluster included, not one cluster shared by three consolidates. Measured
+# 2026-08-30 over twelve saved runs: only 8% of CLUSTER's grouping decisions reproduce, and
+# consolidate barely regroups what it is handed -- five of the twelve runs joined zero pairs
+# and split zero. All 26 cases of one paper argued in two queued patterns were already in two
+# cluster candidates. Holding cluster fixed would freeze that fault into all three rounds.
+#
+# Three because it is enough, and because cost is not the binding constraint anyway: about
+# $0.53 for the rounds plus $0.13 for the pick, against $0.175 for a single round. Set to 1 to
+# run one round and skip the picker entirely, which needs no pick prompt.
+BEST_OF_RUNS = 3

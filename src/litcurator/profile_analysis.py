@@ -47,7 +47,7 @@ import anthropic
 from dotenv import load_dotenv
 
 from litcurator import analysis_prompt_interface, db_interface, profile_interface
-from litcurator.config import DATA_DIR, MAX_ACT_NOW
+from litcurator.config import BEST_OF_RUNS, DATA_DIR, MAX_ACT_NOW
 
 load_dotenv()
 
@@ -303,7 +303,10 @@ def _echo(text):
         print(text.encode(enc, errors="replace").decode(enc), end="", flush=True)
 
 
-def _stream(client, model, system, user_msg, max_tokens):
+def _stream(client, model, system, user_msg, max_tokens, echo=True):
+    """`echo=False` still streams (which is what keeps a long generation off the request
+    timeout) but does not print. Used when several rounds run back to back: three cluster
+    dumps scrolling past is not something anyone reads, and the prose is in each report."""
     parts = []
     with client.messages.stream(
         model=model,
@@ -312,10 +315,12 @@ def _stream(client, model, system, user_msg, max_tokens):
         messages=[{"role": "user", "content": user_msg}],
     ) as stream:
         for text in stream.text_stream:
-            _echo(text)
+            if echo:
+                _echo(text)
             parts.append(text)
         final = stream.get_final_message()
-    print()
+    if echo:
+        print()
     return "".join(parts), _cost(model, final.usage)
 
 
@@ -399,7 +404,7 @@ def clusters_from_report(path):
     return body.strip(), (int(m.group(1)) if m else None)
 
 
-def run_cluster_step(client, papers_block, n_flags, seed_text, model, prompt=None):
+def run_cluster_step(client, papers_block, n_flags, seed_text, model, prompt=None, echo=True):
     """`prompt` is the CLUSTER section of the active analysis prompt, passed in by the caller.
     Taking it as an argument rather than reading a module global is what lets the harness and
     the lab test a draft without mutating shared state -- the judge has always worked this way."""
@@ -412,7 +417,7 @@ def run_cluster_step(client, papers_block, n_flags, seed_text, model, prompt=Non
         f"## Flagged papers ({n_flags} total, strongest disagreement first)\n\n{papers_block}"
     )
     # Recall scales with flag count; give it room so it is never truncated mid-pattern.
-    return _stream(client, model, prompt, user_msg, max_tokens=6000)
+    return _stream(client, model, prompt, user_msg, max_tokens=6000, echo=echo)
 
 
 # ---------------------------------------------------------------------------
@@ -949,18 +954,30 @@ def _summary_line(summary):
 def suggest_edits(start=None, end=None,
                   cluster_model=DEFAULT_CLUSTER_MODEL, consolidate_model=DEFAULT_CONSOLIDATE_MODEL,
                   persist=True, shuffle_seed=None, include_attached=False,
-                  reuse_clusters=None):
+                  reuse_clusters=None, best_of=None, pick_model=None):
     """Cluster the UNATTACHED (not-yet-patterned) flags in [start, end], consolidate each
     candidate against the pattern memory, and RECORD every real one (new / merge into an
-    open pattern / recurs against a closed pattern); a genuine one-paper hold is kept unattached, not recorded.
-    Streams the recall to console and saves a dated markdown report. Returns the output
-    path (or None if too few flags). Never re-validates on the flag set. persist=False is
-    a dry run (writes the markdown, records nothing).
+    open pattern / recurs against a closed pattern).
+
+    RUNS THE WHOLE THING `best_of` TIMES AND PICKS ONE (config.BEST_OF_RUNS, default 3).
+    Consolidation is unreliable enough that a single round is a lottery -- two runs on
+    identical input, minutes apart, produced one round the user called a shit show and one he
+    called amazing. So the round is run several times, a picker reads them anonymised and
+    chooses, and the winner is what gets recorded. Every round is written to disk first, so a
+    failure in the pick or the record costs money but never evidence. best_of=1 skips the
+    picker entirely and needs no pick prompt.
+
+    Returns the round DIRECTORY (or None if too few flags), holding run_1.md ... run_N.md and
+    verdict.md. Never re-validates on the flag set. persist=False is a dry run (writes
+    everything, records nothing).
 
     The analysis prompt is loaded from disk and REGISTERED, exactly as the pipeline does with
     the judge prompt: every pattern this produces points at an analysis_run, which points at
     the prompt content that made it. Without that, "which prompt produced this pattern" is
     unanswerable, which was the one provenance gap in the system."""
+    best_of = BEST_OF_RUNS if best_of is None else best_of
+    if best_of < 1:
+        raise ValueError(f"best_of must be at least 1, got {best_of}")
     if include_attached and persist:
         raise ValueError(
             "include_attached is a comparison mode and cannot be recorded: clustering flags that "
@@ -1015,128 +1032,210 @@ def suggest_edits(start=None, end=None,
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         papers_block, ordered_flags = _format_papers(flags)
 
-        if reuse_clusters:
-            clusters, n_then = clusters_from_report(reuse_clusters)
-            if n_then is not None and n_then != n:
-                raise ValueError(
-                    f"{reuse_clusters} clustered {n_then} flags but this run has {n}. The [N] "
-                    f"paper numbers in that report index into the ordered flag list, so reusing "
-                    f"them here would map every pattern to the wrong papers.")
-            cost1 = 0.0
-            print(f"=== Step 1: SKIPPED, clusters reused from "
-                  f"{pathlib.Path(reuse_clusters).name} ===\n")
+        # ONE DIRECTORY PER INVOCATION, holding every round it ran plus the verdict. Which
+        # reports belong to the same round used to be answerable only by comparing timestamps
+        # in a flat directory and hoping; now it is structural. The round is the unit.
+        round_dir = SUGGESTIONS_DIR / f"round_{datetime.now():%Y%m%d_%H%M%S}"
+        round_dir.mkdir(parents=True, exist_ok=True)
+        rounds, round_cost = [], 0.0
+
+        for run_number in range(1, best_of + 1):
+            if best_of > 1:
+                print(f"\n=== ROUND {run_number} of {best_of} ===")
+            clusters, cost1 = _cluster_for_round(
+                client, papers_block, n, seed_text, cluster_model, cluster_prompt,
+                reuse_clusters, echo=(best_of == 1))
+
+            # DIAGNOSTIC. Reorders the candidate blocks so `rank` can be correlated against the
+            # order they were PRESENTED in rather than the order cluster wrote them. See
+            # shuffle_cluster_candidates.
+            shown, shuffle_order = ((clusters, []) if shuffle_seed is None
+                                    else shuffle_cluster_candidates(clusters, shuffle_seed))
+            if shuffle_order:
+                print(f"[candidates shuffled, seed {shuffle_seed}: presentation order = "
+                      f"{shuffle_order}]")
+            if best_of > 1:
+                print("  consolidating ...", end="", flush=True)
+            candidates, cost2 = run_consolidate_step(client, shown, seed_text, existing_block,
+                                                     consolidate_model, prompt=consolidate_prompt)
+            if best_of > 1:
+                print(f" {len(candidates)} patterns  ${cost2:.4f}")
+            # BEFORE anything is written, so every report previews the real outcome. Recording
+            # calls it again; it is idempotent.
+            _apply_queue_cap(candidates)
+            total = cost1 + cost2
+            round_cost += total
+
+            # SAVED IMMEDIATELY, before any picking or recording. The raw cluster text and every
+            # `hold` land nowhere else, the flag pool moves once anything is recorded, and a
+            # re-run cannot reproduce what was just paid for. Writing here means a later failure
+            # in the pick or the record costs money but never evidence.
+            path = _save_report(
+                round_dir / f"run_{run_number}.md", n, rng, total, shown, candidates,
+                cluster_model, consolidate_model,
+                tail=(f"run {run_number} of {best_of} -- see verdict.md" if best_of > 1
+                      else ("DRY RUN (nothing recorded)" if not persist else "single round")),
+                shuffle_seed=shuffle_seed, shuffle_order=shuffle_order)
+            rounds.append((path, candidates))
+            if best_of > 1:
+                print(f"  -> {path.name}  (${total:.4f})")
+
+        winner, verdict, pick_cost = _pick_winner(rounds, start, end, pick_model)
+        round_cost += pick_cost
+
+        # A round the picker calls bad is the one case where recording it anyway would ignore
+        # the signal this whole step exists to produce. Nothing is lost: the reports are on
+        # disk and `promote_suggestions` records any of them by hand.
+        blocked = bool(verdict and verdict.get("none_are_good"))
+        summary = None
+        if persist and not blocked:
+            winner_candidates = next(c for p, c in rounds if p == winner)
+            # The run row first: patterns reference it, so it has to exist before any is
+            # created. Registering the prompt is idempotent (content-addressed), so an
+            # unchanged prompt adds no row.
+            run_id = db_interface.create_analysis_run(
+                conn, db_interface.get_or_create_prompt(conn, analysis_prompt, kind="analysis"),
+                cluster_model, consolidate_model,
+                profile_id=db_interface.get_or_create_profile(conn, seed_text),
+                date_start=start, date_end=end, n_flags=n, cost_usd=round_cost)
+            summary = _record_consolidation(conn, winner_candidates, ordered_flags,
+                                            analysis_run_id=run_id)
+            _echo_record_summary(summary)
+        elif blocked:
+            print("\nNOT RECORDED: the picker judged every round weak. Read them and, if you "
+                  "disagree, record one with `litcurator promote_suggestions`.")
         else:
-            print("=== Step 1: cluster (recall) ===\n")
-            clusters, cost1 = run_cluster_step(client, papers_block, n, seed_text, cluster_model,
-                                               prompt=cluster_prompt)
-            print(f"\n[step 1 cost: ${cost1:.4f}]\n")
+            print(f"\n[dry run: nothing recorded]")
 
-        print("=== Step 2: consolidate (choice) ===")
-        # DIAGNOSTIC. Reorders the candidate blocks so `rank` can be correlated against the
-        # order they were PRESENTED in rather than the order cluster wrote them. See
-        # shuffle_cluster_candidates.
-        shown, shuffle_order = ((clusters, []) if shuffle_seed is None
-                                else shuffle_cluster_candidates(clusters, shuffle_seed))
-        if shuffle_order:
-            print(f"[candidates shuffled, seed {shuffle_seed}: presentation order = "
-                  f"{shuffle_order}]")
-        candidates, cost2 = run_consolidate_step(client, shown, seed_text, existing_block,
-                                               consolidate_model, prompt=consolidate_prompt)
-        total = cost1 + cost2
-        # BEFORE the persist branch, so the dry-run report previews the real outcome. Recording
-        # calls it again; it is idempotent.
-        _apply_queue_cap(candidates)
-
-        # Everything below has already been PAID FOR, and the report is the only place some
-        # of it ever lands: the raw cluster text, and every `hold` (a held candidate touches
-        # no table by design). Recording commits per candidate, so an exception between here
-        # and the file write would leave a half-written consolidation AND no record of what
-        # was proposed -- and a re-run cannot reproduce it, because the flag pool has moved.
-        # So the write happens in a finally, and says so when recording did not finish.
-        summary, recorded = None, False
-        try:
-            if persist:
-                # The run row first: patterns reference it, so it has to exist before any is
-                # created. Registering the prompt is idempotent (content-addressed), so an
-                # unchanged prompt adds no row.
-                analysis_prompt_id = db_interface.get_or_create_prompt(
-                    conn, analysis_prompt, kind="analysis")
-                run_id = db_interface.create_analysis_run(
-                    conn, analysis_prompt_id, cluster_model, consolidate_model,
-                    profile_id=db_interface.get_or_create_profile(conn, seed_text),
-                    date_start=start, date_end=end, n_flags=n, cost_usd=total)
-                summary = _record_consolidation(conn, candidates, ordered_flags,
-                                                analysis_run_id=run_id)
-                for c in summary["new"]:
-                    tag = " [act_now]" if c.get("priority") == "act_now" else ""
-                    rec = " (recovered)" if c.get("recovered") else ""
-                    coerced = (f" (direction {c['direction_coerced']!r} not recognized)"
-                               if c.get("direction_coerced") else "")
-                    _echo(f"  + new [{c['direction']}] {c['name']}{tag}{rec}{coerced}"
-                          f"  ({c['n_flags']} flags)\n")
-                for c in summary["merged"]:
-                    _echo(f"  ~ merged into {c['id'][:12]} (+{c['added']} flags -> carried)\n")
-                for c in summary["recurred"]:
-                    _echo(f"  ! closed pattern {c['id'][:12]} recurred (+{c['added']} flags)\n")
-                for c in summary["surfaced"]:
-                    _echo(f"  ^ held pattern {c['id'][:12]} SURFACED (+{c['added']} papers)\n")
-                for c in summary["held"]:
-                    back = " (returned)" if c.get("returned") else ""
-                    _echo(f"  . held{back}: {c.get('name') or c.get('rationale')}\n")
-                for c in summary["discarded"]:
-                    _echo(f"  x discarded (not a real pattern): "
-                          f"{c.get('name') or c.get('rationale')}\n")
-                for c in summary["skipped"]:
-                    _echo(f"  x skipped: {c.get('why')}\n")
-                _echo(f"[{_summary_line(summary)}  |  total cost: ${total:.4f}]\n")
-                recorded = True
-            else:
-                print(f"[dry run: {len(candidates)} candidates consolidated, nothing recorded  "
-                      f"|  total cost: ${total:.4f}]")
-                recorded = True
-        finally:
-            out = _save_report(start, end, n, rng, total, shown, candidates,
-                               cluster_model, consolidate_model, persist, summary, recorded,
-                               shuffle_seed, shuffle_order)
+        out = _write_round_verdict(round_dir, rounds, winner, verdict, summary,
+                                   round_cost, persist and not blocked)
     finally:
         conn.close()
 
-    print(f"\nSaved to {out}")
+    print(f"\nRound saved to {round_dir}")
+    print(f"Winner: {winner.name}  |  verdict: {out.name}  |  round cost: ${round_cost:.4f}")
+    return round_dir
+
+
+def _cluster_for_round(client, papers_block, n, seed_text, model, prompt, reuse_clusters, echo):
+    """Step 1 for one round: cluster, or reuse a saved report's clusters. Returns (text, cost).
+
+    Reusing pins cluster output so several rounds differ only in consolidate. That is a
+    COMPARISON tool, not how best-of runs: cluster is where most of the variance lives, so
+    holding it fixed would freeze one draw's faults into every round."""
+    if reuse_clusters:
+        clusters, n_then = clusters_from_report(reuse_clusters)
+        if n_then is not None and n_then != n:
+            raise ValueError(
+                f"{reuse_clusters} clustered {n_then} flags but this run has {n}. The [N] "
+                f"paper numbers in that report index into the ordered flag list, so reusing "
+                f"them here would map every pattern to the wrong papers.")
+        print(f"=== Step 1: SKIPPED, clusters reused from "
+              f"{pathlib.Path(reuse_clusters).name} ===")
+        return clusters, 0.0
+    if echo:
+        print("=== Step 1: cluster (recall) ===\n")
+    else:
+        # Not streaming the prose still means a minute of silence per round, which reads as a
+        # hung process. One line that completes when the step does.
+        print("  clustering ...", end="", flush=True)
+    clusters, cost = run_cluster_step(client, papers_block, n, seed_text, model, prompt=prompt,
+                                      echo=echo)
+    if echo:
+        print(f"\n[step 1 cost: ${cost:.4f}]\n")
+    else:
+        print(f" {len(_CANDIDATE_START.findall(clusters))} candidates  ${cost:.4f}")
+    return clusters, cost
+
+
+def _pick_winner(rounds, start, end, pick_model):
+    """(winner_path, verdict, cost). With one round there is nothing to pick, so no pick prompt
+    is needed and nothing is spent -- which is what keeps BEST_OF_RUNS=1 usable before anyone
+    has authored one."""
+    if len(rounds) == 1:
+        return rounds[0][0], None, 0.0
+    # Lazy: consolidation_picker imports this module.
+    from litcurator import consolidation_picker
+    print(f"\n=== Picking among {len(rounds)} rounds ===")
+    kwargs = {"model": pick_model} if pick_model else {}
+    verdict, presented, cost = consolidation_picker.pick_best(
+        [p for p, _ in rounds], start=start, end=end, **kwargs)
+    by_label = {label: path for label, path, _ in presented}
+    winner = by_label[verdict["ranking"][0]]
+    print("Presented as: " + ", ".join(f"{lb}={p.name}" for lb, p, _ in presented))
+    print(f"Ranking: {' > '.join(verdict['ranking'])}  ->  {winner.name}")
+    for entry in verdict["assessments"]:
+        print(f"  {entry['run']}: {entry['worst_problem']}")
+    print(f"[pick cost: ${cost:.4f}]")
+    return winner, verdict, cost
+
+
+def _echo_record_summary(summary):
+    for c in summary["new"]:
+        tag = " [act_now]" if c.get("priority") == "act_now" else ""
+        rec = " (recovered)" if c.get("recovered") else ""
+        coerced = (f" (direction {c['direction_coerced']!r} not recognized)"
+                   if c.get("direction_coerced") else "")
+        _echo(f"  + new [{c['direction']}] {c['name']}{tag}{rec}{coerced}"
+              f"  ({c['n_flags']} flags)\n")
+    for c in summary["merged"]:
+        _echo(f"  ~ merged into {c['id'][:12]} (+{c['added']} flags -> carried)\n")
+    for c in summary["recurred"]:
+        _echo(f"  ! closed pattern {c['id'][:12]} recurred (+{c['added']} flags)\n")
+    for c in summary["surfaced"]:
+        _echo(f"  ^ held pattern {c['id'][:12]} SURFACED (+{c['added']} papers)\n")
+    for c in summary["held"]:
+        back = " (returned)" if c.get("returned") else ""
+        _echo(f"  . held{back}: {c.get('name') or c.get('rationale')}\n")
+    for c in summary["discarded"]:
+        _echo(f"  x discarded (not a real pattern): {c.get('name') or c.get('rationale')}\n")
+    for c in summary["skipped"]:
+        _echo(f"  x skipped: {c.get('why')}\n")
+    _echo(f"[{_summary_line(summary)}]\n")
+
+
+def _write_round_verdict(round_dir, rounds, winner, verdict, summary, cost, recorded):
+    """verdict.md -- what this round produced, which run won, and what was written.
+
+    Always written, one round or several: the round directory should say what happened without
+    anyone reconstructing it from timestamps. It is the outcome record, which is why the run
+    reports no longer carry a recording summary in their own headers."""
+    lines = [f"# Round verdict\n", f"{datetime.now():%Y-%m-%d %H:%M:%S}  |  "
+             f"{len(rounds)} round(s)  |  total cost: ${cost:.4f}\n"]
+    if verdict:
+        if verdict.get("none_are_good"):
+            lines.append("**The picker judged every round weak.** Nothing was recorded. The "
+                         "ranking below is a least-bad ordering.\n")
+        lines.append(f"WINNER: {winner.name}\n")
+        lines.append("## Ranking\n")
+        lines.append("\n".join(f"{place}. round {label}" for place, label in
+                               enumerate(verdict["ranking"], start=1)))
+        lines.append("\n## Why the winner\n")
+        lines.append(verdict["why_the_winner"])
+        lines.append("\n## The worst thing in each round\n")
+        for entry in verdict["assessments"]:
+            lines.append(f"- **{entry['run']}**: {entry['worst_problem']}")
+    else:
+        lines.append(f"Single round, nothing to pick: {winner.name}\n")
+    lines.append("\n## Recorded\n")
+    lines.append(_summary_line(summary) if recorded and summary
+                 else "Nothing was recorded. To record one by hand:\n\n"
+                      f"    litcurator promote_suggestions {winner}")
+    out = round_dir / "verdict.md"
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return out
 
 
-def _save_report(start, end, n, rng, total, clusters, candidates,
-                 cluster_model, consolidate_model, persist, summary, recorded,
+def _save_report(out_path, n, rng, total, clusters, candidates,
+                 cluster_model, consolidate_model, tail,
                  shuffle_seed=None, shuffle_order=()):
-    """Write the suggestions markdown and return its path. Called from a finally, so it must
-    tolerate a run that died partway: `summary` is None and `recorded` False in that case."""
-    SUGGESTIONS_DIR.mkdir(parents=True, exist_ok=True)
-    slug = f"{start or 'all'}_{end or 'all'}"
+    """Write one round's suggestions markdown and return its path.
 
-    def _short(model_id):
-        return model_id.replace("claude-", "").replace("/", "-")
-
-    if not recorded:
-        tail = ("INCOMPLETE -- the run raised during recording. The database may hold a "
-                "PARTIAL consolidation; this file is the only record of what was proposed.")
-    elif persist:
-        tail = _summary_line(summary)
-    else:
-        tail = "DRY RUN (nothing recorded)"
-
-    # Both models in the name: swapping only the consolidate model must not clobber the
-    # previous report, or a model A/B is unreadable.
-    #
-    # And a TIMESTAMP, because the window plus the models did not make the name unique: two
-    # runs over the same flags with the same models -- a dry run and the real one, or the same
-    # window before and after a prompt edit -- wrote the same path and the second silently
-    # replaced the first. Timestamped and never overwritten, like the harness reports.
-    # `dryrun` in the name so the previewing runs are distinguishable from the one that wrote.
-    stamp = f"{datetime.now():%Y%m%d_%H%M%S}"
-    kind = "pattern_suggestions" if persist else "pattern_suggestions_dryrun"
-    out = (SUGGESTIONS_DIR /
-           f"{kind}_{slug}_{_short(cluster_model)}__{_short(consolidate_model)}_{stamp}.md")
-    out.write_text(
+    The path is passed in: the round directory owns naming now, and run_1/run_2/run_3 inside it
+    carry what the old flat timestamped filename did. What the round RECORDED lives in
+    verdict.md rather than in this header, because it is not known until every round has run."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(
         f"# Pattern suggestions\n\n"
         f"Unattached flags: {n}  |  range: {rng}  |  cluster: {cluster_model}  "
         f"consolidate: {consolidate_model}  |  cost: ${total:.4f}  |  {tail}\n\n"
@@ -1148,4 +1247,4 @@ def _save_report(start, end, n, rng, total, clusters, candidates,
         f"---\n\n## Consolidation (choices)\n\n{_format_consolidation_md(candidates)}\n",
         encoding="utf-8",
     )
-    return out
+    return out_path

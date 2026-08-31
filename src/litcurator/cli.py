@@ -16,7 +16,7 @@ import hashlib
 from datetime import datetime, timezone
 
 from litcurator import pipeline, db_interface, profile_interface, prompt_interface
-from litcurator.config import DOMAIN_THRESHOLD, SCORE_THRESHOLD
+from litcurator.config import BEST_OF_RUNS, DOMAIN_THRESHOLD, SCORE_THRESHOLD
 
 
 def _cmd_run(args):
@@ -196,7 +196,33 @@ def _cmd_profile_analysis(args):
                                    persist=not args.dry_run,
                                    shuffle_seed=args.shuffle_candidates,
                                    include_attached=args.include_attached,
-                                   reuse_clusters=args.reuse_clusters, **overrides)
+                                   reuse_clusters=args.reuse_clusters,
+                                   best_of=args.best_of, pick_model=args.pick_model,
+                                   **overrides)
+
+
+def _cmd_pick_best(args):
+    """Pick between consolidation rounds that already exist, without paying to re-run them.
+
+    profile_analysis already does this at the end of every round. This is for picking again --
+    a different seed, to check the answer does not depend on presentation order -- or for
+    comparing reports that were never part of one round."""
+    from litcurator import consolidation_picker
+
+    model = args.model or consolidation_picker.PICKER_MODEL
+    verdict, rounds, cost = consolidation_picker.pick_best(
+        args.reports, start=args.start, end=args.end, model=model, seed=args.seed)
+    by_label = {label: path for label, path, _ in rounds}
+    print("\nPresented as: " + ", ".join(f"{lb}={p.name}" for lb, p, _ in rounds))
+    if verdict.get("none_are_good"):
+        print("\n*** The picker judged every round weak. ***")
+    print(f"\nRanking: {' > '.join(verdict['ranking'])}")
+    for entry in verdict["assessments"]:
+        print(f"  {entry['run']}: {entry['worst_problem']}")
+    print(f"\nWhy the winner: {verdict['why_the_winner']}")
+    print(f"\nWINNER: {by_label[verdict['ranking'][0]]}")
+    print(f"[cost: ${cost:.4f}]")
+    print(f"Saved to {consolidation_picker.write_verdict(verdict, rounds, cost, model)}")
 
 
 def _cmd_promote_suggestions(args):
@@ -506,7 +532,28 @@ def main():
                       help="override the cluster (recall) model")
     pa_p.add_argument("--consolidate-model", default=None,
                       help="override the consolidate (choice) model, e.g. claude-opus-4-8")
+    pa_p.add_argument("--best-of", type=int, default=None, metavar="N",
+                      help=f"run the whole round N times and let the picker choose which to "
+                           f"record (default {BEST_OF_RUNS}, from config). Consolidation "
+                           f"is unreliable enough that one round is a lottery. 1 runs a single "
+                           f"round and skips the picker, which needs no pick prompt.")
+    pa_p.add_argument("--pick-model", default=None,
+                      help="override the model that picks between rounds")
     pa_p.set_defaults(func=_cmd_profile_analysis)
+
+    pb_p = sub.add_parser("pick_best",
+                          help="pick between consolidation rounds that already exist. "
+                               "profile_analysis does this itself; use this to re-pick with a "
+                               "different seed, or to compare reports from separate rounds.")
+    pb_p.add_argument("reports", nargs="+",
+                      help="a round directory, or two or more suggestions reports")
+    pb_p.add_argument("--start", default=None, help="the window the reports were run over")
+    pb_p.add_argument("--end", default=None)
+    pb_p.add_argument("--model", default=None, help="override the picker model")
+    pb_p.add_argument("--seed", type=int, default=None,
+                      help="fix the presentation order, to check the answer does not depend "
+                           "on it")
+    pb_p.set_defaults(func=_cmd_pick_best)
 
     ps_p = sub.add_parser("promote_suggestions",
                           help="record a dry run you liked, from its report, with no model "
