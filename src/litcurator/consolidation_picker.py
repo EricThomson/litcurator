@@ -1,8 +1,8 @@
 """
 consolidation_picker.py -- given N consolidation rounds over the same flags, pick the best.
 
-Consolidate quality swings hard on identical input, so the workflow is to run a few and keep
-the good one. promote_suggestions already keeps a round; what did not scale was reading them.
+A round's quality swings hard on identical input -- most of it in CLUSTER rather than
+consolidate, measured -- so the workflow is to run a few and keep the good one. promote_suggestions already keeps a round; what did not scale was reading them.
 This reads them, ranks them, and prints the winner's filename. It records nothing.
 
 VOCABULARY: the JUDGE scores papers (judge.py). This is the PICKER, and it chooses between

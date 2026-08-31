@@ -837,7 +837,7 @@ def parse_consolidation_md(path):
 
     THE REPORT IS THE RECORD. A dry run makes both LLM calls and then throws the parsed
     candidates away, so a run you LIKED could only be recovered by paying again -- and
-    consolidate is stochastic enough that you would get a different one. On 2026-08-30 a run
+    a round is unstable enough that you would get a different one. On 2026-08-30 a run
     the user called a shit show was followed immediately by one he called amazing, with
     NOTHING changed between them. At that variance best-of-N is the sensible workflow, and it
     only works if a good run can be kept.
@@ -960,9 +960,10 @@ def suggest_edits(start=None, end=None,
     open pattern / recurs against a closed pattern).
 
     RUNS THE WHOLE THING `best_of` TIMES AND PICKS ONE (config.BEST_OF_RUNS, default 3).
-    Consolidation is unreliable enough that a single round is a lottery -- two runs on
-    identical input, minutes apart, produced one round the user called a shit show and one he
-    called amazing. So the round is run several times, a picker reads them anonymised and
+    A round is unreliable enough that a single one is a lottery -- two runs on identical
+    input, minutes apart, produced one the user called a shit show and one he called amazing.
+    The instability is mostly CLUSTER's, not consolidate's, which is why all three rounds run
+    the whole thing rather than sharing one cluster draw. So the round is run several times, a picker reads them anonymised and
     chooses, and the winner is what gets recorded. Every round is written to disk first, so a
     failure in the pick or the record costs money but never evidence. best_of=1 skips the
     picker entirely and needs no pick prompt.

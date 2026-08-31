@@ -228,7 +228,7 @@ def _cmd_pick_best(args):
 def _cmd_promote_suggestions(args):
     """Record a run you already have, from its report, instead of paying to re-roll one.
 
-    WHY. Consolidate is stochastic enough that quality swings hard on identical input -- on
+    WHY. A ROUND is unstable enough that quality swings hard on identical input -- on
     2026-08-30 a run the user called a shit show was followed immediately by one he called
     amazing, with nothing changed between them. That makes best-of-N the sensible workflow:
     dry-run two or three times, read them, keep the one you like. Which only works if liking
@@ -557,7 +557,7 @@ def main():
 
     ps_p = sub.add_parser("promote_suggestions",
                           help="record a dry run you liked, from its report, with no model "
-                               "calls. Consolidate is stochastic enough that quality swings on "
+                               "calls. A round is unstable enough that quality swings on "
                                "identical input, so the workflow is: dry-run two or three "
                                "times, read them, promote the good one.")
     ps_p.add_argument("report", help="path to a suggestions markdown report")

@@ -249,8 +249,8 @@ Return a JSON object with two fields: "score" (a number between 0.0 and 1.0) and
 # the arithmetic is ours.
 MAX_ACT_NOW = 8
 
-# How many independent rounds `profile_analysis` runs before picking one. Consolidation is
-# unreliable enough that a single round is a lottery: two runs on identical input, minutes
+# How many independent rounds `profile_analysis` runs before picking one. A round is
+# unstable enough that a single round is a lottery: two runs on identical input, minutes
 # apart, produced one the user called a shit show and one he called amazing. So the round is
 # run three times and a picker chooses, rather than the user reading all three.
 #
