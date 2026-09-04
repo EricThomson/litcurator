@@ -504,6 +504,13 @@ _LATE_COLUMNS = [
     "ALTER TABLE prompts ADD COLUMN kind TEXT NOT NULL DEFAULT 'judge'",
     "ALTER TABLE patterns ADD COLUMN analysis_run_id TEXT REFERENCES analysis_runs(id)",
     "ALTER TABLE patterns ADD COLUMN rank INTEGER",
+    # WHO WROTE THIS ROW (added 2026-09-04, for undo_profile_analysis). A round's writes were
+    # identifiable on patterns but not on the attachments and events it added to OTHER rounds'
+    # patterns, so "undo the last run" had no clean query. Stamped by the record step; NULL
+    # means a human wrote it (workbench decisions), which is exactly what the undo guard
+    # refuses to delete.
+    "ALTER TABLE pattern_flags ADD COLUMN analysis_run_id TEXT REFERENCES analysis_runs(id)",
+    "ALTER TABLE pattern_events ADD COLUMN analysis_run_id TEXT REFERENCES analysis_runs(id)",
 ]
 
 
@@ -1011,18 +1018,20 @@ def create_pattern(conn, name, direction, description=None, suggested_edit=None,
     )
     for fid in dict.fromkeys(flag_ids):   # dedup, preserve order
         conn.execute(
-            "INSERT OR IGNORE INTO pattern_flags (pattern_id, flag_id) VALUES (?, ?)",
-            (pattern_id, fid),
+            "INSERT OR IGNORE INTO pattern_flags (pattern_id, flag_id, analysis_run_id) "
+            "VALUES (?, ?, ?)",
+            (pattern_id, fid, analysis_run_id),
         )
     conn.execute(
-        "INSERT INTO pattern_events (pattern_id, event, note) VALUES (?, 'created', ?)",
-        (pattern_id, note),
+        "INSERT INTO pattern_events (pattern_id, event, note, analysis_run_id) "
+        "VALUES (?, 'created', ?, ?)",
+        (pattern_id, note, analysis_run_id),
     )
     conn.commit()
     return pattern_id
 
 
-def attach_flags_to_pattern(conn, pattern_id, flag_ids):
+def attach_flags_to_pattern(conn, pattern_id, flag_ids, analysis_run_id=None):
     """Attach additional flags to an EXISTING pattern -- the MERGE primitive: a later
     round's flags attaching to a pattern already tracked (create_pattern only attaches
     at creation). Dedups on the pattern_flags primary key; returns the count NEWLY
@@ -1042,8 +1051,9 @@ def attach_flags_to_pattern(conn, pattern_id, flag_ids):
         "WHERE pf.pattern_id = ?", (pattern_id,)).fetchall()}
     for fid in dict.fromkeys(flag_ids):
         conn.execute(
-            "INSERT OR IGNORE INTO pattern_flags (pattern_id, flag_id) VALUES (?, ?)",
-            (pattern_id, fid),
+            "INSERT OR IGNORE INTO pattern_flags (pattern_id, flag_id, analysis_run_id) "
+            "VALUES (?, ?, ?)",
+            (pattern_id, fid, analysis_run_id),
         )
     conn.commit()
     after = {r[0] for r in conn.execute(
@@ -1052,7 +1062,8 @@ def attach_flags_to_pattern(conn, pattern_id, flag_ids):
     return len(after - before)
 
 
-def add_pattern_event(conn, pattern_id, event, note=None, profile_id=None):
+def add_pattern_event(conn, pattern_id, event, note=None, profile_id=None,
+                      analysis_run_id=None):
     """Append a fate event. Append-only. The four DECISION events
     (created|carried|incorporated|rejected) set status = latest decision. 'recurred'
     is a non-decision annotation (a closed pattern's taste came back); it is
@@ -1060,9 +1071,9 @@ def add_pattern_event(conn, pattern_id, event, note=None, profile_id=None):
     rejected. profile_id is the version that absorbed it, set on 'incorporated'; note
     carries the reasoning (esp. on reject, or the recurrence rationale)."""
     conn.execute(
-        "INSERT INTO pattern_events (pattern_id, event, note, profile_id) "
-        "VALUES (?, ?, ?, ?)",
-        (pattern_id, event, note, profile_id),
+        "INSERT INTO pattern_events (pattern_id, event, note, profile_id, analysis_run_id) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (pattern_id, event, note, profile_id, analysis_run_id),
     )
     conn.commit()
 
@@ -1278,6 +1289,96 @@ def get_closed_recurrences(conn):
             out.append(p)
     out.sort(key=lambda r: r["last_recurred_at"] or "", reverse=True)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Undoing an analysis run (undo_profile_analysis)
+# ---------------------------------------------------------------------------
+
+def latest_analysis_run(conn):
+    """The most recent analysis_runs row, or None. The ONLY run undo may target: the latest
+    run is the only one guaranteed to have nothing built on top of it, so undoing it never
+    orphans a later round's merges. Older runs are reachable by undoing repeatedly (LIFO)."""
+    # rowid, not created_at: the timestamp has second resolution, so two runs in the same
+    # second would tie and fall to id -- random hex, a coin flip. The undo-stage gate caught
+    # exactly that on its first run. rowid is insertion order, which is what "latest" means.
+    return conn.execute(
+        "SELECT * FROM analysis_runs ORDER BY rowid DESC LIMIT 1").fetchone()
+
+
+def analysis_run_manifest(conn, run_id):
+    """Everything the run wrote, plus what blocks undoing it. Pure read; the caller shows
+    this before delete_analysis_run does anything.
+
+    blockers: human work sitting on the run's minted patterns -- a decision or edit event
+    with NO run stamp (the workbench writes unstamped, the record step always stamps), or
+    hand-edited wording (update_pattern_content bumps updated_at). Undo deletes the round's
+    own writes; it must never eat a human's."""
+    minted = conn.execute(
+        "SELECT id, name, direction FROM patterns WHERE analysis_run_id = ?",
+        (run_id,)).fetchall()
+    minted_ids = [p["id"] for p in minted]
+    ph = ",".join("?" for _ in minted_ids) or "''"
+
+    foreign_attaches = conn.execute(f"""
+        SELECT pf.pattern_id, p.name, f.pmid FROM pattern_flags pf
+        JOIN patterns p ON p.id = pf.pattern_id JOIN flags f ON f.id = pf.flag_id
+        WHERE pf.analysis_run_id = ? AND pf.pattern_id NOT IN ({ph})
+    """, [run_id, *minted_ids]).fetchall()
+    foreign_events = conn.execute(f"""
+        SELECT pe.pattern_id, p.name, pe.event FROM pattern_events pe
+        JOIN patterns p ON p.id = pe.pattern_id
+        WHERE pe.analysis_run_id = ? AND pe.pattern_id NOT IN ({ph})
+    """, [run_id, *minted_ids]).fetchall()
+
+    blockers = []
+    if minted_ids:
+        for r in conn.execute(f"""
+            SELECT pe.pattern_id, p.name, pe.event FROM pattern_events pe
+            JOIN patterns p ON p.id = pe.pattern_id
+            WHERE pe.pattern_id IN ({ph}) AND pe.analysis_run_id IS NULL
+        """, minted_ids).fetchall():
+            blockers.append(f"pattern '{r['name']}' has a human event: {r['event']}")
+        # Both timestamps default to CURRENT_TIMESTAMP in the same INSERT, so they are equal
+        # at birth; only update_pattern_content (the workbench Save) moves updated_at.
+        for r in conn.execute(f"""
+            SELECT name FROM patterns
+            WHERE id IN ({ph}) AND updated_at != created_at
+        """, minted_ids).fetchall():
+            blockers.append(f"pattern '{r['name']}' has hand-edited wording")
+    return {"run": conn.execute("SELECT * FROM analysis_runs WHERE id = ?",
+                                (run_id,)).fetchone(),
+            "minted": minted, "foreign_attaches": foreign_attaches,
+            "foreign_events": foreign_events, "blockers": blockers}
+
+
+def delete_analysis_run(conn, run_id):
+    """Delete everything one analysis run wrote -- its minted patterns with their provenance
+    and events, the attachments its merges added to other rounds' patterns, the events it
+    fired on them, and the run row itself. Nothing else; flags are never touched, so every
+    flag the run had attached returns to the unattached pool.
+
+    The pattern layer is DERIVED state -- flags are the ground truth -- so this deletes a
+    derivation, not a measurement; a re-run rebuilds anything good from the same flags. The
+    caller checks analysis_run_manifest()['blockers'] first; this refuses on its own too,
+    so no code path can eat human work. Returns {patterns, attachments, events} deleted."""
+    manifest = analysis_run_manifest(conn, run_id)
+    if manifest["blockers"]:
+        raise ValueError("refusing to undo: " + "; ".join(manifest["blockers"]))
+    minted_ids = [p["id"] for p in manifest["minted"]]
+    ph = ",".join("?" for _ in minted_ids) or "''"
+    counts = {}
+    counts["events"] = conn.execute(
+        f"DELETE FROM pattern_events WHERE analysis_run_id = ? "
+        f"OR pattern_id IN ({ph})", [run_id, *minted_ids]).rowcount
+    counts["attachments"] = conn.execute(
+        f"DELETE FROM pattern_flags WHERE analysis_run_id = ? "
+        f"OR pattern_id IN ({ph})", [run_id, *minted_ids]).rowcount
+    counts["patterns"] = conn.execute(
+        "DELETE FROM patterns WHERE analysis_run_id = ?", (run_id,)).rowcount
+    conn.execute("DELETE FROM analysis_runs WHERE id = ?", (run_id,))
+    conn.commit()
+    return counts
 
 
 # ---------------------------------------------------------------------------

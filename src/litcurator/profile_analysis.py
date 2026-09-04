@@ -701,7 +701,8 @@ def _record_consolidation(conn, candidates, ordered_flags, analysis_run_id=None)
             # log reads created -> held -> carried -> incorporated for a gap noticed early,
             # promoted when it recurred, and folded in. Collapsing the two would save a row and
             # lose "when was this first recognized".
-            db_interface.add_pattern_event(conn, pid, "held", note=c.get("rationale"))
+            db_interface.add_pattern_event(conn, pid, "held", note=c.get("rationale"),
+                                           analysis_run_id=analysis_run_id)
         entry = {"id": pid, "name": _fallback_name(c),
                  "direction": direction, "priority": c.get("priority"),
                  "n_flags": len(flag_ids)}
@@ -737,7 +738,8 @@ def _record_consolidation(conn, candidates, ordered_flags, analysis_run_id=None)
                 else:
                     summary["skipped"].append({"why": "empty candidate -- nothing to record"})
                 continue
-            added = db_interface.attach_flags_to_pattern(conn, eid, flag_ids)
+            added = db_interface.attach_flags_to_pattern(conn, eid, flag_ids,
+                                                         analysis_run_id=analysis_run_id)
             if not added:
                 # Target already covers every one of these PAPERS: nothing new arrived, so no
                 # event. This is the re-run idempotency guard, not a lost candidate -- and
@@ -746,13 +748,14 @@ def _record_consolidation(conn, candidates, ordered_flags, analysis_run_id=None)
                 summary["skipped"].append({"id": eid, "why": "no new papers to attach"})
                 continue
             if st in db_interface.CLOSED_STATUSES:
-                db_interface.add_pattern_event(conn, eid, "recurred", note=c.get("rationale"))
+                db_interface.add_pattern_event(conn, eid, "recurred", note=c.get("rationale"),
+                                               analysis_run_id=analysis_run_id)
                 summary["recurred"].append({"id": eid, "name": _fallback_name(c), "added": added})
             elif st in db_interface.HELD_STATUSES and surface_of(c) == "hold":
                 # Came back, still not actionable. Logged rather than silent, so the history
                 # reads held -> held -> carried and "this has been sitting for three rounds"
                 # is answerable.
-                db_interface.add_pattern_event(conn, eid, "held",
+                db_interface.add_pattern_event(conn, eid, "held", analysis_run_id=analysis_run_id,
                                                note=f"returned: {c.get('rationale', '')}")
                 summary["held"].append({"id": eid, "name": _fallback_name(c), "added": added,
                                         "returned": True})
@@ -760,7 +763,7 @@ def _record_consolidation(conn, candidates, ordered_flags, analysis_run_id=None)
                 # PROMOTION happens here, and needs no threshold: 'carried' is an active status,
                 # so a held pattern the model now wants shown simply becomes visible. An
                 # already-open pattern was visible anyway and stays so.
-                db_interface.add_pattern_event(conn, eid, "carried",
+                db_interface.add_pattern_event(conn, eid, "carried", analysis_run_id=analysis_run_id,
                                                note=f"recurred: {c.get('rationale', '')}")
                 bucket = "surfaced" if st in db_interface.HELD_STATUSES else "merged"
                 summary[bucket].append({"id": eid, "name": _fallback_name(c), "added": added})

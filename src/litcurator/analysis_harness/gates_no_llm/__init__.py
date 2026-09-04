@@ -124,6 +124,7 @@ FREE_GATES = {
     "pattern-schema": ("pattern_schema", _run_script),
     "workbench-actions": ("workbench_actions", _run_named),
     "workbench-render": ("workbench_render", _run_script),
+    "undo-stage": ("undo_stage", _run_named),
 }
 
 

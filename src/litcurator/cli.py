@@ -285,6 +285,59 @@ def _cmd_promote_suggestions(args):
         conn.close()
 
 
+def _cmd_undo_profile_analysis(args):
+    """Undo the most recent profile_analysis (or promote_suggestions) recording.
+
+    LATEST ONLY, by design: the most recent run is the only one guaranteed to have nothing
+    built on top of it, so undoing it can never orphan a later round's merges. Run it again
+    to peel the previous one (LIFO). It stops by itself at any round whose patterns carry
+    your own decisions -- you cannot peel past your own curation.
+
+    Deletes only what that run wrote: its minted patterns, the attachments its merges added,
+    the events it fired, and the run row. Flags are never touched -- every flag the run had
+    attached returns to the unattached pool, so a re-run rebuilds from the same evidence."""
+    from litcurator import db_interface
+
+    conn = db_interface.get_connection()
+    try:
+        run = db_interface.latest_analysis_run(conn)
+        if run is None:
+            print("No analysis runs recorded -- nothing to undo.")
+            return
+        m = db_interface.analysis_run_manifest(conn, run["id"])
+        print(f"Latest analysis run: {run['created_at']}  |  "
+              f"{run['n_flags']} flags  |  ${run['cost_usd'] or 0:.4f}")
+        if m["minted"]:
+            print(f"\nWould delete {len(m['minted'])} pattern(s) this run minted:")
+            for p in m["minted"]:
+                print(f"  - [{p['direction']}] {p['name']}")
+        if m["foreign_attaches"]:
+            print("\nWould detach what its merges added to earlier patterns:")
+            for r in m["foreign_attaches"]:
+                print(f"  - {r['pmid']} out of '{r['name']}'")
+        if m["foreign_events"]:
+            print("\nWould remove the events it fired on earlier patterns:")
+            for r in m["foreign_events"]:
+                print(f"  - {r['event']} on '{r['name']}'")
+        if m["blockers"]:
+            print("\nREFUSED -- this run has your own work on it:")
+            for b in m["blockers"]:
+                print(f"  - {b}")
+            print("Undo would eat those decisions. If you truly want this round gone, "
+                  "unwind your curation first (it is yours, not the round's).")
+            raise SystemExit(1)
+        if not args.yes:
+            if input("\nType 'undo' to delete all of the above: ").strip().lower() != "undo":
+                print("Cancelled -- nothing was deleted.")
+                return
+        counts = db_interface.delete_analysis_run(conn, run["id"])
+        pool = len(db_interface.get_flags(conn, exclude_attached=True))
+        print(f"Undone: {counts['patterns']} patterns, {counts['attachments']} attachments, "
+              f"{counts['events']} events removed. {pool} flags now unattached.")
+    finally:
+        conn.close()
+
+
 def _cmd_reset_patterns(args):
     """Drop the pattern memory and NOTHING ELSE, so a bad consolidation round can be redone.
 
@@ -565,6 +618,15 @@ def main():
     ps_p.add_argument("--end", default=None)
     ps_p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     ps_p.set_defaults(func=_cmd_promote_suggestions)
+
+    up_p = sub.add_parser("undo_profile_analysis",
+                          help="undo the most recent profile_analysis recording: delete the "
+                               "patterns it minted, the attachments its merges added, and the "
+                               "events it fired. Latest run only; repeat to peel further back. "
+                               "Refuses once it reaches patterns you have curated. Flags are "
+                               "untouched and return to the unattached pool.")
+    up_p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    up_p.set_defaults(func=_cmd_undo_profile_analysis)
 
     rp_p = sub.add_parser("reset_patterns",
                           help="delete the pattern memory (patterns / provenance / events / "
