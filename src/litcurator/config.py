@@ -264,3 +264,13 @@ MAX_ACT_NOW = 8
 # $0.53 for the rounds plus $0.13 for the pick, against $0.175 for a single round. Set to 1 to
 # run one round and skip the picker entirely, which needs no pick prompt.
 BEST_OF_RUNS = 3
+
+# The accumulator pattern the review feed's one-click button feeds. A KNOWN chronic judge
+# failure (molecular papers leaking through) does not need the discovery loop re-deriving it
+# every round -- it needs a tally. The button attaches the paper's flag straight to this
+# pattern, bypassing cluster/consolidate, and the workbench card's climbing count is the
+# whole interface: NO threshold anywhere in code -- shown, never branched on -- the user
+# decides when critical mass has arrived and attacks it as its own problem.
+# NB the lookup is BY NAME among open patterns: if you rename the pattern in the workbench,
+# rename it here in the same breath or the next click mints a duplicate.
+SINKHOLE_PATTERN_NAME = "Molecular sinkhole"

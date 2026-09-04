@@ -125,6 +125,7 @@ FREE_GATES = {
     "workbench-actions": ("workbench_actions", _run_named),
     "workbench-render": ("workbench_render", _run_script),
     "undo-stage": ("undo_stage", _run_named),
+    "sinkhole-stage": ("sinkhole_stage", _run_named),
 }
 
 

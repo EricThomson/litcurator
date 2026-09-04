@@ -1292,6 +1292,60 @@ def get_closed_recurrences(conn):
 
 
 # ---------------------------------------------------------------------------
+# Accumulator patterns (the review feed's sinkhole button)
+# ---------------------------------------------------------------------------
+
+def attach_to_accumulator(conn, name, pmid):
+    """Attach a paper's LATEST flag to the named accumulator pattern, creating the pattern
+    (open, so its flags leave the unattached pool and stop re-clustering every round) on
+    first use. The human tally path for a KNOWN chronic gap: review-time certainty recorded
+    directly, no discovery loop. Writes carry no analysis_run_id -- the human signature,
+    which is also what makes these attachments invisible to undo_profile_analysis.
+
+    Returns (status, paper_count): 'attached' on success, 'already' if this paper is in,
+    'no_flag' if the paper was never flagged (the score is still the human's to give --
+    this button never invents one), 'closed' if the accumulator was incorporated/rejected
+    (the attack happened; new leaks go through normal flagging so they read as recurrence)."""
+    def _count(pattern_id):
+        return conn.execute(
+            "SELECT COUNT(DISTINCT f.pmid) FROM pattern_flags pf "
+            "JOIN flags f ON f.id = pf.flag_id WHERE pf.pattern_id = ?",
+            (pattern_id,)).fetchone()[0]
+
+    rows = conn.execute("SELECT id FROM patterns WHERE name = ? ORDER BY rowid",
+                        (name,)).fetchall()
+    statuses = {p["id"]: p["status"] for p in get_patterns(conn)}
+    open_rows = [r for r in rows if statuses.get(r["id"]) not in CLOSED_STATUSES]
+    if rows and not open_rows:
+        # Every accumulator of this name has been decided -- the attack happened. New leaks
+        # go through normal flagging, where they surface as recurrence rather than tally.
+        return "closed", _count(rows[-1]["id"])
+    pattern = open_rows[0] if open_rows else None
+
+    flag = conn.execute(
+        "SELECT id FROM flags WHERE pmid = ? ORDER BY id DESC LIMIT 1", (pmid,)).fetchone()
+    if flag is None:
+        return "no_flag", _count(pattern["id"]) if pattern else 0
+
+    if pattern is None:
+        pid = create_pattern(
+            conn, name=name, direction="over",
+            description=("Human-fed accumulator: papers the judge let through despite the "
+                         "molecular/cellular rule. Counted here until critical mass; do not "
+                         "re-derive this gap from these flags."),
+            flag_ids=[flag["id"]], note="accumulator created from the review feed")
+        return "attached", _count(pid)
+
+    already = conn.execute(
+        "SELECT 1 FROM pattern_flags pf JOIN flags f ON f.id = pf.flag_id "
+        "WHERE pf.pattern_id = ? AND f.pmid = ?", (pattern["id"], pmid)).fetchone()
+    if already:
+        return "already", _count(pattern["id"])
+    attach_flags_to_pattern(conn, pattern["id"], [flag["id"]])
+    return "attached", _count(pattern["id"])
+
+
+# ---------------------------------------------------------------------------
 # Undoing an analysis run (undo_profile_analysis)
 # ---------------------------------------------------------------------------
 
