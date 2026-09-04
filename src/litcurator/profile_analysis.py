@@ -1084,7 +1084,7 @@ def suggest_edits(start=None, end=None,
             if best_of > 1:
                 print(f"  -> {path.name}  (${total:.4f})")
 
-        winner, verdict, pick_cost = _pick_winner(rounds, start, end, pick_model)
+        winner, verdict, pick_cost, by_label = _pick_winner(rounds, start, end, pick_model)
         round_cost += pick_cost
 
         # A round the picker calls bad is the one case where recording it anyway would ignore
@@ -1112,7 +1112,7 @@ def suggest_edits(start=None, end=None,
             print(f"\n[dry run: nothing recorded]")
 
         out = _write_round_verdict(round_dir, rounds, winner, verdict, summary,
-                                   round_cost, persist and not blocked)
+                                   round_cost, persist and not blocked, by_label)
     finally:
         conn.close()
 
@@ -1157,7 +1157,7 @@ def _pick_winner(rounds, start, end, pick_model):
     is needed and nothing is spent -- which is what keeps BEST_OF_RUNS=1 usable before anyone
     has authored one."""
     if len(rounds) == 1:
-        return rounds[0][0], None, 0.0
+        return rounds[0][0], None, 0.0, None
     # Lazy: consolidation_picker imports this module.
     from litcurator import consolidation_picker
     print(f"\n=== Picking among {len(rounds)} rounds ===")
@@ -1171,7 +1171,7 @@ def _pick_winner(rounds, start, end, pick_model):
     for entry in verdict["assessments"]:
         print(f"  {entry['run']}: {entry['worst_problem']}")
     print(f"[pick cost: ${cost:.4f}]")
-    return winner, verdict, cost
+    return winner, verdict, cost, by_label
 
 
 def _echo_record_summary(summary):
@@ -1198,7 +1198,8 @@ def _echo_record_summary(summary):
     _echo(f"[{_summary_line(summary)}]\n")
 
 
-def _write_round_verdict(round_dir, rounds, winner, verdict, summary, cost, recorded):
+def _write_round_verdict(round_dir, rounds, winner, verdict, summary, cost, recorded,
+                         by_label=None):
     """verdict.md -- what this round produced, which run won, and what was written.
 
     Always written, one round or several: the round directory should say what happened without
@@ -1212,13 +1213,18 @@ def _write_round_verdict(round_dir, rounds, winner, verdict, summary, cost, reco
                          "ranking below is a least-bad ordering.\n")
         lines.append(f"WINNER: {winner.name}\n")
         lines.append("## Ranking\n")
-        lines.append("\n".join(f"{place}. round {label}" for place, label in
+        # Filenames beside the shuffled letters: without the mapping, "round B was sloppy"
+        # is unreadable a month later -- it only ever existed on the console.
+        def _name(label):
+            return (f"round {label} -- {by_label[label].name}" if by_label
+                    else f"round {label}")
+        lines.append("\n".join(f"{place}. {_name(label)}" for place, label in
                                enumerate(verdict["ranking"], start=1)))
         lines.append("\n## Why the winner\n")
         lines.append(verdict["why_the_winner"])
         lines.append("\n## The worst thing in each round\n")
         for entry in verdict["assessments"]:
-            lines.append(f"- **{entry['run']}**: {entry['worst_problem']}")
+            lines.append(f"- **{_name(entry['run'])}**: {entry['worst_problem']}")
     else:
         lines.append(f"Single round, nothing to pick: {winner.name}\n")
     lines.append("\n## Recorded\n")
