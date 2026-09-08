@@ -88,14 +88,31 @@ def _pattern_card(conn, p, held=False):
               if p.get("mean_abs_delta") is not None else []),
             dbc.Badge(p["status"], color="light", text_color="dark", className="ms-2",
                       style={"flex": "0 0 auto"}),
+            *([dbc.Badge("PROMPT JOB", color="warning", text_color="dark", className="ms-2",
+                         title="the profile already states this and the judge scored against "
+                               "it anyway -- more profile prose will not help",
+                         style={"flex": "0 0 auto"})]
+              if p.get("blame") == "prompt" else []),
         ], className="d-flex align-items-center mb-2"),
-        dbc.Select(id={"type": "pat-dir", "pid": pid},
-                   options=[{"label": d, "value": d} for d in DIRECTIONS],
-                   value=p["direction"], size="sm", className="mb-2"),
+        dbc.Row([
+            dbc.Col(dbc.Select(id={"type": "pat-dir", "pid": pid},
+                               options=[{"label": d, "value": d} for d in DIRECTIONS],
+                               value=p["direction"], size="sm"), width=6),
+            # WHICH ARTIFACT IS AT FAULT. The model proposes it from the note; this is where
+            # you overrule it. A prompt-blamed pattern closes against the judge prompt, so the
+            # 'incorporated' event stamps the artifact that actually absorbed the fix.
+            dbc.Col(dbc.Select(id={"type": "pat-blame", "pid": pid},
+                               options=[{"label": "fix: profile", "value": "profile"},
+                                        {"label": "fix: judge prompt", "value": "prompt"}],
+                               value=p.get("blame") or "profile", size="sm"), width=6),
+        ], className="g-2 mb-2"),
         html.Small("description", className="text-muted"),
         dbc.Textarea(id={"type": "pat-desc", "pid": pid}, value=p.get("description") or "",
                      style={"height": "3rem", "fontSize": "0.8rem"}, className="mb-2"),
-        html.Small("suggested edit (your working draft -- you author the profile prose)",
+        html.Small("suggested edit -- what to change in the JUDGE PROMPT (scoring "
+                   "procedure); profile prose will not fix this one"
+                   if p.get("blame") == "prompt" else
+                   "suggested edit (your working draft -- you author the profile prose)",
                    className="text-muted"),
         dbc.Textarea(id={"type": "pat-sugg", "pid": pid}, value=p.get("suggested_edit") or "",
                      style={"height": "4rem", "fontSize": "0.8rem"}, className="mb-2"),
@@ -383,10 +400,21 @@ def cb_pattern_fate(_hold, _incorp, _reject, _promote, _reject_notes, tab):
             msg = ("Held -- off the queue, kept in memory, and its papers go back into the "
                    "pool for next round.")
         elif typ == "pat-incorporate":
-            profile_id = db_interface.get_or_create_profile(
-                conn, profile_interface.read_active_or_empty())
-            db_interface.add_pattern_event(conn, pid, "incorporated", profile_id=profile_id)
-            msg = f"Incorporated into active profile {profile_id[:12]}."
+            # Stamp the artifact that actually absorbed the fix. Before this, a prompt-blamed
+            # pattern recorded a profile version that does not and never will contain the edit
+            # -- which is what happened to the Annual Review pattern on 2026-09-01.
+            row = conn.execute("SELECT blame FROM patterns WHERE id = ?", (pid,)).fetchone()
+            if row and row["blame"] == "prompt":
+                from litcurator import prompt_interface
+                prompt_id = db_interface.get_or_create_prompt(
+                    conn, prompt_interface.read_active_or_empty())
+                db_interface.add_pattern_event(conn, pid, "incorporated", prompt_id=prompt_id)
+                msg = f"Incorporated into active JUDGE PROMPT {prompt_id[:12]}."
+            else:
+                profile_id = db_interface.get_or_create_profile(
+                    conn, profile_interface.read_active_or_empty())
+                db_interface.add_pattern_event(conn, pid, "incorporated", profile_id=profile_id)
+                msg = f"Incorporated into active profile {profile_id[:12]}."
         else:  # pat-reject
             note = _state_value(ctx.states_list[0], pid)
             db_interface.add_pattern_event(conn, pid, "rejected", note=note or None)
@@ -406,9 +434,10 @@ def cb_pattern_fate(_hold, _incorp, _reject, _promote, _reject_notes, tab):
     State({"type": "pat-dir", "pid": ALL}, "value"),
     State({"type": "pat-desc", "pid": ALL}, "value"),
     State({"type": "pat-sugg", "pid": ALL}, "value"),
+    State({"type": "pat-blame", "pid": ALL}, "value"),
     prevent_initial_call=True,
 )
-def cb_pattern_save(clicks, _names, _dirs, _descs, _suggs):
+def cb_pattern_save(clicks, _names, _dirs, _descs, _suggs, _blames):
     trig = ctx.triggered_id
     if not trig or not any(c for c in (clicks or []) if c):
         return no_update, no_update
@@ -421,6 +450,7 @@ def cb_pattern_save(clicks, _names, _dirs, _descs, _suggs):
             direction=_state_value(ctx.states_list[1], pid),
             description=_state_value(ctx.states_list[2], pid),
             suggested_edit=_state_value(ctx.states_list[3], pid),
+            blame=_state_value(ctx.states_list[4], pid),
         )
     finally:
         conn.close()

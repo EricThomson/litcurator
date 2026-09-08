@@ -185,14 +185,21 @@ def _click_fate(wb, pids, pid, which, reject_notes=None, tab="active"):
 
 
 def _click_save(wb, pids, pid, values):
-    """Drive cb_pattern_save. values maps pid -> (name, direction, description, suggested)
-    for EVERY card on screen, because the callback receives them all and has to pick."""
-    fields = ("pat-name", "pat-dir", "pat-desc", "pat-sugg")
-    states = [[{"id": {"type": f, "pid": p}, "value": values[p][i]} for p in pids]
+    """Drive cb_pattern_save. values maps pid -> (name, direction, description, suggested
+    [, blame]) for EVERY card on screen, because the callback receives them all and has to
+    pick. blame is optional in the fixture and defaults to 'profile'."""
+    fields = ("pat-name", "pat-dir", "pat-desc", "pat-sugg", "pat-blame")
+
+    def field(p, i):
+        v = values[p]
+        return v[i] if i < len(v) else "profile"
+
+    states = [[{"id": {"type": f, "pid": p}, "value": field(p, i)} for p in pids]
               for i, f in enumerate(fields)]
     wb.ctx = _Ctx({"type": "pat-save", "pid": pid}, states)
     clicks = [1 if p == pid else None for p in pids]
-    return wb.cb_pattern_save(clicks, *[[values[p][i] for p in pids] for i in range(4)])
+    return wb.cb_pattern_save(clicks, *[[field(p, i) for p in pids]
+                                        for i in range(len(fields))])
 
 
 # ---------------------------------------------------------------------------

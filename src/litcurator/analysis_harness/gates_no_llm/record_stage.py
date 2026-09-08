@@ -382,6 +382,11 @@ def main():
         {"choice": "new", "name": "A Gap", "direction": "under", "rank": 1,
          "priority": "act_now", "description": "one sentence", "suggested_edit": "add this",
          "rationale": "because", "paper_numbers": [1, 2]},
+        # blame='prompt' renders as a {PROMPT} token; blame='profile' is the default and
+        # renders nothing, so only the prompt case needs a round-trip shape.
+        {"choice": "new", "name": "Prompt Job", "direction": "under", "rank": 5,
+         "priority": "act_now", "blame": "prompt", "rationale": "profile already says it",
+         "paper_numbers": [7]},
         {"choice": "new", "name": "Demoted", "direction": "over", "rank": 9, "priority": "hold",
          "priority_asked": "act_now", "rationale": "r [demoted: over the cap]",
          "paper_numbers": [3]},

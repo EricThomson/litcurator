@@ -452,6 +452,20 @@ _CONSOLIDATE_TOOL = {
                         # recorded either way. It replaced an act_now/defer pair where both
                         # values produced an identical screen -- nothing in the workbench read
                         # the field at all, so it was a label with no consumer.
+                        # WHICH ARTIFACT TO FIX. Decidable from what this step already
+                        # holds -- the profile is in its context and the note usually says
+                        # it outright -- so it is a lookup, not an etiology judgment, and
+                        # the user overrides it in the workbench with a click.
+                        "blame": {"type": "string", "enum": list(db_interface.BLAMES),
+                            "description": "'profile' if the profile does not state this "
+                                           "taste or states it too vaguely -- the fix is "
+                                           "profile prose. 'prompt' if the profile ALREADY "
+                                           "states it clearly and the judge scored against "
+                                           "it anyway -- then more profile prose will not "
+                                           "help and the scoring procedure is at fault. The "
+                                           "user's note is the best evidence: 'my profile "
+                                           "literally says X' means prompt; 'I wasn't clear "
+                                           "in my profile' means profile"},
                         "rank": {"type": "integer",
                             "description": "1 = the pattern whose fix would improve the judge "
                                            "most. Rank ALL candidates against each other, no "
@@ -688,6 +702,7 @@ def _record_consolidation(conn, candidates, ordered_flags, analysis_run_id=None)
             direction=direction,
             description=c.get("description"), suggested_edit=c.get("suggested_edit"),
             flag_ids=flag_ids, note=note or None, analysis_run_id=analysis_run_id,
+            blame=(c.get("blame") if c.get("blame") in db_interface.BLAMES else "profile"),
             # Kept so the workbench can show the queue in the order the model ranked it.
             rank=c["rank"] if isinstance(c.get("rank"), int) else None)
 
@@ -705,6 +720,7 @@ def _record_consolidation(conn, candidates, ordered_flags, analysis_run_id=None)
                                            analysis_run_id=analysis_run_id)
         entry = {"id": pid, "name": _fallback_name(c),
                  "direction": direction, "priority": c.get("priority"),
+                 "blame": c.get("blame") or "profile",
                  "n_flags": len(flag_ids)}
         if recovered:
             entry["recovered"] = True
@@ -827,6 +843,7 @@ _HEAD = re.compile(
     r"^- \*\*(?P<choice>\w+)\*\*"
     r"(?: -- (?P<name>.*?))?"
     r"(?: \((?P<direction>over|under)\))?"
+    r"(?P<blame> \{PROMPT\})?"
     r"(?: #(?P<rank>\d+))?"
     r"(?: \[(?P<priority>\w+)\])?"
     r"(?: \(asked (?P<asked>\w+)\))?"
@@ -869,6 +886,8 @@ def parse_consolidation_md(path):
                 cur["name"] = g["name"]
             if g["direction"]:
                 cur["direction"] = g["direction"]
+            if g["blame"]:
+                cur["blame"] = "prompt"
             if g["rank"]:
                 cur["rank"] = int(g["rank"])
             if g["priority"]:
@@ -906,6 +925,10 @@ def _format_consolidation_md(candidates):
             head += f" -- {c['name']}"
         if c.get("direction"):
             head += f" ({c['direction']})"
+        # One token, so a prompt-blamed pattern survives the report round-trip that
+        # promote_suggestions depends on.
+        if c.get("blame") == "prompt":
+            head += " {PROMPT}"
         if isinstance(c.get("rank"), int):
             head += f" #{c['rank']}"
         if c.get("priority"):
@@ -1180,8 +1203,9 @@ def _echo_record_summary(summary):
         rec = " (recovered)" if c.get("recovered") else ""
         coerced = (f" (direction {c['direction_coerced']!r} not recognized)"
                    if c.get("direction_coerced") else "")
+        job = "   ** PROMPT JOB **" if c.get("blame") == "prompt" else ""
         _echo(f"  + new [{c['direction']}] {c['name']}{tag}{rec}{coerced}"
-              f"  ({c['n_flags']} flags)\n")
+              f"  ({c['n_flags']} flags){job}\n")
     for c in summary["merged"]:
         _echo(f"  ~ merged into {c['id'][:12]} (+{c['added']} flags -> carried)\n")
     for c in summary["recurred"]:

@@ -261,6 +261,18 @@ CREATE TABLE IF NOT EXISTS flags (
 # fixture, where the test author sets it, never in a field the thing under test writes.
 DIRECTIONS = ("over", "under")
 
+# WHICH ARTIFACT IS AT FAULT. A flag measures the JUDGE, and the judge is profile x prompt,
+# so the residual belongs to one of them. The question is decidable from what consolidate is
+# already shown -- the profile is in its context, and the user's note usually says it
+# outright ("Profile clearly says news and views should always be below 0.15, so how was
+# this scored at 0.55?" vs "I probably wasn't super clear in my profile").
+#   profile  the taste is missing or vague -> the fix is profile prose
+#   prompt   the taste is already stated and the judge did not act on it -> fix the
+#            scoring procedure; more profile prose provably does not help (measured
+#            2026-09-07: 0 of 4 such patterns moved after being incorporated)
+# Defaults to profile, which is exactly today's behaviour, so an omitted value is safe.
+BLAMES = ("profile", "prompt")
+
 # name/description/suggested_edit are editable working drafts (the human tweaks them in
 # place); the fate lives in pattern_events. The CHECK is GENERATED from DIRECTIONS rather
 # than restating it -- it is no longer an independent check, and that is correct: independence
@@ -504,6 +516,7 @@ _LATE_COLUMNS = [
     "ALTER TABLE prompts ADD COLUMN kind TEXT NOT NULL DEFAULT 'judge'",
     "ALTER TABLE patterns ADD COLUMN analysis_run_id TEXT REFERENCES analysis_runs(id)",
     "ALTER TABLE patterns ADD COLUMN rank INTEGER",
+    "ALTER TABLE patterns ADD COLUMN blame TEXT NOT NULL DEFAULT 'profile'",
     # WHO WROTE THIS ROW (added 2026-09-04, for undo_profile_analysis). A round's writes were
     # identifiable on patterns but not on the attachments and events it added to OTHER rounds'
     # patterns, so "undo the last run" had no clean query. Stamped by the record step; NULL
@@ -511,6 +524,10 @@ _LATE_COLUMNS = [
     # refuses to delete.
     "ALTER TABLE pattern_flags ADD COLUMN analysis_run_id TEXT REFERENCES analysis_runs(id)",
     "ALTER TABLE pattern_events ADD COLUMN analysis_run_id TEXT REFERENCES analysis_runs(id)",
+    # The symmetric half of profile_id. Without it a prompt-blamed pattern's incorporation
+    # stamps a profile version that does not and never will contain the edit -- which is
+    # what happened to the Annual Review pattern on 2026-09-01.
+    "ALTER TABLE pattern_events ADD COLUMN prompt_id TEXT REFERENCES prompts(id)",
 ]
 
 
@@ -1018,7 +1035,8 @@ def get_flags(conn, start=None, end=None, exclude_attached=False):
 # ---------------------------------------------------------------------------
 
 def create_pattern(conn, name, direction, description=None, suggested_edit=None,
-                   flag_ids=(), note=None, analysis_run_id=None, rank=None):
+                   flag_ids=(), note=None, analysis_run_id=None, rank=None,
+                   blame='profile'):
     """Create a pattern from the flags that produced it, in one transaction: the
     pattern row, its pattern_flags provenance links, and an initial 'created' event.
     Returns the new pattern id. direction in {over, under}.
@@ -1032,8 +1050,9 @@ def create_pattern(conn, name, direction, description=None, suggested_edit=None,
     pattern_id = uuid.uuid4().hex
     conn.execute(
         "INSERT INTO patterns (id, name, direction, description, suggested_edit, rank, "
-        "analysis_run_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (pattern_id, name, direction, description, suggested_edit, rank, analysis_run_id),
+        "analysis_run_id, blame) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (pattern_id, name, direction, description, suggested_edit, rank, analysis_run_id,
+         blame if blame in BLAMES else "profile"),
     )
     for fid in dict.fromkeys(flag_ids):   # dedup, preserve order
         conn.execute(
@@ -1082,7 +1101,7 @@ def attach_flags_to_pattern(conn, pattern_id, flag_ids, analysis_run_id=None):
 
 
 def add_pattern_event(conn, pattern_id, event, note=None, profile_id=None,
-                      analysis_run_id=None):
+                      analysis_run_id=None, prompt_id=None):
     """Append a fate event. Append-only. The four DECISION events
     (created|carried|incorporated|rejected) set status = latest decision. 'recurred'
     is a non-decision annotation (a closed pattern's taste came back); it is
@@ -1090,21 +1109,22 @@ def add_pattern_event(conn, pattern_id, event, note=None, profile_id=None,
     rejected. profile_id is the version that absorbed it, set on 'incorporated'; note
     carries the reasoning (esp. on reject, or the recurrence rationale)."""
     conn.execute(
-        "INSERT INTO pattern_events (pattern_id, event, note, profile_id, analysis_run_id) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (pattern_id, event, note, profile_id, analysis_run_id),
+        "INSERT INTO pattern_events (pattern_id, event, note, profile_id, analysis_run_id, "
+        "prompt_id) VALUES (?, ?, ?, ?, ?, ?)",
+        (pattern_id, event, note, profile_id, analysis_run_id, prompt_id),
     )
     conn.commit()
 
 
 def update_pattern_content(conn, pattern_id, name=None, direction=None,
-                           description=None, suggested_edit=None):
+                           description=None, suggested_edit=None, blame=None):
     """Edit a pattern's working-draft content in place (only non-None fields change);
     bumps updated_at. The fate log is untouched -- content is a draft you tweak,
     fate is the append-only memory."""
     sets, params = [], []
     for col, val in (("name", name), ("direction", direction),
-                     ("description", description), ("suggested_edit", suggested_edit)):
+                     ("description", description), ("suggested_edit", suggested_edit),
+                     ("blame", blame)):
         if val is not None:
             sets.append(f"{col} = ?")
             params.append(val)
