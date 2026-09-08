@@ -70,6 +70,7 @@ def set_active(text, notes=None):
     (or None if there was no prior active prompt)."""
     backup = None
     parent_id = None
+    current = None
     if JUDGE_PROMPT_PATH.exists():
         current = JUDGE_PROMPT_PATH.read_text(encoding="utf-8", errors="replace")
         parent_id = hashlib.sha256(current.encode("utf-8")).hexdigest()
@@ -82,6 +83,15 @@ def set_active(text, notes=None):
     from litcurator import db_interface
     conn = db_interface.get_connection()
     try:
+        # REGISTER THE OUTGOING PROMPT FIRST, so the parent this insert points at cannot be
+        # missing. Content-addressed and idempotent, so normally it is a no-op that costs one
+        # SELECT. It stops mattering only in the case that actually bit: a database restore
+        # erased a prompts row, every later promotion threw on the foreign key AFTER the file
+        # was written, and two active judge prompts went unrecorded. Healing one link per
+        # promotion beats failing after the file has already changed.
+        if current is not None:
+            db_interface.get_or_create_prompt(conn, current,
+                                              notes="re-registered during a later promote")
         db_interface.get_or_create_prompt(conn, text, parent_id=parent_id, notes=notes)
     finally:
         conn.close()

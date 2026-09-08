@@ -20,9 +20,20 @@ from litcurator.config import BEST_OF_RUNS, DOMAIN_THRESHOLD, SCORE_THRESHOLD
 
 
 def _cmd_run(args):
+    """--profile-file / --prompt-file score a window under a regime that is NOT the active
+    one, without touching the live artifacts. That is how an edit gets measured: re-score the
+    same papers under the draft and compare class means. Each combination is its own
+    scoring_run, stamped with the profile and prompt that produced it."""
+    import pathlib as _pl
+
+    def _read(path):
+        return _pl.Path(path).read_text(encoding="utf-8", errors="replace") if path else None
+
     try:
         pipeline.run(args.start, args.end, benchmark=args.benchmark,
-                     final_test=args.final_test)
+                     final_test=args.final_test,
+                     profile_text=_read(args.profile_file),
+                     prompt_text=_read(args.prompt_file))
     except pipeline.LockedTestSetError as e:
         print(f"\nBLOCKED: {e}\n")
         raise SystemExit(1)
@@ -550,6 +561,15 @@ def main():
     status_p.add_argument("--start", default=None, help="scope --funnel/--flags to pub dates >= this")
     status_p.add_argument("--end", default=None, help="scope --funnel/--flags to pub dates <= this")
     status_p.set_defaults(func=_cmd_status)
+
+    run_p.add_argument("--profile-file", default=None, metavar="PATH",
+                       help="score under this profile instead of the active one (a file from "
+                            "profile/versions/, or a draft). The live profile is untouched; "
+                            "the run is stamped with whichever profile actually produced it.")
+    run_p.add_argument("--prompt-file", default=None, metavar="PATH",
+                       help="score under this judge prompt instead of the active one. Pair it "
+                            "with --profile-file to re-score a window under any past or draft "
+                            "regime and measure what an edit actually did.")
 
     review_p = sub.add_parser("review", help="launch the review feed (browse judged papers, flag)")
     review_p.add_argument("--start", default=None, help="pre-fill the pub-date filter start (YYYY-MM-DD)")

@@ -740,10 +740,29 @@ def get_analysis_run(conn, run_id):
 
 def get_or_create_prompt(conn, content, parent_id=None, notes=None, kind="judge"):
     """Snapshot a prompt. id = SHA256(content); identical content returns the existing id (no
-    duplicate row). `kind` is 'judge' or 'analysis' -- see the prompts DDL. Returns the id."""
+    duplicate row). `kind` is 'judge' or 'analysis' -- see the prompts DDL. Returns the id.
+
+    NEVER RAISES ON A MISSING PARENT, and that is the whole point of the guard below.
+    parent_id is a FOREIGN KEY and get_connection sets PRAGMA foreign_keys=ON, so a parent that
+    is absent makes the INSERT throw. That is exactly what happened: a database snapshot restore
+    on 2026-08-30 deleted one prompts row, and every judge-prompt promotion after it threw --
+    AFTER set_active had already written the file, so the promotion looked like it worked and
+    two active versions went unregistered. One restore silently poisoned the artifact forever.
+
+    A broken chain is bad; a promotion that half-happens is worse. So an unknown parent drops to
+    NULL with a loud warning: the new version is always recorded, the break is visible when it
+    happens rather than months later, and versions/ still holds what is needed to repair the
+    link."""
     prompt_id = _sha256(content)
     existing = conn.execute("SELECT id FROM prompts WHERE id = ?", (prompt_id,)).fetchone()
     if not existing:
+        if parent_id and not conn.execute(
+                "SELECT 1 FROM prompts WHERE id = ?", (parent_id,)).fetchone():
+            print(f"WARNING: parent prompt {parent_id[:12]} is not registered, so "
+                  f"{prompt_id[:12]} is being recorded as a new root. The lineage is broken "
+                  f"here -- usually a database snapshot restore. Repair it from "
+                  f"prompt/versions/ once you know which version is missing.")
+            parent_id = None
         conn.execute(
             "INSERT INTO prompts (id, content, parent_id, notes, kind) VALUES (?, ?, ?, ?, ?)",
             (prompt_id, content, parent_id, notes, kind),

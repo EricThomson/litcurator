@@ -58,9 +58,21 @@ def _overlaps_locked_test(start, end):
 
 
 def run(start, end, benchmark=False, final_test=False, domain_threshold=DOMAIN_THRESHOLD,
-        judge_batch_size=JUDGE_BATCH_SIZE):
+        judge_batch_size=JUDGE_BATCH_SIZE, profile_text=None, prompt_text=None):
     """Run the pipeline over [start, end] (ISO dates). Idempotent/resumable.
     Returns {judged, cost, mode}.
+
+    COUNTERFACTUAL SCORING: pass profile_text / prompt_text to score a window under a regime
+    that is NOT the active one; both default to the artifact on disk, so omitting them is
+    exactly today's behaviour. This is what makes an edit measurable. Until it existed, the
+    only way to score a window under a draft was to overwrite the live files, so no paper had
+    ever been scored under two regimes and no edit to either artifact had ever been evaluated
+    on anything -- while judge_harness.run_tests had taken both as arguments all along.
+
+    Nothing else is needed to keep the results straight: find_or_create_scoring_run keys on
+    (stage, model, mode, profile_id, judge_prompt_hash, window, threshold), so each regime is a
+    genuinely new run, stamped with the exact profile and prompt that produced it, and the
+    append-only invariant holds without a --force anywhere.
 
     Refuses any window overlapping the locked November 2025 test set unless
     final_test=True -- that test must be judged exactly once, at the end."""
@@ -72,7 +84,8 @@ def run(start, end, benchmark=False, final_test=False, domain_threshold=DOMAIN_T
             f"run, pass final_test=True (CLI: --final-test). Doing so spends the test set."
         )
     t0 = time.monotonic()
-    profile_text = profile_interface.load_active()   # raises if no active profile
+    # raises if no active profile, unless a counterfactual one was passed in
+    profile_text = profile_text if profile_text is not None else profile_interface.load_active()
     mode = "benchmark" if benchmark else "live"
     print(f"=== litcurator pipeline [{start} .. {end}] mode={mode} ===")
     print_model_banner(benchmark)
@@ -100,7 +113,7 @@ def run(start, end, benchmark=False, final_test=False, domain_threshold=DOMAIN_T
         _pagination_stage(conn, survivors)
 
         judged, cost = _judge_stage(conn, survivors, profile_text, profile_id, mode,
-                                    start, end, domain_threshold, judge_batch_size)
+                                    start, end, domain_threshold, judge_batch_size, prompt_text)
     finally:
         conn.close()
 
@@ -183,12 +196,12 @@ def _pagination_stage(conn, survivors):
 
 
 def _judge_stage(conn, survivors, profile_text, profile_id, mode,
-                 start, end, threshold, batch_size):
+                 start, end, threshold, batch_size, prompt_text=None):
     """Stage 2: judge each not-yet-judged survivor against the profile, as an
     append-only curation run stamped with the profile + prompt that produced it.
     The active judge prompt is loaded from disk and registered (content-addressed)
     so the run's judge_prompt_hash == prompts.id -- prompt provenance by JOIN."""
-    system_prompt = prompt_interface.load_active()
+    system_prompt = prompt_text if prompt_text is not None else prompt_interface.load_active()
     prompt_id = db_interface.get_or_create_prompt(conn, system_prompt)
     run_id = db_interface.find_or_create_scoring_run(
         conn, "curation", judge.MODEL, mode, profile_id=profile_id,

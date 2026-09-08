@@ -143,6 +143,7 @@ def set_active(text, notes=None):
     split(text)
     backup = None
     parent_id = None
+    current = None
     if ANALYSIS_PROMPT_PATH.exists():
         current = ANALYSIS_PROMPT_PATH.read_text(encoding="utf-8", errors="replace")
         parent_id = hashlib.sha256(current.encode("utf-8")).hexdigest()
@@ -155,6 +156,12 @@ def set_active(text, notes=None):
     from litcurator import db_interface
     conn = db_interface.get_connection()
     try:
+        # Outgoing first -- see prompt_interface.set_active for why. The analysis chain
+        # carries the same restore wound (eb994c4c702d is an orphan root).
+        if current is not None:
+            db_interface.get_or_create_prompt(
+                conn, current, notes="re-registered during a later promote",
+                kind="analysis")
         db_interface.get_or_create_prompt(conn, text, parent_id=parent_id, notes=notes,
                                           kind="analysis")
     finally:
