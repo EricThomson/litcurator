@@ -236,6 +236,25 @@ def _cmd_pick_best(args):
     print(f"Saved to {consolidation_picker.write_verdict(verdict, rounds, cost, model)}")
 
 
+def _stamped_or_active(conn, stamps, key, table, register_active):
+    """The artifact id a report names, or today's active one with a printed reason.
+
+    Never silent: a round recorded against the wrong profile or prompt is unfixable later and
+    looks exactly like a correct one, so every fallback announces itself."""
+    short = stamps.get(key)
+    if short:
+        resolved = db_interface.resolve_short_id(conn, table, short)
+        if resolved:
+            return resolved
+        print(f"WARNING: this report ran under {key} {short}, which is not in the database. "
+              f"Recording against the ACTIVE {key} instead -- the stamp is in the report if "
+              f"you need to repair it.")
+    else:
+        print(f"NOTE: this report predates artifact stamps, so its {key} is unknown. "
+              f"Recording against the active one.")
+    return register_active()
+
+
 def _cmd_promote_suggestions(args):
     """Record a run you already have, from its report, instead of paying to re-roll one.
 
@@ -279,15 +298,38 @@ def _cmd_promote_suggestions(args):
 
         # Same provenance as a live run: the analysis_run row exists before any pattern, and
         # the prompt is registered (content-addressed, so an unchanged one adds no row).
-        analysis_prompt = analysis_prompt_interface.load_active()
-        seed_text = profile_interface.load_active()
+        #
+        # PREFER THE REPORT'S OWN STAMPS over whatever is active today. This round ran under
+        # particular artifacts, possibly days ago, and registering today's would attach it to
+        # files it never read -- the same class of untruth as stamping a profile version for a
+        # prompt-blamed pattern. Reports written before 2026-09-19 carry no stamps, so they
+        # fall back to active and SAY SO rather than substituting silently.
+        stamps = error_analysis.parse_report_stamps(args.report)
+        analysis_prompt_id = _stamped_or_active(
+            conn, stamps, "analysis prompt", "prompts",
+            lambda: db_interface.get_or_create_prompt(
+                conn, analysis_prompt_interface.load_active(), kind="analysis"))
+        profile_id = _stamped_or_active(
+            conn, stamps, "profile", "profiles",
+            lambda: db_interface.get_or_create_profile(
+                conn, profile_interface.load_active()))
+        judge_prompt_id = _stamped_or_active(
+            conn, stamps, "judge prompt", "prompts",
+            lambda: db_interface.get_or_create_prompt(
+                conn, prompt_interface.load_active(), kind="judge"))
+
         run_id = db_interface.create_analysis_run(
             conn,
-            db_interface.get_or_create_prompt(conn, analysis_prompt, kind="analysis"),
+            analysis_prompt_id,
             error_analysis.DEFAULT_CLUSTER_MODEL,
             error_analysis.DEFAULT_CONSOLIDATE_MODEL,
-            profile_id=db_interface.get_or_create_profile(conn, seed_text),
-            date_start=args.start, date_end=args.end, n_flags=n_now, cost_usd=0.0)
+            profile_id=profile_id,
+            date_start=args.start, date_end=args.end, n_flags=n_now, cost_usd=0.0,
+            judge_prompt_id=judge_prompt_id,
+            # No pick prompt, and this is not an omission: promote_suggestions IS the human
+            # overriding the picker, so stamping one would assert a machine choice that never
+            # happened.
+            pick_prompt_id=None)
         summary = error_analysis._record_consolidation(
             conn, candidates, ordered_flags, analysis_run_id=run_id)
         print(error_analysis._summary_line(summary))

@@ -12,6 +12,6 @@ For this to work you need some API keys that you should store in `.env`:
 - An API key for an LLM vendor (I'm currently using anthropic). 
 
 ## Status
-- Tweaking prompts for profile updater (cluster/consolidater). 
-- Running 2025 simulation with labeled data to see how it works.  
+- Major refactor with error analysis.  
+- Run 2025 simulation with labeled data to see how it works.  
 

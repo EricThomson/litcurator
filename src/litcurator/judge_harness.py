@@ -5,7 +5,7 @@ Distinct from the benchmark (the slow statistical eval): a small fixture of OBVI
 papers with loose bands (reject <= 0.25, keep >= 0.75, a dead middle), each tagged
 with the boundary it covers. Every case is scored under the ACTIVE profile plus a
 given prompt -- the active prompt on disk by default, or a DRAFT passed in from the
-workbench -- so it tests the WHOLE JUDGE and guards BOTH biconvex knobs (prompt AND
+workbench -- so it tests the WHOLE JUDGE and guards BOTH of the judge's inputs (prompt AND
 profile) at once. A red can be either knob.
 
 A case is keyed by kind:

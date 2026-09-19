@@ -16,7 +16,7 @@ Tables:
   profiles        content-addressed user-profile snapshots: id = SHA256(content),
                   parent_id chains the lineage, the seed is the root (parent_id NULL).
   prompts         content-addressed judge-prompt snapshots, mirroring profiles --
-                  the other biconvex knob. scoring_runs.judge_prompt_hash == id.
+                  the judge's second input. scoring_runs.judge_prompt_hash == id.
   scoring_runs    one row per scoring session: stage (domain|curation), model,
                   mode, profile_id, judge_prompt_hash, date window, cost,
                   completed_at (NULL = in flight).
@@ -108,7 +108,7 @@ CREATE TABLE IF NOT EXISTS profiles (
 # prompt) is the root (parent_id NULL). The active prompt is whatever is in
 # prompt/judge_prompt.md on disk; at run time it is hashed and registered here.
 # scoring_runs.judge_prompt_hash equals this id, so "which prompt produced this
-# score" is answerable by JOIN -- the prompt half of the biconvex provenance.
+# score" is answerable by JOIN -- the prompt half of the judge's provenance.
 # Every hand-authored PROMPT, content-addressed exactly like profiles. `kind` says which
 # artifact a row belongs to, so lineage stays per-artifact:
 #   judge     the scoring procedure the judge follows (prompt/judge_prompt.md)
@@ -528,6 +528,21 @@ _LATE_COLUMNS = [
     # stamps a profile version that does not and never will contain the edit -- which is
     # what happened to the Annual Review pattern on 2026-09-01.
     "ALTER TABLE pattern_events ADD COLUMN prompt_id TEXT REFERENCES prompts(id)",
+    # WHICH ARTIFACTS THE ROUND ACTUALLY READ (added 2026-09-19). analysis_runs recorded the
+    # analysis prompt and the profile, and from 2026-09-18 consolidate ALSO reads the judge
+    # prompt, because `blame` is a claim about a specific version of that file ("the prompt
+    # already says this and the judge ignored it"). A round that does not name the version it
+    # read is a claim that cannot be checked later.
+    # NULL IS MEANINGFUL AND IS NEVER BACKFILLED WITH A GUESS: it means the round assigned
+    # blame without seeing the judge prompt at all, which is true of every round before
+    # 2026-09-18 and is exactly what you want to know when reading their blame values.
+    "ALTER TABLE analysis_runs ADD COLUMN judge_prompt_id TEXT REFERENCES prompts(id)",
+    # The PICKER chose which of N rounds became these patterns, so it is as causal for "why is
+    # this pattern here" as anything else on the row. This is the real column with a real JOIN
+    # that the pick prompt was waiting for: until now it was deliberately absent from `prompts`
+    # (a kind='pick' row nothing joined to would be the orphan the "what reads this?" test
+    # exists to catch), recorded only as a hash stamped into a verdict file on disk.
+    "ALTER TABLE analysis_runs ADD COLUMN pick_prompt_id TEXT REFERENCES prompts(id)",
 ]
 
 
@@ -729,22 +744,27 @@ def get_seed_profile(conn):
 
 # ---------------------------------------------------------------------------
 # Prompts (content-addressed; seed = root of the parent_id chain) -- mirror of
-# profiles, for the judge prompt (the other biconvex knob).
+# profiles, for the judge prompt (the judge's second input).
 # ---------------------------------------------------------------------------
 
 def create_analysis_run(conn, analysis_prompt_id, cluster_model, consolidate_model,
                         profile_id=None, date_start=None, date_end=None, n_flags=None,
-                        cost_usd=None):
+                        cost_usd=None, judge_prompt_id=None, pick_prompt_id=None):
     """Record one error_analysis invocation and return its id. Unlike scoring runs there is
     no find-or-create: each invocation is its own run even over identical inputs, because two
-    runs of a nondeterministic pipeline are two different events and both produced patterns."""
+    runs of a nondeterministic pipeline are two different events and both produced patterns.
+
+    judge_prompt_id and pick_prompt_id are the two artifacts the round READ that are not the
+    analysis prompt: the judge prompt consolidate consults to answer `blame`, and the pick
+    prompt that chose which round became these patterns. Both may be NULL, and a NULL says
+    something true rather than something missing -- see the migration comment."""
     run_id = uuid.uuid4().hex
     conn.execute(
         "INSERT INTO analysis_runs (id, analysis_prompt_id, profile_id, cluster_model, "
-        "consolidate_model, date_start, date_end, n_flags, cost_usd) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "consolidate_model, date_start, date_end, n_flags, cost_usd, judge_prompt_id, "
+        "pick_prompt_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (run_id, analysis_prompt_id, profile_id, cluster_model, consolidate_model,
-         date_start, date_end, n_flags, cost_usd),
+         date_start, date_end, n_flags, cost_usd, judge_prompt_id, pick_prompt_id),
     )
     conn.commit()
     return run_id
@@ -791,6 +811,21 @@ def get_or_create_prompt(conn, content, parent_id=None, notes=None, kind="judge"
 def get_prompt(conn, prompt_id):
     row = conn.execute("SELECT * FROM prompts WHERE id = ?", (prompt_id,)).fetchone()
     return dict(row) if row else None
+
+
+def resolve_short_id(conn, table, short_id):
+    """The full row id for a 12-char display id, or None if it does not resolve to exactly one.
+
+    Short ids are sha256[:12], the same prefix the content-address itself uses, which is what
+    lets a report or a verdict name an artifact without carrying its content. A collision is
+    not realistic at 12 hex characters, but an ambiguous prefix returns None rather than
+    picking one -- guessing which profile produced a round is worse than admitting we cannot
+    tell."""
+    if table not in ("profiles", "prompts"):
+        raise ValueError(f"resolve_short_id does not serve {table!r}")
+    rows = conn.execute(f"SELECT id FROM {table} WHERE id LIKE ?",
+                        (f"{short_id}%",)).fetchall()
+    return rows[0]["id"] if len(rows) == 1 else None
 
 
 def get_seed_prompt(conn):

@@ -46,8 +46,8 @@ from datetime import datetime
 import anthropic
 from dotenv import load_dotenv
 
-from litcurator import (analysis_prompt_interface, db_interface, profile_interface,
-                        prompt_interface)
+from litcurator import (analysis_prompt_interface, db_interface, pick_prompt_interface,
+                        profile_interface, prompt_interface)
 from litcurator.config import BEST_OF_RUNS, DATA_DIR, MAX_ACT_NOW
 
 load_dotenv()
@@ -1048,6 +1048,15 @@ def suggest_edits(start=None, end=None,
     # papers and the user's notes, and handing the step that hunts for miscalibration the
     # current calibration is the mistake the journal-ratings table made in 2026-08.
     judge_prompt_text = prompt_interface.load_active()
+    # Stamped into every run report. promote_suggestions records a report by hand, possibly
+    # days later, and without these it registered whatever was active THAT day -- attaching a
+    # round to artifacts it never ran under. The report is meant to be self-contained; this is
+    # the same argument that stopped merge targets being truncated to 12 chars.
+    report_stamps = {
+        "analysis prompt": analysis_prompt_interface.content_hash(analysis_prompt),
+        "profile": profile_interface.content_hash(seed_text),
+        "judge prompt": prompt_interface.content_hash(judge_prompt_text),
+    }
 
     conn = db_interface.get_connection()
     try:
@@ -1138,7 +1147,8 @@ def suggest_edits(start=None, end=None,
                 cluster_model, consolidate_model,
                 tail=(f"run {run_number} of {best_of} -- see verdict.md" if best_of > 1
                       else ("DRY RUN (nothing recorded)" if not persist else "single round")),
-                shuffle_seed=shuffle_seed, shuffle_order=shuffle_order)
+                shuffle_seed=shuffle_seed, shuffle_order=shuffle_order,
+                stamps=report_stamps)
             rounds.append((path, candidates))
             if best_of > 1:
                 print(f"  -> {path.name}  (${total:.4f})")
@@ -1160,7 +1170,18 @@ def suggest_edits(start=None, end=None,
                 conn, db_interface.get_or_create_prompt(conn, analysis_prompt, kind="analysis"),
                 cluster_model, consolidate_model,
                 profile_id=db_interface.get_or_create_profile(conn, seed_text),
-                date_start=start, date_end=end, n_flags=n, cost_usd=round_cost)
+                date_start=start, date_end=end, n_flags=n, cost_usd=round_cost,
+                # The other two artifacts this round read. The judge prompt is what makes
+                # `blame` answerable at all, so a round that does not name its version has
+                # made a claim about a file nobody can identify later.
+                judge_prompt_id=db_interface.get_or_create_prompt(
+                    conn, judge_prompt_text, kind="judge"),
+                # NULL when no picker ran (a single round has nothing to pick), because a
+                # stamped pick prompt would assert a choice that never happened. `by_label`
+                # is the discriminator: _pick_winner returns it only on the paid path.
+                pick_prompt_id=(db_interface.get_or_create_prompt(
+                    conn, pick_prompt_interface.load_active(), kind="pick")
+                    if by_label else None))
             summary = _record_consolidation(conn, winner_candidates, ordered_flags,
                                             analysis_run_id=run_id)
             _echo_record_summary(summary)
@@ -1171,7 +1192,11 @@ def suggest_edits(start=None, end=None,
             print(f"\n[dry run: nothing recorded]")
 
         out = _write_round_verdict(round_dir, rounds, winner, verdict, summary,
-                                   round_cost, persist and not blocked, by_label)
+                                   round_cost, persist and not blocked, by_label,
+                                   stamps=report_stamps,
+                                   pick_stamp=(pick_prompt_interface.content_hash(
+                                       pick_prompt_interface.load_active())
+                                       if by_label else None))
     finally:
         conn.close()
 
@@ -1259,7 +1284,7 @@ def _echo_record_summary(summary):
 
 
 def _write_round_verdict(round_dir, rounds, winner, verdict, summary, cost, recorded,
-                         by_label=None):
+                         by_label=None, stamps=None, pick_stamp=None):
     """verdict.md -- what this round produced, which run won, and what was written.
 
     Always written, one round or several: the round directory should say what happened without
@@ -1267,6 +1292,17 @@ def _write_round_verdict(round_dir, rounds, winner, verdict, summary, cost, reco
     reports no longer carry a recording summary in their own headers."""
     lines = [f"# Round verdict\n", f"{datetime.now():%Y-%m-%d %H:%M:%S}  |  "
              f"{len(rounds)} round(s)  |  total cost: ${cost:.4f}\n"]
+    # Every artifact this round read, the PICK prompt included -- it is the only one not known
+    # until the rounds are done, which is why it lands here rather than in the run headers.
+    # consolidation_picker's standalone verdict already stamped its prompts; this one recorded
+    # nothing, so "which pick prompt chose this" was answerable for the side path and not for
+    # the one that actually writes patterns.
+    artifacts = dict(stamps or {})
+    if pick_stamp:
+        artifacts["pick prompt"] = pick_stamp
+    if artifacts:
+        lines.append("artifacts -- " + "  |  ".join(
+            f"{k}: {v}" for k, v in artifacts.items()) + "\n")
     if verdict:
         if verdict.get("none_are_good"):
             lines.append("**The picker judged every round weak.** Nothing was recorded. The "
@@ -1296,9 +1332,40 @@ def _write_round_verdict(round_dir, rounds, winner, verdict, summary, cost, reco
     return out
 
 
+ARTIFACT_STAMP_KEYS = ("analysis prompt", "profile", "judge prompt")
+
+
+def _format_artifact_stamps(stamps):
+    """The `artifacts --` header line. One line, fixed key order, so it is greppable by eye and
+    by parse_report_stamps. Keys are spelled the way a person would say them; the values are
+    12-char short ids, which are the same prefix the DB content-address uses."""
+    if not stamps:
+        return ""
+    return ("artifacts -- " + "  |  ".join(
+        f"{k}: {stamps[k]}" for k in ARTIFACT_STAMP_KEYS if stamps.get(k)) + "\n\n")
+
+
+def parse_report_stamps(path):
+    """The artifact short ids a report was produced under, as {key: short_id}.
+
+    Missing keys mean the report predates the stamps (every report before 2026-09-19), which
+    the caller must treat as unknown rather than as "the active one" -- that silent substitution
+    is the whole defect this header exists to fix."""
+    # HEADER ONLY -- everything above the first rule. Searching the whole file would let a
+    # cluster paragraph or a model-written rationale supply a "profile: <12 hex>" and be read
+    # as provenance, which is a silent wrong attribution rather than a loud failure.
+    header = pathlib.Path(path).read_text(encoding="utf-8").split("\n---\n", 1)[0]
+    out = {}
+    for key in ARTIFACT_STAMP_KEYS:
+        m = re.search(rf"{re.escape(key)}:\s*([0-9a-f]{{12}})\b", header)
+        if m:
+            out[key] = m.group(1)
+    return out
+
+
 def _save_report(out_path, n, rng, total, clusters, candidates,
                  cluster_model, consolidate_model, tail,
-                 shuffle_seed=None, shuffle_order=()):
+                 shuffle_seed=None, shuffle_order=(), stamps=None):
     """Write one round's suggestions markdown and return its path.
 
     The path is passed in: the round directory owns naming now, and run_1/run_2/run_3 inside it
@@ -1309,6 +1376,7 @@ def _save_report(out_path, n, rng, total, clusters, candidates,
         f"# Pattern suggestions\n\n"
         f"Unattached flags: {n}  |  range: {rng}  |  cluster: {cluster_model}  "
         f"consolidate: {consolidate_model}  |  cost: ${total:.4f}  |  {tail}\n\n"
+        + _format_artifact_stamps(stamps)
         + (f"CANDIDATES SHUFFLED (seed {shuffle_seed}). The clusters below are in the order "
            f"consolidate SAW them; their original positions in cluster's own output were "
            f"{list(shuffle_order)}. Correlate `rank` against BOTH orders to tell anchoring "

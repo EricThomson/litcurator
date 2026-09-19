@@ -17,7 +17,7 @@ LITCURATOR_DB = DATA_DIR / "litcurator.db"
 PROFILE_DIR = DATA_DIR / "profile"
 USER_PROFILE_PATH = PROFILE_DIR / "user_profile.md"   # the user's interests; the only taste input to the judge
 PROMPT_DIR = DATA_DIR / "prompt"
-JUDGE_PROMPT_PATH = PROMPT_DIR / "judge_prompt.md"    # the judge's scoring procedure; the OTHER biconvex knob, edited in the prompt workbench
+JUDGE_PROMPT_PATH = PROMPT_DIR / "judge_prompt.md"    # the judge's scoring procedure; the judge's second input alongside the profile, edited in the prompt workbench
 ANALYSIS_PROMPT_PATH = PROMPT_DIR / "analysis_prompt.md"  # cluster + consolidate in one file, two marked sections; how flags become patterns
 
 # ---------------------------------------------------------------------------

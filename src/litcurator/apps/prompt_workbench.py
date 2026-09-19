@@ -4,7 +4,7 @@ prompt_workbench.py -- edit and version the active JUDGE PROMPT.
 The judge prompt is the scoring PROCEDURE (how the judge scores a paper's expected
 interest for the user) plus stable user calibrations -- e.g. journal venue weighting
 -- that don't belong in the evolving profile. This is the prompt half of the
-biconvex problem, edited here by hand. The human authors every word; the LLM is a
+judge, edited here by hand. The human authors every word; the LLM is a
 bounded critic, never an autonomous editor (that would be the v1 failure at the
 prompt level).
 

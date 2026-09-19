@@ -2,7 +2,7 @@
 prompt_interface.py -- read, version, and activate the judge prompt.
 
 The judge prompt (config.JUDGE_PROMPT_PATH, conventionally judge_prompt.md) is the
-scoring procedure the judge follows -- the OTHER biconvex knob alongside the user
+scoring procedure the judge follows -- the judge's second input alongside the user
 profile. This module is the single gatekeeper for it (the judge via the pipeline
 and the prompt workbench all go through here), exactly mirroring profile_interface,
 so "set active backs up the outgoing prompt first" lives in one place.

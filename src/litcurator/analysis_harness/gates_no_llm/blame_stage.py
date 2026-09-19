@@ -120,9 +120,68 @@ def test_blame_survives_the_report_round_trip():
     print(f"round-trip preserved {got}")
 
 
+def test_run_names_the_judge_prompt_it_read():
+    """blame is a claim ABOUT a judge prompt version ('it already says this and the judge
+    ignored it'), so a run that does not name the version it read has made a claim nobody can
+    check later."""
+    with _world() as (conn, profile_id, ordered):
+        judge_id = DB.get_or_create_prompt(conn, "a judge prompt", kind="judge")
+        pick_id = DB.get_or_create_prompt(conn, "a pick prompt", kind="pick")
+        run_id = DB.create_analysis_run(
+            conn, DB.get_or_create_prompt(conn, "an analysis prompt", kind="analysis"),
+            "m", "m", profile_id=profile_id, date_start=None, date_end=None, n_flags=3,
+            cost_usd=0.0, judge_prompt_id=judge_id, pick_prompt_id=pick_id)
+        row = DB.get_analysis_run(conn, run_id)
+        assert row["judge_prompt_id"] == judge_id, row
+        assert row["pick_prompt_id"] == pick_id, row
+        print("a recorded run names its judge prompt and its pick prompt")
+
+
+def test_unstamped_run_reads_null_rather_than_the_active_artifact():
+    """The NULL is the signal, not a gap. Every round before 2026-09-18 consolidated WITHOUT
+    the judge prompt, so its blame values were assigned blind -- and a helpful default that
+    filled in today's active prompt would erase exactly that fact, making a blind round
+    indistinguishable from an informed one."""
+    with _world() as (conn, profile_id, ordered):
+        run_id = DB.create_analysis_run(
+            conn, DB.get_or_create_prompt(conn, "an analysis prompt", kind="analysis"),
+            "m", "m", profile_id=profile_id, date_start=None, date_end=None, n_flags=3,
+            cost_usd=0.0)
+        row = DB.get_analysis_run(conn, run_id)
+        assert row["judge_prompt_id"] is None, row["judge_prompt_id"]
+        assert row["pick_prompt_id"] is None, row["pick_prompt_id"]
+        print("an unstamped run reads NULL -- a blind round stays legible as blind")
+
+
+def test_report_stamps_round_trip_and_stay_out_of_the_body():
+    """promote_suggestions attributes a hand-recorded round from these stamps, so they have to
+    survive rendering; and the parser reads the HEADER only, so a hex-looking string in a model
+    rationale cannot pose as provenance."""
+    import pathlib
+    import tempfile
+    stamps = {"analysis prompt": "a" * 12, "profile": "b" * 12, "judge prompt": "c" * 12}
+    body = PA._format_consolidation_md([_new("Stated", [1], blame="prompt")])
+    path = pathlib.Path(tempfile.mkdtemp()) / "r.md"
+    path.write_text("# Pattern suggestions\n\nUnattached flags: 3\n\n"
+                    + PA._format_artifact_stamps(stamps)
+                    + "---\n\n## Raw clusters (recall)\n\njudge prompt: " + "d" * 12
+                    + "\n\n---\n\n## Consolidation (choices)\n\n" + body, encoding="utf-8")
+    got = PA.parse_report_stamps(path)
+    assert got == stamps, got
+    assert PA.parse_report_stamps.__doc__
+    # A report with no stamp block at all must report UNKNOWN, never a default.
+    bare = pathlib.Path(tempfile.mkdtemp()) / "old.md"
+    bare.write_text("# Pattern suggestions\n\nUnattached flags: 3\n\n---\n\nx", encoding="utf-8")
+    assert PA.parse_report_stamps(bare) == {}, PA.parse_report_stamps(bare)
+    print(f"round-tripped {len(stamps)} stamps; body decoy ignored; legacy report reads {{}}")
+
+
 CHECKS = [
     test_blame_is_recorded_and_defaults_to_profile,
     test_garbage_blame_falls_back_rather_than_raising,
     test_prompt_blamed_incorporation_stamps_the_prompt_not_the_profile,
     test_blame_survives_the_report_round_trip,
+    test_run_names_the_judge_prompt_it_read,
+    test_unstamped_run_reads_null_rather_than_the_active_artifact,
+    test_report_stamps_round_trip_and_stay_out_of_the_body,
 ]
