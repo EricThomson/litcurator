@@ -13,6 +13,35 @@ synthetic flag is tagged with the pattern it is supposed to end up in, and gradi
 provenance graph (which flags ended up attached to which pattern), never the model's wording,
 so a beautifully worded but wrong result still fails.
 
+WHAT IS SIMULATED HERE IS FLAG MECHANICS, NOT PROFILE OR PROMPT MECHANICS. The two hand-authored
+artifacts are PARAMETERS, not state: every scenario carries a synthetic profile and a synthetic
+judge prompt, the machinery reads both, and neither is ever rewritten. `apply_actions`
+"incorporate" stamps `get_or_create_profile` on the SAME unchanged string, so every incorporation
+in a run points at one profile version; the lifecycle fixture simulates an edit that worked by
+simply not re-emitting that pattern's flags next session. The only way an artifact ever varies is
+hand-authoring a variant up front, which is what `named_disinterest` does.
+
+So these gates grade ROUTING and RECORDING -- did the right flags group together, did the decision
+land on the right pattern, is the fix addressed to the artifact that can absorb it -- and they
+CANNOT grade whether an edit works, because no edit is ever made. That is deliberate: an LLM
+rewriting the profile in a loop is the v1 failure this architecture exists to prevent, so a
+harness generating edits would be exercising the forbidden thing. "Did the edit take" has its own
+instruments -- `judge_harness` for a fast floor, and a paired re-score of the same papers under
+the old and new artifact for the real answer.
+
+WHICH IS WHY EVERY FIXTURE PAPER MUST CARRY A NOTE (2026-09-19, 38 of 38; it was 10 of 38). Not
+for realism -- structurally. With both artifacts frozen, the NOTE is the only channel through
+which the user's intent varies at all, so a note-free fixture runs this machinery with its main
+input muted and reduces the whole input to which papers appeared and how big the deltas were.
+That is a flag as a number, which is the dead paradigm the rest of this project spent 2026-08
+unlearning. It bites hardest on `blame`: the only evidence that can say which document to edit is
+what the frozen artifacts state, plus the note. Strip the notes and the question becomes an
+inference from paper content alone, which is the undecidable case nothing here grades. See
+paper_pools.py for the writing constraint -- vary the surface reason, never write a grouping label.
+
+Testing that a prompt-blamed fix actually LANDS would need a scenario with two hand-authored judge
+prompt variants, the gap in one and the fix in the other. Nothing does that today.
+
 Layout:
   machinery.py     the scratch world: build a throwaway database, run one session
   grading.py       the pure graders, plain data in and [(ok, label, detail)] out
