@@ -86,7 +86,8 @@ def _calibrate(ctx, name, papers, labels):
         H.add_round_flags(conn, run_id, papers, flag_intended)
         n_flags, _candidates, summary, cost, _ = H.run_round(
             conn, ctx.client, SC.PROFILE, ctx.cluster_model, ctx.consolidate_model,
-            ctx.cluster_prompt, ctx.consolidate_prompt, use_cache=ctx.use_cache)
+            ctx.cluster_prompt, ctx.consolidate_prompt, use_cache=ctx.use_cache,
+            judge_prompt=SC.JUDGE_PROMPT)
         pp = H.pattern_intended(conn, flag_intended)
     finally:
         conn.close()

@@ -371,6 +371,37 @@ def check_terminal(expect, pp, patterns, first_surfaced, history,
             bool(right),
             f"{len(pats)} pattern(s) with directions {got}" if pats else "NO pattern recorded")
 
+    # --- THE FIX MUST BE ROUTED TO THE ARTIFACT THAT CAN ABSORB IT ------------------------
+    # `blame` decides which document the human is sent to edit, and a wrong one sends the fix to
+    # a file that does not contain the rule. That is not hypothetical: the Annual Review pattern
+    # was incorporated against a PROFILE version on 2026-09-01 although its journal tier table
+    # lives only in the judge prompt, so the event log records a profile version absorbing a
+    # change it does not contain.
+    #
+    # THIS IS THE SHAPE `direction` DIED FOR, so note what makes blame different. Direction asked
+    # the model to infer an etiology its inputs could not support, which is why the grader had to
+    # retreat to checking the PROPOSAL. Blame asks whether a rule is stated in one of two
+    # documents -- and in this fixture we wrote both documents, so ground truth is discrete and
+    # needs no paraphrase judgment anywhere.
+    #
+    # WHAT MAKES THE 'prompt' CASE A REAL TEST OF THE WIRING: pool E's notes never say where the
+    # rule lives, only that the paper is a commentary. Reaching 'prompt' therefore requires
+    # having read scenarios.JUDGE_PROMPT, so this check goes red if the judge prompt stops being
+    # passed to consolidate -- which is precisely the configuration every paid gate ran in until
+    # 2026-09-19.
+    for spec in expect.get("blame_routing", []):
+        L, want = spec["label"], spec["blame"]
+        pats = patterns_for(L)
+        if not pats:
+            chk(f"blame: {L} routed to the {want}", False,
+                "NO pattern recorded for this label -- nothing to inspect")
+            continue
+        got = {pid: by_id.get(pid, {}).get("blame", "profile") for pid in pats}
+        wrong = [pid for pid, b in got.items() if b != want]
+        chk(f"blame: {L} routed to the {want}", not wrong,
+            f"{len(pats)} pattern(s) blamed {sorted(got.values())}"
+            + (f" -- {len(wrong)} sent to the wrong artifact" if wrong else ""))
+
     # --- A TASTE PATTERN MUST NOT BE LABELLED WITH THE OPPOSITE ERROR DIRECTION ------------
     # Added 2026-08-07 after the note-carry gate produced a pattern whose every WORD said "the
     # judge scores these too high, get them out of scope" and whose `direction` said `under`,

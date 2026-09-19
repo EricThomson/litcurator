@@ -84,6 +84,7 @@ def accumulation(delta_band=(0.16, 0.22), n_sessions=12):
         name=f"accumulation(delta={delta_band[0]:.2f}-{delta_band[1]:.2f})",
         n_sessions=n_sessions,
         profile=SC.PROFILE,
+        judge_prompt=SC.JUDGE_PROMPT,
         pools_by_intended_pattern={"CONNECTOME": paper_pools.connectome_pool(delta_band)},
         streams=[GEN.Stream("CONNECTOME", range(0, n_sessions), count_per_session=1)],
         terminal_expect={
@@ -147,6 +148,7 @@ def dual_nature():
         name="dual_nature(one paper, two tastes)",
         n_sessions=1,
         profile=SC.PROFILE,
+        judge_prompt=SC.JUDGE_PROMPT,
         pools_by_intended_pattern={"B": paper_pools.POOLS_BY_INTENDED_PATTERN["B"], "C": paper_pools.POOLS_BY_INTENDED_PATTERN["C"]},
         streams=[GEN.Stream("B", [0], count_per_session=3),
                  GEN.Stream("C", [0], count_per_session=3)],
@@ -192,6 +194,7 @@ def note_carry():
         name="note_carry(the user's own words reach the pattern)",
         n_sessions=3,
         profile=SC.PROFILE,
+        judge_prompt=SC.JUDGE_PROMPT,
         pools_by_intended_pattern={"CANCER": paper_pools.cancer_pool(),
                                    "B": paper_pools.POOLS_BY_INTENDED_PATTERN["B"]},
         streams=[GEN.Stream("CANCER", [0, 1, 2], count_per_session=2),
@@ -240,6 +243,7 @@ def pattern_lifecycle():
         name="pattern_lifecycle(human decides between sessions)",
         n_sessions=len(SC.SESSIONS),
         profile=SC.PROFILE,
+        judge_prompt=SC.JUDGE_PROMPT,
         explicit={i: [{k: p[k] for k in GEN.PAPER_KEYS} for p in session["papers"]]
                   for i, session in enumerate(SC.SESSIONS)},
         then_rules={i: session["then"] for i, session in enumerate(SC.SESSIONS)},
@@ -275,6 +279,7 @@ def named_disinterest():
         name="named_disinterest(profile says it, judge ignores it)",
         n_sessions=1,
         profile=SC.PROFILE + _DISINTEREST_LINE,
+        judge_prompt=SC.JUDGE_PROMPT,
         pools_by_intended_pattern={"A": paper_pools.POOLS_BY_INTENDED_PATTERN["A"]},
         streams=[GEN.Stream("A", [0], count_per_session=5)],
         terminal_expect={
@@ -283,6 +288,64 @@ def named_disinterest():
             # Compatible with the check above rather than a duplicate of it: that one requires
             # a specific allowed set, this one only forbids the inversion. Both must hold.
             "direction_not_inverted": [{"label": "A", "taste": "over"}],
+            # RESTORED 2026-09-19. This scenario's docstring has always said the judge scoring
+            # these high anyway "is a PROMPT problem, not a hole in the profile" -- but when
+            # judge-not-applying was deleted the check collapsed to "was it recorded at all",
+            # and the property the scenario is named for went ungraded for three weeks. `blame`
+            # states it again. Decidable from the profile alone, so unlike the blame_routing
+            # gate this one does not test the judge-prompt wiring; it is free coverage of the
+            # same field on an already-calibrated fixture.
+            "blame_routing": [{"label": "A", "blame": "prompt"}],
+        },
+    )
+
+
+def blame_routing():
+    """A fix must be routed to the artifact that can absorb it.
+
+    ONE session, TWO pools, one of each answer, graded together so the check is a
+    discrimination rather than a label the model could get right by always saying the same
+    thing:
+
+      E  commentary and News-and-Views pieces, OVER-scored. scenarios.JUDGE_PROMPT states
+         outright that these formats score below 0.15, so the rule is written down and the
+         judge scored against it anyway -> blame 'prompt'.
+      F  motor-cortex circuit work, UNDER-scored. Neither document mentions motor systems ->
+         blame 'profile'. Purpose-built for this gate: the obvious candidate (B, formal
+         theory) carries a note on 2 of its 11 papers, and blame is read off the NOTE, so a
+         green check on B would have meant nothing.
+
+    WHY THIS IS THE GATE THAT PROVES THE WIRING. E's notes say only that the paper is a
+    commentary; they never say where the rule lives. So 'prompt' is unreachable without having
+    read the judge prompt, and withholding it flips E to 'profile' while leaving B untouched.
+    That is the negative control, and it is not a sabotage -- it is the exact configuration
+    every paid gate ran in until 2026-09-19.
+
+    OPPOSITE DIRECTIONS on purpose. Two pools erring the same way can always be joined by a
+    generalization that happens to be true ("the profile is too narrow"), so a check that they
+    stay separate would be asking the model not to notice something real. That is what the
+    deleted `robustness` gate got wrong, and its note says so."""
+    return GEN.ScenarioSpec(
+        name="blame_routing(prompt job vs profile job, in one session)",
+        n_sessions=1,
+        profile=SC.PROFILE,
+        judge_prompt=SC.JUDGE_PROMPT,
+        pools_by_intended_pattern={
+            "E": paper_pools.POOLS_BY_INTENDED_PATTERN["E"],
+            "F": paper_pools.POOLS_BY_INTENDED_PATTERN["F"],
+        },
+        streams=[GEN.Stream("E", [0], count_per_session=4),
+                 GEN.Stream("F", [0], count_per_session=4)],
+        terminal_expect={
+            "blame_routing": [{"label": "E", "blame": "prompt"},
+                              {"label": "F", "blame": "profile"}],
+            # Both pools must also actually surface, stay apart and keep their sign. Without
+            # these, a blame check on a missing or fused pattern reads as a routing failure
+            # when it is really a recall failure, and the gate would point at the wrong thing.
+            "intended_patterns_surface": ["E", "F"],
+            "stay_separate": [("E", "F")],
+            "direction_not_inverted": [{"label": "E", "taste": "over"},
+                                       {"label": "F", "taste": "under"}],
         },
     )
 
@@ -299,4 +362,5 @@ SCENARIOS = {
     "dual_nature": dual_nature,
     "named_disinterest": named_disinterest,
     "note_carry": note_carry,
+    "blame_routing": blame_routing,
 }

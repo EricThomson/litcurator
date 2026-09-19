@@ -151,10 +151,17 @@ def purity_of(counter):
 # ---------------------------------------------------------------------------
 
 def run_round(conn, client, profile, cluster_model, consolidate_model, cluster_prompt,
-              consolidate_prompt, use_cache=True):
+              consolidate_prompt, use_cache=True, judge_prompt=None):
     """One review session through the real pipeline: cluster the unattached flags,
     consolidate the candidates against the pattern memory, record the choices.
-    `profile` is the scenario's own synthetic profile (see build_db)."""
+    `profile` is the scenario's own synthetic profile (see build_db).
+
+    `judge_prompt` is the scenario's synthetic JUDGE PROMPT, and passing it is what keeps this
+    harness testing the shipped configuration. Live consolidate has received it since
+    2026-09-18; until 2026-09-19 this call omitted it, so every paid gate was exercising a
+    setup production no longer has -- green, and green about the wrong system. Cluster still
+    does not get it, matching the live path for the same reason: handing the step that hunts
+    for miscalibration the current calibration is the journal-ratings mistake of 2026-08."""
     flags = DB.get_flags(conn, exclude_attached=True)
     papers_block, ordered = PA._format_papers(flags)
     # ONE assembler, shared with the live path -- see PA.build_memory_block for why this is
@@ -165,7 +172,8 @@ def run_round(conn, client, profile, cluster_model, consolidate_model, cluster_p
     if hit:
         print("  [cluster: cache hit -- $0.00]", flush=True)
     candidates, c2 = PA.run_consolidate_step(client, clusters, profile, existing,
-                                           consolidate_model, prompt=consolidate_prompt)
+                                           consolidate_model, prompt=consolidate_prompt,
+                                           judge_prompt_text=judge_prompt)
     summary = PA._record_consolidation(conn, candidates, ordered)
     # `existing` is returned so the report can show EXACTLY what memory the model was
     # shown. When it fails to match a closed pattern, the first question is always "was

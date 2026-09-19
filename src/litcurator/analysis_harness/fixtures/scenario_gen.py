@@ -90,6 +90,11 @@ class ScenarioSpec:
     name: str
     n_sessions: int
     profile: str
+    # The synthetic judge prompt consolidate is shown alongside the profile. Defaults to the
+    # shared scenarios.JUDGE_PROMPT via behaviors, so a scenario only names it to say something
+    # different; None means "run consolidate blind", which is the pre-2026-09-19 configuration
+    # and is used deliberately by the blame gate's negative control.
+    judge_prompt: str = None
     pools_by_intended_pattern: dict = field(default_factory=dict)          # label -> IntendedPatternPool
     explicit: dict = field(default_factory=dict)         # session_idx -> list[paper dict]
     streams: list = field(default_factory=list)          # list[Stream]

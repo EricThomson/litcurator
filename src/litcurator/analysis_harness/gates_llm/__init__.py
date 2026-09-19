@@ -24,6 +24,7 @@ _SCENARIOS = {
     "named-disinterest": ("named_disinterest", 1, 1.0),
     "accumulation": ("accumulation", 1, 1.0),
     "note-carry": ("note_carry", 1, 1.0),
+    "blame-routing": ("blame_routing", 1, 1.0),
 }
 
 
@@ -91,6 +92,18 @@ PAID_GATES = {
         "cluster-prompt problem instead. This is the ONLY gate that reads produced TEXT rather "
         "than the provenance graph, so nothing else here can see this failure.",
         6),
+    "blame-routing": (
+        4, _scenario_runner(*_SCENARIOS["blame-routing"]),
+        "a fix was routed to the artifact that cannot absorb it. Read WHICH label went red. "
+        "E red (commentary pieces called a PROFILE job) means the judge prompt is not reaching "
+        "consolidate, or the CONSOLIDATE section still does not tell the model what to do with "
+        "it -- check that section mentions blame at all before suspecting the model, because "
+        "until 2026-09-19 it did not. F red (motor-circuit work called a PROMPT job) is the opposite "
+        "failure, the model answering 'prompt' by default, and it is what the negative control "
+        "in sandbox/blame_fixture/ is written to catch. If both are red, look at the two "
+        "companion checks first: a pattern that never surfaced or that fused with its partner "
+        "makes this read as a routing failure when it is a recall failure.",
+        2),
 }
 
 # ---------------------------------------------------------------------------

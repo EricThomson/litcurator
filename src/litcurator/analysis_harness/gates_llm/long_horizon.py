@@ -59,7 +59,8 @@ def run_scenario(spec, rng, client, cluster_model, consolidate_model, cluster_pr
 
             n_flags, candidates, summary, c, memory_shown = run_round(
                 conn, client, spec.profile, cluster_model, consolidate_model,
-                cluster_prompt, consolidate_prompt, use_cache=use_cache)
+                cluster_prompt, consolidate_prompt, use_cache=use_cache,
+                judge_prompt=spec.judge_prompt)
             cost += c
             # What the model was actually given about past patterns. When a recurrence check
             # goes red the first question is always "was that closed pattern even in front of

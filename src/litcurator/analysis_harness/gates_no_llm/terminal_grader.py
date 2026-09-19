@@ -22,13 +22,17 @@ def _one(expect, pp, patterns, first_surfaced, history=None,
 
 
 def _pat(pid, direction="under", status="created", recurred_count=0,
-         name="", description="", suggested_edit="", direction_proposed=None):
+         name="", description="", suggested_edit="", direction_proposed=None,
+         blame="profile"):
     """The text fields default to EMPTY so every pre-existing caller keeps grading exactly the
-    provenance graph and nothing else. Only note_wording_survives fills them."""
+    provenance graph and nothing else. Only note_wording_survives fills them.
+
+    `blame` defaults to 'profile', matching both the column default and what the grader reads
+    for a row that predates the field -- so only blame_routing sees it."""
     return {"id": pid, "direction": direction, "status": status,
             "recurred_count": recurred_count, "name": name,
             "description": description, "suggested_edit": suggested_edit,
-            "direction_proposed": direction_proposed}
+            "direction_proposed": direction_proposed, "blame": blame}
 
 
 def _hist(*active_counts):
@@ -126,6 +130,36 @@ def test_named_disinterest_not_dropped():
     # FAIL: recorded, but as a profile GAP -- the wrong diagnosis, it points at the prompt
     assert _one(spec, {"pA": Counter(A=5)}, [_pat("pA", "under")], {"A": 0}) is False
     print("named_disinterest_not_dropped: JNA/over passes; dropped or mis-directed fails")
+
+
+def test_blame_routing():
+    """Both answers must be gradeable, and the check must not be satisfiable by a model that
+    always says the same word -- which is the failure mode the paid gate's negative control
+    exists to produce."""
+    want_prompt = {"blame_routing": [{"label": "E", "blame": "prompt"}]}
+    want_profile = {"blame_routing": [{"label": "B", "blame": "profile"}]}
+    # PASS: each routed to the artifact that can absorb the fix.
+    assert _one(want_prompt, {"pE": Counter(E=4)}, [_pat("pE", "over", blame="prompt")],
+                {"E": 0}) is True
+    assert _one(want_profile, {"pB": Counter(B=4)}, [_pat("pB", "under", blame="profile")],
+                {"B": 0}) is True
+    # FAIL both ways. A model answering 'profile' for everything passes the B case and must
+    # fail the E case; a model answering 'prompt' for everything does the reverse. Neither
+    # constant answer can pass the pair, which is the only reason grading them together works.
+    assert _one(want_prompt, {"pE": Counter(E=4)}, [_pat("pE", "over", blame="profile")],
+                {"E": 0}) is False
+    assert _one(want_profile, {"pB": Counter(B=4)}, [_pat("pB", "under", blame="prompt")],
+                {"B": 0}) is False
+    # FAIL: no pattern at all reads as a routing failure rather than passing vacuously, the
+    # same rule direction_not_inverted follows.
+    assert _one(want_prompt, {"pX": Counter(X=2)}, [_pat("pX")], {"X": 0}) is False
+    # FAIL: one of two patterns for the label routed wrongly still fails -- a half-right answer
+    # still sends the human to edit a file that cannot hold the fix.
+    assert _one(want_prompt, {"pE": Counter(E=3), "pE2": Counter(E=2)},
+                [_pat("pE", "over", blame="prompt"), _pat("pE2", "over", blame="profile")],
+                {"E": 0}) is False
+    print("blame_routing: both answers gradeable; no constant answer passes the pair; "
+          "missing pattern and half-right both fail")
 
 
 def test_direction_not_inverted():
@@ -288,6 +322,7 @@ CHECKS = [
     test_stay_separate,
     test_shared_flag_in_both,
     test_named_disinterest_not_dropped,
+    test_blame_routing,
     test_direction_not_inverted,
     test_note_wording_survives,
     test_recurrence_accumulates,

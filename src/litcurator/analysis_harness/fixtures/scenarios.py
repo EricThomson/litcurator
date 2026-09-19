@@ -125,6 +125,50 @@ behavioral or perceptual function, especially in sensory systems. I prefer causa
 mechanistic studies over purely descriptive ones.
 """.strip()
 
+# The synthetic JUDGE PROMPT -- the scoring procedure the fictional judge followed. Consolidate
+# receives this alongside the profile (live behaviour since 2026-09-18) because `blame` cannot be
+# answered from the profile alone: "stated nowhere" and "stated in the scoring procedure and
+# ignored" look identical if you have only read one of the two documents.
+#
+# WHAT IT MAY AND MAY NOT CONTAIN, and this is the load-bearing constraint. Every intended
+# pattern in this file is blame='profile' BY CONSTRUCTION, because PROFILE above is deliberately
+# silent on all of them. If this prompt mentioned any of their axes, those pools would become
+# ambiguous and every existing scenario would start grading something other than what it was
+# calibrated for. So it stays clear of: non-invasive human work (A), computational and formal
+# theory (B), invertebrate neuroethology (C), translational disease models (D), structural
+# connectomics (W), and VENUE, which unicorn U2 owns.
+#
+# What it does carry is one rule with a NUMBER in it, on an axis nothing else here touches:
+# article FORMAT. A stated threshold plus a score is arithmetic, which is the only subclass of
+# blame that is decidable rather than a matter of degree -- see CLAUDE.md on what killed
+# judge-not-applying. Pool E violates that rule and nothing else does.
+JUDGE_PROMPT = """
+You score how much this user would want to read a paper. Return a number from 0 to 1.
+
+## How to score
+
+Read the title, abstract and journal against the user's profile. Judge what the paper DELIVERS
+as its primary contribution, not what it advertises or what it might one day enable.
+
+Bands:
+  0.00-0.25   clearly not for this user
+  0.25-0.50   related, but below the line
+  0.50-0.75   worth surfacing
+  0.75-1.00   a paper they would be glad to have found
+
+## Article format
+
+Commentaries, editorials, News-and-Views pieces, book reviews and meeting abstracts are not
+primary research. Score any of them in the bottom band, below 0.25, regardless of how well the
+topic matches. The user follows these formats elsewhere and does not want them in a literature
+feed.
+
+## Missing information
+
+If the abstract does not say what was actually measured or manipulated, score it no higher than
+0.40. Do not infer a strong result from a confident summary.
+""".strip()
+
 # The intended patterns: the gaps we wrote into the fixture, each the CORRECT grouping the
 # machinery should recover. A-D span several papers; U1/U2 are single-paper unicorns.
 # (Details in the docstring above.)
@@ -160,12 +204,12 @@ _SESSION_1 = [
      "Sixty observers viewed moving dot fields during EEG; the evoked response amplitude "
      "scaled with motion coherence and with reported confidence.",
      "Journal of Vision", 0.58, 0.12,
-     "A neural response scaling with a perceptual variable the profile names.", ""),
+     "A neural response scaling with a perceptual variable the profile names.", "An evoked potential summed over the whole scalp. I cannot tell which cells did anything."),
     ("A", "Cortical thickness correlates with vocabulary size in healthy adults",
      "Structural MRI in 120 volunteers showed temporal cortical thickness covaried with "
      "standardized vocabulary scores.",
      "Cerebral Cortex", 0.55, 0.10,
-     "A brain-wide anatomical measure tracked against a cognitive outcome.", ""),
+     "A brain-wide anatomical measure tracked against a cognitive outcome.", "Thickness against vocabulary is a population correlation, not a mechanism."),
     ("A", "Resting-state fMRI connectivity predicts vigilance performance",
      "Functional connectivity measured at rest in 200 volunteers predicted lapse rate on a "
      "subsequent 40-minute vigilance task.",
@@ -175,7 +219,7 @@ _SESSION_1 = [
      "MEG in 45 healthy volunteers showed posterior alpha power fluctuating with attentional "
      "state during a continuous performance task.",
      "NeuroImage", 0.63, 0.18,
-     "Links a spontaneous neural measure to a cognitive function.", ""),
+     "Links a spontaneous neural measure to a cognitive function.", "Alpha going up and down says nothing about the circuit underneath it."),
 
     ("B", "A normative theory of attractor dynamics in working memory circuits",
      "We derive a mathematical account of working memory capacity from attractor "
@@ -189,7 +233,7 @@ _SESSION_1 = [
      "sensory channel under a metabolic constraint, and show the optimum shifts with input "
      "statistics.",
      "Neural Computation", 0.26, 0.75,
-     "An analytical result rather than an experimental circuit study.", ""),
+     "An analytical result rather than an experimental circuit study.", "A real derivation with a testable consequence, and it scored low."),
     # Deliberately NOT about decision-making. This slot briefly held a normative account of
     # decision thresholds, which collided with the dual-nature paper (a drift-diffusion model of
     # cuttlefish decisions): with decision theory inside intended pattern B, B and C blurred
@@ -199,17 +243,17 @@ _SESSION_1 = [
      "We derive the coupling strength required for stable phase locking among weakly coupled "
      "oscillators and characterize the transition to incoherence.",
      "Journal of Mathematical Neuroscience", 0.38, 0.82,
-     "A theoretical framework rather than a causal experiment.", ""),
+     "A theoretical framework rather than a causal experiment.", "An analytic result about when oscillators lock. This is what I read for."),
     ("B", "Mean-field theory of balanced excitatory-inhibitory cortical networks",
      "Mean-field equations for large spiking networks show balanced states arise "
      "generically, with fluctuation corrections predicting observed firing irregularity.",
      "Journal of Neuroscience", 0.28, 0.72,
-     "Physics-style analysis without behavioral linkage.", ""),
+     "Physics-style analysis without behavioral linkage.", "Theory that makes predictions about actual cortex. Should be far higher."),
     ("B", "Optimal control accounts of motor sequence chunking",
      "Optimal control policies for sequence acquisition reproduce human learning curves "
      "across four experiments and predict how chunk boundaries emerge from cost.",
      "Psychological Review", 0.32, 0.70,
-     "Modeling work; the profile emphasizes mechanistic circuit studies.", ""),
+     "Modeling work; the profile emphasizes mechanistic circuit studies.", "A normative account of why chunking happens at all. I want this."),
 
     ("C", "Descending interneurons controlling escape in the octopus arm",
      "Recording and ablation in Octopus bimaculoides identify a small descending "
@@ -222,7 +266,7 @@ _SESSION_1 = [
      "Behavioral and ablation experiments in planaria show two photoreceptor classes "
      "drive a threshold comparison that determines turning direction.",
      "eLife", 0.32, 0.76,
-     "A simple invertebrate system with limited circuit resolution.", ""),
+     "A simple invertebrate system with limited circuit resolution.", "A whole decision circuit in a flatworm, and it scored low."),
     # The rationale here used to end "in a specialist journal", which was a second shared
     # property doing no work: the intended pattern is about the PREPARATION, and naming the
     # venue invited a venue-themed grouping that spans other intended patterns too (several of
@@ -231,12 +275,12 @@ _SESSION_1 = [
      "Leg mechanoreceptors feed a small interneuron population that triggers the strike, "
      "with latency tuned to prey distance.",
      "Journal of Experimental Biology", 0.30, 0.74,
-     "Invertebrate sensory work, distant from the mammalian circuits emphasized.", ""),
+     "Invertebrate sensory work, distant from the mammalian circuits emphasized.", "Prey capture worked out at the circuit level in a spider. Underrated."),
     ("C", "Wind-guided navigation in the fly central complex",
      "Two-photon imaging during tethered flight shows central-complex neurons encode "
      "wind direction and combine it with visual heading to steer.",
      "Nature Neuroscience", 0.45, 0.85,
-     "Sensory integration for behavior, though in an insect model.", ""),
+     "Sensory integration for behavior, though in an insect model.", "Navigation in the fly central complex. Close to the center of what I want."),
 
     # One paper, but a clean NAMED disinterest with an explicit note -> must become a
     # pattern. Deliberately ORTHOGONAL to every other intended gap (not EEG, not theory,
@@ -259,12 +303,12 @@ _SESSION_2 = [
      "We review and formalize predictive coding across sensory and prefrontal cortex, "
      "proposing a hierarchical generative model that unifies attention and learning.",
      "Neuron", 0.34, 0.76,
-     "Synthesis and theory rather than a causal circuit experiment.", ""),
+     "Synthesis and theory rather than a causal circuit experiment.", "A framework paper that ties a lot together. Marked down for being theory."),
     ("B", "Statistical-mechanics treatment of criticality in cortical networks",
      "A renormalization-group analysis identifies the conditions under which a recurrent "
      "network sits near a critical point, and what that predicts for avalanche exponents.",
      "Neural Computation", 0.27, 0.71,
-     "A theoretical result with no measurement.", ""),
+     "A theoretical result with no measurement.", "Formal treatment that still says something about cortex. Not a low score."),
     # Pure formal theory, like every other intended-pattern-B paper. This slot used to hold a
     # population-recording ANALYSIS paper ("Latent population dynamics predict choice"), which
     # is a defensibly different gap from normative theory -- so when this gap returned, the
@@ -277,13 +321,13 @@ _SESSION_2 = [
      "network as a function of connectivity sparseness, recovering known scaling laws as a "
      "special case.",
      "Physical Review E", 0.36, 0.74,
-     "A mathematical result with no empirical measurement.", ""),
+     "A mathematical result with no empirical measurement.", "Analytic capacity limits. Exactly my kind of paper, rated like it is not."),
 
     ("C", "A nociceptive escape circuit in Drosophila larvae",
      "Optogenetic dissection identifies the interneurons converting nociceptive input "
      "into the stereotyped rolling escape, with a gating step that sets threshold.",
      "Cell Reports", 0.33, 0.78,
-     "An insect preparation rather than a mammalian circuit.", ""),
+     "An insect preparation rather than a mammalian circuit.", "An escape circuit cleanly worked out in larvae. Too low."),
     # Plainly neuroethology, with no computational framing. This slot used to read "Cuttlefish
     # camouflage as a visual decision PROBLEM", describing a discrete classification over
     # substrate statistics -- which is intended pattern B's language, in intended pattern C's
@@ -293,12 +337,12 @@ _SESSION_2 = [
      "Recording from the chromatophore lobe during background matching identifies the motor "
      "units driving skin pattern changes.",
      "Current Biology", 0.36, 0.80,
-     "Invertebrate behavior with limited neural recording.", ""),
+     "Invertebrate behavior with limited neural recording.", "Motor control of camouflage. Lovely work, and marked down."),
     ("C", "Chemotaxis circuit dynamics in C. elegans",
      "Whole-brain imaging during chemotaxis reveals a low-dimensional state sequence "
      "that maps onto the animal's turning decisions.",
      "eLife", 0.34, 0.75,
-     "A very small nervous system, distant from the profile's emphasis.", ""),
+     "A very small nervous system, distant from the profile's emphasis.", "Chemotaxis circuit dynamics in the worm. I want more of these."),
 
     # One paper again, opposite sign: a clean NAMED interest with an explicit note.
     #
@@ -339,17 +383,17 @@ _SESSION_2 = [
      "Tetrode recordings in an Alzheimer's model show place-field instability preceding "
      "plaque deposition, linking soluble oligomers to spatial coding failure.",
      "Neurobiology of Disease", 0.64, 0.20,
-     "Hippocampal place coding is directly named in the profile.", ""),
+     "Hippocampal place coding is directly named in the profile.", "An Alzheimer's model. The disease framing is not what I read for."),
     ("D", "Tau pathology disrupts entorhinal grid cell periodicity",
      "Grid cells in a tauopathy model lose hexagonal periodicity before cell loss, with "
      "deficits tracking behavioral errors in a spatial task.",
      "Nature Medicine", 0.68, 0.25,
-     "Grid coding and spatial behavior, central to the stated interests.", ""),
+     "Grid coding and spatial behavior, central to the stated interests.", "A pathology paper in circuit clothing. Not for me."),
     ("D", "Gene therapy rescues photoreceptor function in a retinal degeneration model",
      "AAV delivery restored photoreceptor responses and visually guided behavior in a "
      "mouse model of retinitis pigmentosa.",
      "Molecular Therapy", 0.60, 0.18,
-     "A sensory system with a behavioral readout.", ""),
+     "A sensory system with a behavioral readout.", "A therapy result. Not my interest even with the retina in it."),
 ]
 
 _SESSION_3 = [
@@ -365,28 +409,28 @@ _SESSION_3 = [
      "Two hundred volunteers performed a mental-rotation task during EEG; parietal "
      "oscillatory power scaled with rotation angle.",
      "Psychophysiology", 0.57, 0.10,
-     "A neural signal that scales with task demand.", ""),
+     "A neural signal that scales with task demand.", "Electrodes on the scalp again. Nothing here gets near a circuit."),
     ("A", "Prefrontal oxygenation during dual-task walking",
      "Functional near-infrared spectroscopy in 80 volunteers showed prefrontal "
      "oxygenation rising when a cognitive task was added to treadmill walking.",
      "Neurophotonics", 0.55, 0.08,
-     "A brain measure related to a motor behavioral outcome.", ""),
+     "A brain measure related to a motor behavioral outcome.", "Blood oxygenation while walking. Far too indirect for me."),
 
     ("D", "Alpha-synuclein spreading alters basal ganglia output in a rat model",
      "Progressive synuclein pathology shifted firing patterns in the substantia nigra "
      "and correlated with the emergence of motor deficits.",
      "Neurobiology of Disease", 0.63, 0.20,
-     "Basal ganglia circuit function linked to motor behavior.", ""),
+     "Basal ganglia circuit function linked to motor behavior.", "Another disease model scored too high."),
     ("D", "Striatal circuit dysfunction in a Huntington's disease mouse model",
      "Two-photon imaging revealed loss of striatal ensemble sparsity preceding overt "
      "motor symptoms in R6/2 mice.",
      "Journal of Neuroscience", 0.61, 0.19,
-     "Circuit-level imaging tied to behavioral onset.", ""),
+     "Circuit-level imaging tied to behavioral onset.", "Disease-model work again. I do not want these surfacing."),
     ("D", "Antisense therapy restores motor function in an ALS model",
      "Antisense oligonucleotide treatment preserved motor neuron counts and grip "
      "strength in SOD1 mice.",
      "Nature", 0.70, 0.28,
-     "A strong causal intervention with a behavioral outcome, in a top journal.", ""),
+     "A strong causal intervention with a behavioral outcome, in a top journal.", "A treatment study. Off my list."),
 ]
 
 
@@ -408,12 +452,12 @@ _SESSION_4 = [
      "Minimizing spike cost subject to a fixed information rate yields an optimal firing "
      "threshold, and we characterize how the optimum shifts with input signal-to-noise.",
      "Neural Computation", 0.31, 0.77,
-     "A theoretical optimality argument rather than an experimental circuit study.", ""),
+     "A theoretical optimality argument rather than an experimental circuit study.", "A principled account of efficient coding. Undervalued again."),
     ("B", "Bifurcation structure of ring attractor networks with heterogeneous coupling",
      "Continuation analysis shows how heterogeneity in recurrent coupling deforms the "
      "attractor manifold and identifies the coupling variance at which the bump destabilizes.",
      "SIAM Journal on Applied Dynamical Systems", 0.25, 0.70,
-     "A dynamical-systems analysis with no behavioral or physiological data.", ""),
+     "A dynamical-systems analysis with no behavioral or physiological data.", "Bifurcation analysis of a circuit model. The maths is the contribution."),
 
     # C: invertebrate neuroethology, one shared property (a small identified circuit driving a
     # natural behavior in an invertebrate) and scattered on phylum, sense, and journal. Kept
@@ -431,12 +475,12 @@ _SESSION_4 = [
      "Stimulation of one identified interneuron is sufficient to elicit the full backward "
      "swim motor program, and its ablation abolishes the behavior.",
      "Journal of Neurophysiology", 0.31, 0.76,
-     "An invertebrate preparation, further from the mammalian circuits emphasized.", ""),
+     "An invertebrate preparation, further from the mammalian circuits emphasized.", "One interneuron triggering a whole behavior. Undervalued."),
     ("C", "Statocyst input drives postural righting in the sea slug Clione",
      "Unilateral statocyst removal biases the righting response, and recording from the "
      "identified righting interneurons shows they integrate gravity signals from both sides.",
      "Proceedings of the Royal Society B", 0.36, 0.82,
-     "A simple invertebrate system with limited circuit resolution.", ""),
+     "A simple invertebrate system with limited circuit resolution.", "Statocyst driving righting. These keep landing below where I would put them."),
 ]
 
 
