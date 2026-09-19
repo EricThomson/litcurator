@@ -4,7 +4,7 @@ sinkhole_stage.py -- unit tests for the review feed's accumulator button (free, 
 attach_to_accumulator is a one-click permanent write from the review feed, so every status it
 can return is exercised against a scratch database, plus the two properties the design leans
 on: an attached paper leaves the unattached pool (the accumulator silences the discovery loop
-for papers already diagnosed), and the attachment is invisible to undo_profile_analysis (a
+for papers already diagnosed), and the attachment is invisible to undo_error_analysis (a
 human write carries no run stamp).
 """
 

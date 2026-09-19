@@ -14,7 +14,7 @@ import os
 from collections import Counter
 from dataclasses import dataclass
 
-from litcurator import config, db_interface as DB, profile_analysis as PA
+from litcurator import config, db_interface as DB, error_analysis as PA
 
 
 # TASTE_DIRECTIONS IS GONE (2026-08-25), and its removal is the point rather than a tidy-up.

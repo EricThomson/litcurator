@@ -1,5 +1,5 @@
 """
-scenarios.py -- the synthetic test fixture for the profile analysis machinery, and its spec.
+scenarios.py -- the synthetic test fixture for the error analysis machinery, and its spec.
 
 Read this top to bottom before touching the harness. It defines, in plain language, what
 "correct" behavior even is -- both within one session and across sessions -- which is
@@ -50,7 +50,7 @@ game: you cannot tune a prompt to merely sound right, because the score is about
 flags landed where.
 
     intended pattern  = a gap we wrote into the synthetic fixture (ground truth)
-    produced pattern  = a pattern the machinery generated during profile analysis (what we grade)
+    produced pattern  = a pattern the machinery generated during error analysis (what we grade)
 
 ------------------------------------------------------------------------------
 WHAT GOOD LOOKS LIKE

@@ -1,5 +1,5 @@
 """
-undo_stage.py -- unit tests for undo_profile_analysis (free, no model).
+undo_stage.py -- unit tests for undo_error_analysis (free, no model).
 
 The claim under test is strong and cheap to verify exactly: undoing the latest analysis run
 leaves the four pattern-layer tables BYTE-IDENTICAL to their state before that run. Anything
@@ -15,7 +15,7 @@ import contextlib
 import os
 
 from litcurator import db_interface as DB
-from litcurator import profile_analysis as PA
+from litcurator import error_analysis as PA
 
 from .. import machinery as H
 

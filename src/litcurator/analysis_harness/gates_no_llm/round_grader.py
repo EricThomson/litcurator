@@ -22,7 +22,7 @@ preconditions and nothing to clean up but one scratch file.
 
 from collections import Counter
 
-from litcurator import db_interface as DB, profile_analysis as PA
+from litcurator import db_interface as DB, error_analysis as PA
 
 from .. import grading as G
 from .. import machinery as M

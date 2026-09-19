@@ -19,7 +19,7 @@ section and hold the other fixed. Editing one at a time is unaffected; you edit 
 
 Layout under PROMPT_DIR (shared with the judge prompt -- one folder for all prompts, and
 version filenames are prefixed by artifact so they cannot collide):
-    analysis_prompt.md                  the active prompt (what profile_analysis runs)
+    analysis_prompt.md                  the active prompt (what error_analysis runs)
     versions/analysis_prompt_<ts>.md    timestamped snapshots ("save as new version")
     versions/_pre_active_analysis_<ts>.md   the outgoing active, backed up before each promote
     versions/_autosave_analysis.md      the bench crash-safety draft

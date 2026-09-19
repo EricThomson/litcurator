@@ -89,7 +89,7 @@ JUDGE_HARNESS_RUNS_DIR = DATA_DIR / "judge_harness_runs"
 # ---------------------------------------------------------------------------
 # Analysis harness
 # ---------------------------------------------------------------------------
-# The profile-analysis machinery's own gates: the cluster -> consolidate -> record
+# The error-analysis machinery's own gates: the cluster -> consolidate -> record
 # pipeline is stateful and set-valued (a SET of flags becomes a SET of patterns plus
 # changes to permanent memory), so its tests are staged synthetic SCENARIOS rather than
 # a list of cases. Everything runs against a throwaway database on wholly synthetic
@@ -249,7 +249,7 @@ Return a JSON object with two fields: "score" (a number between 0.0 and 1.0) and
 # the arithmetic is ours.
 MAX_ACT_NOW = 8
 
-# How many independent rounds `profile_analysis` runs before picking one. A round is
+# How many independent rounds `error_analysis` runs before picking one. A round is
 # unstable enough that a single round is a lottery: two runs on identical input, minutes
 # apart, produced one the user called a shit show and one he called amazing. So the round is
 # run three times and a picker chooses, rather than the user reading all three.

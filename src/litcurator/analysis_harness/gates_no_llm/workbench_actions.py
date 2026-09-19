@@ -1,5 +1,5 @@
 """
-No-LLM test for the HUMAN'S DECISION PATH: the profile workbench's Carry / Incorporate /
+No-LLM test for the HUMAN'S DECISION PATH: the judge workbench's Carry / Incorporate /
 Reject / Save-edits callbacks, driven as the running app drives them, asserting the
 pattern_events rows and the profile-version stamp that come out the other side.
 
@@ -137,7 +137,7 @@ def _world(n_patterns=1, papers_each=2):
     DB.LITCURATOR_DB = path
     wb = saved_ctx = None
     try:
-        import litcurator.apps.profile_workbench as wb
+        import litcurator.apps.judge_workbench as wb
         saved_ctx = wb.ctx
         wb.profile_interface = _ProfileShim(ACTIVE_PROFILE)
         yield conn, wb, [p["id"] for p in DB.get_active_patterns(conn)]

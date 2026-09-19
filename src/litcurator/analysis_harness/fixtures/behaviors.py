@@ -52,7 +52,7 @@ def accumulation(delta_band=(0.16, 0.22), n_sessions=12):
     that below it the flags landed in a bucket 'the cluster prompt is told not to pattern'.
     Both halves were wrong. No such instruction was ever in any cluster prompt -- it lived in a
     header string in _format_papers -- and the boundary is gone (2026-08-07; see the note beside
-    profile_analysis.MIN_FLAGS). The band is now a plain magnitude dose, which is the cleaner
+    error_analysis.MIN_FLAGS). The band is now a plain magnitude dose, which is the cleaner
     experiment: the old 0.13-0.17 band was half above the line and half below it, so it dosed
     two things at once.
 

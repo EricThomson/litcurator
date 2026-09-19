@@ -6,9 +6,9 @@ cli.py -- litcurator command line.
     litcurator review
 
 Thin dispatch over the pipeline (run), DB summaries (status), the Dash apps (review,
-profile_workbench, prompt_workbench, the labelers), the offline profile_analysis
+judge_workbench, prompt_workbench, the labelers), the offline error_analysis
 suggester, and the two harnesses: judge_harness for the judge, analysis_harness for the
-profile-analysis machinery. Each subcommand is a thin wrapper over its module.
+error-analysis machinery. Each subcommand is a thin wrapper over its module.
 """
 
 import argparse
@@ -198,12 +198,12 @@ def _cmd_review(args):
     review_feed.run_app(start=args.start, end=args.end)
 
 
-def _cmd_profile_analysis(args):
-    from litcurator import profile_analysis
-    # Only pass overrides that were given, so profile_analysis keeps its own defaults.
+def _cmd_error_analysis(args):
+    from litcurator import error_analysis
+    # Only pass overrides that were given, so error_analysis keeps its own defaults.
     overrides = {k: v for k, v in (("cluster_model", args.cluster_model),
                                    ("consolidate_model", args.consolidate_model)) if v}
-    profile_analysis.suggest_edits(start=args.start, end=args.end,
+    error_analysis.suggest_edits(start=args.start, end=args.end,
                                    persist=not args.dry_run,
                                    shuffle_seed=args.shuffle_candidates,
                                    include_attached=args.include_attached,
@@ -215,7 +215,7 @@ def _cmd_profile_analysis(args):
 def _cmd_pick_best(args):
     """Pick between consolidation rounds that already exist, without paying to re-run them.
 
-    profile_analysis already does this at the end of every round. This is for picking again --
+    error_analysis already does this at the end of every round. This is for picking again --
     a different seed, to check the answer does not depend on presentation order -- or for
     comparing reports that were never part of one round."""
     from litcurator import consolidation_picker
@@ -254,10 +254,10 @@ def _cmd_promote_suggestions(args):
     numbering reproduces exactly -- but only if the flag set has not moved. So the report's own
     flag count is compared against the live one, and a mismatch refuses rather than silently
     attaching every pattern to the wrong papers."""
-    from litcurator import db_interface, profile_analysis, profile_interface
+    from litcurator import db_interface, error_analysis, profile_interface
     from litcurator import analysis_prompt_interface
 
-    candidates, n_then = profile_analysis.parse_consolidation_md(args.report)
+    candidates, n_then = error_analysis.parse_consolidation_md(args.report)
     conn = db_interface.get_connection()
     try:
         flags = db_interface.get_flags(conn, start=args.start, end=args.end,
@@ -269,7 +269,7 @@ def _cmd_promote_suggestions(args):
                   f"against a different set would attach every pattern to the wrong papers.")
             raise SystemExit(1)
 
-        _papers, ordered_flags = profile_analysis._format_papers(flags)
+        _papers, ordered_flags = error_analysis._format_papers(flags)
         print(f"{args.report}\n  {len(candidates)} candidates over {n_now} flags")
         if not args.yes:
             if input("Type 'record' to write this into the pattern memory: ").strip().lower() \
@@ -284,20 +284,20 @@ def _cmd_promote_suggestions(args):
         run_id = db_interface.create_analysis_run(
             conn,
             db_interface.get_or_create_prompt(conn, analysis_prompt, kind="analysis"),
-            profile_analysis.DEFAULT_CLUSTER_MODEL,
-            profile_analysis.DEFAULT_CONSOLIDATE_MODEL,
+            error_analysis.DEFAULT_CLUSTER_MODEL,
+            error_analysis.DEFAULT_CONSOLIDATE_MODEL,
             profile_id=db_interface.get_or_create_profile(conn, seed_text),
             date_start=args.start, date_end=args.end, n_flags=n_now, cost_usd=0.0)
-        summary = profile_analysis._record_consolidation(
+        summary = error_analysis._record_consolidation(
             conn, candidates, ordered_flags, analysis_run_id=run_id)
-        print(profile_analysis._summary_line(summary))
+        print(error_analysis._summary_line(summary))
         print(f"Recorded from {args.report} -- no model calls, $0.")
     finally:
         conn.close()
 
 
-def _cmd_undo_profile_analysis(args):
-    """Undo the most recent profile_analysis (or promote_suggestions) recording.
+def _cmd_undo_error_analysis(args):
+    """Undo the most recent error_analysis (or promote_suggestions) recording.
 
     LATEST ONLY, by design: the most recent run is the only one guaranteed to have nothing
     built on top of it, so undoing it can never orphan a later round's merges. Run it again
@@ -360,7 +360,7 @@ def _cmd_reset_patterns(args):
 
     This touches four tables and no others. Flags, human labels, evaluations, articles,
     profiles and prompts are all untouched by construction, so the mistake above cannot
-    recur. Re-running profile_analysis afterwards starts the round again from the same flags."""
+    recur. Re-running error_analysis afterwards starts the round again from the same flags."""
     from litcurator import db_interface
 
     conn = db_interface.get_connection()
@@ -391,9 +391,9 @@ def _cmd_reset_patterns(args):
         conn.close()
 
 
-def _cmd_profile_workbench(args):
-    from litcurator.apps import profile_workbench
-    profile_workbench.run_app()
+def _cmd_judge_workbench(args):
+    from litcurator.apps import judge_workbench
+    judge_workbench.run_app()
 
 
 def _cmd_prompt_workbench(args):
@@ -576,7 +576,7 @@ def main():
     review_p.add_argument("--end", default=None, help="pre-fill the pub-date filter end (YYYY-MM-DD)")
     review_p.set_defaults(func=_cmd_review)
 
-    pa_p = sub.add_parser("profile_analysis",
+    pa_p = sub.add_parser("error_analysis",
                            help="cluster flags -> consolidate into tracked profile patterns")
     pa_p.add_argument("--start", default=None, help="scope flags to pub dates >= this (YYYY-MM-DD)")
     pa_p.add_argument("--end", default=None, help="scope flags to pub dates <= this (YYYY-MM-DD)")
@@ -612,11 +612,11 @@ def main():
                            f"round and skips the picker, which needs no pick prompt.")
     pa_p.add_argument("--pick-model", default=None,
                       help="override the model that picks between rounds")
-    pa_p.set_defaults(func=_cmd_profile_analysis)
+    pa_p.set_defaults(func=_cmd_error_analysis)
 
     pb_p = sub.add_parser("pick_best",
                           help="pick between consolidation rounds that already exist. "
-                               "profile_analysis does this itself; use this to re-pick with a "
+                               "error_analysis does this itself; use this to re-pick with a "
                                "different seed, or to compare reports from separate rounds.")
     pb_p.add_argument("reports", nargs="+",
                       help="a round directory, or two or more suggestions reports")
@@ -639,14 +639,14 @@ def main():
     ps_p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     ps_p.set_defaults(func=_cmd_promote_suggestions)
 
-    up_p = sub.add_parser("undo_profile_analysis",
-                          help="undo the most recent profile_analysis recording: delete the "
+    up_p = sub.add_parser("undo_error_analysis",
+                          help="undo the most recent error_analysis recording: delete the "
                                "patterns it minted, the attachments its merges added, and the "
                                "events it fired. Latest run only; repeat to peel further back. "
                                "Refuses once it reaches patterns you have curated. Flags are "
                                "untouched and return to the unattached pool.")
     up_p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
-    up_p.set_defaults(func=_cmd_undo_profile_analysis)
+    up_p.set_defaults(func=_cmd_undo_error_analysis)
 
     rp_p = sub.add_parser("reset_patterns",
                           help="delete the pattern memory (patterns / provenance / events / "
@@ -657,9 +657,9 @@ def main():
     rp_p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     rp_p.set_defaults(func=_cmd_reset_patterns)
 
-    pw_p = sub.add_parser("profile_workbench",
-                           help="launch the profile workbench (review patterns, edit the profile, set active)")
-    pw_p.set_defaults(func=_cmd_profile_workbench)
+    pw_p = sub.add_parser("judge_workbench",
+                           help="launch the judge workbench (review patterns, edit the profile, set active)")
+    pw_p.set_defaults(func=_cmd_judge_workbench)
 
     ptw_p = sub.add_parser("prompt_workbench",
                             help="launch the prompt workbench (edit + version the judge prompt)")
@@ -676,7 +676,7 @@ def main():
     jh_p.set_defaults(func=_cmd_judge_harness)
 
     ah_p = sub.add_parser("analysis_harness",
-                           help="run the profile-analysis gates (free ones first, then the paid ones)")
+                           help="run the error-analysis gates (free ones first, then the paid ones)")
     ah_p.add_argument("gate", nargs="?", default=None,
                       help="'quick' for the free gates only, or one gate by name "
                            "(default: every gate)")

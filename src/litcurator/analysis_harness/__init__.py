@@ -1,5 +1,5 @@
 """
-analysis_harness -- the gates for the profile-analysis machinery.
+analysis_harness -- the gates for the error-analysis machinery.
 
 The judge is a plain function (one paper in, one score out), so `litcurator judge_harness` can
 test it with a list of papers and expected bands. This machinery is different: a whole batch of
@@ -27,7 +27,7 @@ span both. Driven by `litcurator analysis_harness`; see cli.py.
 import os
 import time
 
-from litcurator import analysis_prompt_interface, profile_analysis as PA
+from litcurator import analysis_prompt_interface, error_analysis as PA
 
 from .gates_llm import COLD_CACHE_GATES, PAID_GATES
 from .gates_no_llm import FREE_GATES, run_free_gate
@@ -59,7 +59,7 @@ def resolve_prompts(cluster_prompt=None, consolidate_prompt=None):
     """Return the (cluster, consolidate) prompt TEXT this run should use: the active analysis
     prompt from disk, with either section replaced by a draft if one was given.
 
-    Returns text rather than mutating profile_analysis globals, which is what the harness used
+    Returns text rather than mutating error_analysis globals, which is what the harness used
     to do. Mutating a module global to test a draft means the override leaks to anything else
     in the process and cannot be nested -- the judge never worked that way (judge_articles_batch
     has always taken system_prompt=), and now neither does this.
@@ -125,7 +125,7 @@ def run_gates(gates=None, cluster_prompt=None, consolidate_prompt=None,
     """Run the selected gates and return (results, cluster_fp, consolidate_fp).
 
     Computes and returns data; prints nothing. A draft prompt is applied in memory for this
-    process only -- the draft file and profile_analysis.py are both left alone.
+    process only -- the draft file and error_analysis.py are both left alone.
 
     Stops before the first paid gate if any free gate is red: the paid ones would only produce
     confusing symptoms on top of a structural break.

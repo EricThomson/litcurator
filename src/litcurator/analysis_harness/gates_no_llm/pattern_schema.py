@@ -17,7 +17,7 @@ SCRATCH = Path(config.DATA_DIR) / "_scratch_pattern_test.db"
 def _wipe_patterns(conn):
     """Empty the pattern tables in the SCRATCH copy. These gates copy the live database for its
     real articles and then assert on counts they create themselves, so they only worked while
-    the live pattern tables happened to be empty. The first real profile_analysis run put 15
+    the live pattern tables happened to be empty. The first real error_analysis run put 15
     patterns in them (2026-08-29) and both gates went red on their own fixtures. Predicted in
     CLAUDE.md: "record_stage, pattern_schema and workbench_render must be made hermetic first."
     record_stage already wiped; these two did not."""

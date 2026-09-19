@@ -1,5 +1,5 @@
 """
-Import-and-render smoke test for the reworked profile_workbench, against a SCRATCH
+Import-and-render smoke test for the reworked judge_workbench, against a SCRATCH
 copy of the live DB seeded with one pattern. Catches construction errors (bad ids,
 missing components like dbc.Select, the provenance drill-down) without a browser and
 without touching the live DB. Dash callback *behavior* still needs a manual click-through.
@@ -18,7 +18,7 @@ SCRATCH = Path(config.DATA_DIR) / "_scratch_wb.db"
 def _wipe_patterns(conn):
     """Empty the pattern tables in the SCRATCH copy. These gates copy the live database for its
     real articles and then assert on counts they create themselves, so they only worked while
-    the live pattern tables happened to be empty. The first real profile_analysis run put 15
+    the live pattern tables happened to be empty. The first real error_analysis run put 15
     patterns in them (2026-08-29) and both gates went red on their own fixtures. Predicted in
     CLAUDE.md: "record_stage, pattern_schema and workbench_render must be made hermetic first."
     record_stage already wiped; these two did not."""
@@ -56,7 +56,7 @@ def main():
     # never ran, and it passed by replay. Reloading re-executes the module body, which is the
     # whole point of the check, and makes the gate independent of what ran before it rather
     # than silently dependent on gate order.
-    import litcurator.apps.profile_workbench as wb
+    import litcurator.apps.judge_workbench as wb
     importlib.reload(wb)
     assert wb.app.layout is not None
     print("layout built OK; app.title =", wb.app.title)

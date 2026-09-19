@@ -14,7 +14,7 @@ import re
 import shutil
 from pathlib import Path
 
-from litcurator import config, db_interface, profile_analysis
+from litcurator import config, db_interface, error_analysis
 
 SCRATCH = Path(config.DATA_DIR) / "_scratch_sugg.db"
 
@@ -64,7 +64,7 @@ def main():
     # order instead would make a DELIBERATE re-sort look exactly like a broken mapping,
     # which is what happened when the magnitude sections were removed.
     flags = db_interface.get_flags(conn)
-    papers_block, ordered = profile_analysis._format_papers(flags)
+    papers_block, ordered = error_analysis._format_papers(flags)
     printed = dict(re.findall(r"\[(\d+)\] delta ([-+]\d\.\d\d)", papers_block))
     assert len(printed) == len(ordered) == 6, (len(printed), len(ordered))
     for n, f in enumerate(ordered, start=1):
@@ -82,7 +82,7 @@ def main():
     print("order is |delta| descending, signs interleaved:", order)
 
     # --- 2. a `new` candidate: attaches the right flags + note rides the created event ---
-    s = profile_analysis._record_consolidation(conn, [{
+    s = error_analysis._record_consolidation(conn, [{
         "choice": "new", "name": "NewTaste", "direction": "under",
         "description": "d", "suggested_edit": "e", "priority": "act_now",
         # papers 2 and 4 -> F4 and F5. Both are MIDDLE positions: never the first or last
@@ -98,7 +98,7 @@ def main():
     print("new: links F4,F5 and created-event note rides:", repr(note))
 
     # bad / out-of-range paper numbers are ignored, not crashing
-    s_bad = profile_analysis._record_consolidation(conn, [{
+    s_bad = error_analysis._record_consolidation(conn, [{
         "choice": "new", "name": "x", "direction": "over",
         "paper_numbers": [99, "bad", 3], "rationale": "r"}], ordered)
     linked_bad = {r[0] for r in conn.execute(
@@ -111,7 +111,7 @@ def main():
     p_tomb = db_interface.create_pattern(conn, "tomb", "over", flag_ids=[flag_id["F4"]])
     db_interface.add_pattern_event(conn, p_tomb, "rejected", note="not a gap")
 
-    s2 = profile_analysis._record_consolidation(conn, [
+    s2 = error_analysis._record_consolidation(conn, [
         {"choice": "merge_into_open", "existing_pattern_id": p_open,
          "paper_numbers": [3, 5], "rationale": "same taste"},           # +F2,F3
         {"choice": "merge_into_closed", "existing_pattern_id": p_tomb,
@@ -138,7 +138,7 @@ def main():
     # emitted merge_into_open with a DIRECTION in the id field and no name, which the
     # first version silently skipped -- losing the candidate entirely) ---
     before = len(db_interface.get_patterns(conn))
-    s_bad2 = profile_analysis._record_consolidation(conn, [
+    s_bad2 = error_analysis._record_consolidation(conn, [
         # exactly the malformed shape seen in the live dry run: bogus id, no name
         {"choice": "merge_into_open", "existing_pattern_id": "judge-not-applying",
          "direction": "over", "priority": "act_now", "paper_numbers": [1],
@@ -160,7 +160,7 @@ def main():
           f"(names: {sorted(n[:32] for n in names)}); only the empty candidate skipped")
 
     # --- 4. idempotency: re-running the same merge adds nothing ---
-    s3 = profile_analysis._record_consolidation(conn, [{
+    s3 = error_analysis._record_consolidation(conn, [{
         "choice": "merge_into_open", "existing_pattern_id": p_open,
         "paper_numbers": [3, 5], "rationale": "again"}], ordered)
     assert len(s3["skipped"]) == 1 and pat(p_open)["carried_count"] == 1
@@ -191,7 +191,7 @@ def main():
     # Fixture deltas: F1 -0.80, F2 -0.60, F3 -0.40 (negative), F4 +0.70, F5 +0.50, F6 +0.35.
     # Render order is |delta| descending: papers 1..6 = F1, F4, F2, F5, F3, F6.
     def _one_new(direction, paper_numbers):
-        out = profile_analysis._record_consolidation(conn, [{
+        out = error_analysis._record_consolidation(conn, [{
             "choice": "new", "name": "dir probe", "direction": direction,
             "paper_numbers": paper_numbers, "rationale": "r"}], ordered)
         rec = out["new"][0]
@@ -240,17 +240,17 @@ def main():
 
     # --- 8. HELD PATTERNS: recorded, not shown, and their flags stay in the pool -----------
     # Added 2026-08-26 with the `held` status. Until then a `hold` wrote nothing at all -- the
-    # exact "dumped it where no code reads" failure profile_analysis's own docstring says the
+    # exact "dumped it where no code reads" failure error_analysis's own docstring says the
     # redesign killed -- so a recognized-but-thin pattern was lost every round and re-derived
     # from raw papers. These checks pin the four properties that make the fix worth having.
     for t in ("pattern_flags", "pattern_events", "patterns"):
         conn.execute(f"DELETE FROM {t}")
     conn.commit()
-    ordered = profile_analysis._format_papers(db_interface.get_flags(conn))[1]
+    ordered = error_analysis._format_papers(db_interface.get_flags(conn))[1]
     by_pos = {f["id"]: i + 1 for i, f in enumerate(ordered)}      # flag id -> paper number
 
     def _consolidate(*candidates):
-        return profile_analysis._record_consolidation(conn, list(candidates), ordered)
+        return error_analysis._record_consolidation(conn, list(candidates), ordered)
 
     # (a) new + priority=hold mints a REAL row that the workbench never sees.
     s8 = _consolidate({"choice": "new", "name": "thin gap", "direction": "under",
@@ -332,7 +332,7 @@ def main():
     # arrival order would look correct by accident.
     cands = [{"choice": "new", "name": f"p{i}", "direction": "under", "priority": "act_now",
               "rank": n_over - i, "paper_numbers": [], "rationale": "r"} for i in range(n_over)]
-    s9 = profile_analysis._record_consolidation(conn, cands, [])
+    s9 = error_analysis._record_consolidation(conn, cands, [])
     assert len(s9["new"]) == config.MAX_ACT_NOW, len(s9["new"])
     assert len(s9["held"]) == n_over - config.MAX_ACT_NOW, len(s9["held"])
     kept = sorted(c["rank"] for c in cands if c["priority"] == "act_now")
@@ -348,7 +348,7 @@ def main():
     conn.commit()
     few = [{"choice": "new", "name": f"q{i}", "direction": "under", "priority": "act_now",
             "rank": i + 1, "paper_numbers": [], "rationale": "r"} for i in range(3)]
-    s9b = profile_analysis._record_consolidation(conn, few, [])
+    s9b = error_analysis._record_consolidation(conn, few, [])
     assert len(s9b["new"]) == 3 and not s9b["held"], s9b
     print("cap: inert when fewer patterns want the queue than the cap allows")
 
@@ -360,10 +360,10 @@ def main():
         return (tool["input_schema"]["properties"]["candidates"]["items"]
                 ["properties"]["choice"]["enum"])
 
-    assert _enum(profile_analysis._consolidate_tool(has_memory=False)) == ["new", "discard"]
-    full = _enum(profile_analysis._consolidate_tool(has_memory=True))
+    assert _enum(error_analysis._consolidate_tool(has_memory=False)) == ["new", "discard"]
+    full = _enum(error_analysis._consolidate_tool(has_memory=True))
     assert "merge_into_open" in full and "merge_into_closed" in full, full
-    assert _enum(profile_analysis._CONSOLIDATE_TOOL) == full, "the constant must not be mutated"
+    assert _enum(error_analysis._CONSOLIDATE_TOOL) == full, "the constant must not be mutated"
     print("empty memory: merge values are removed from the enum, and the constant is untouched")
 
     # --- 11. THE REPORT ROUND-TRIPS ------------------------------------------------------
@@ -398,11 +398,11 @@ def main():
          "rationale": "noise", "paper_numbers": [5]},
     ]
     md = ("# Pattern suggestions\n\nUnattached flags: 20  |  x\n\n"
-          "## Consolidation (choices)\n\n" + profile_analysis._format_consolidation_md(shapes))
+          "## Consolidation (choices)\n\n" + error_analysis._format_consolidation_md(shapes))
     report = Path(config.DATA_DIR) / "_scratch_roundtrip.md"
     report.write_text(md, encoding="utf-8")
     try:
-        back, n_then = profile_analysis.parse_consolidation_md(report)
+        back, n_then = error_analysis.parse_consolidation_md(report)
         assert n_then == 20, n_then
         assert len(back) == len(shapes), (len(back), len(shapes))
         for orig, got in zip(shapes, back):

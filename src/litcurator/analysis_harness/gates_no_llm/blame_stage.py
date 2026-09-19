@@ -17,7 +17,7 @@ import contextlib
 import os
 
 from litcurator import db_interface as DB
-from litcurator import profile_analysis as PA
+from litcurator import error_analysis as PA
 
 from .. import machinery as H
 

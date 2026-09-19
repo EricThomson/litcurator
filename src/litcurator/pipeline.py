@@ -16,7 +16,7 @@ applied by the labels). Benchmark labels are NEVER written as evaluations.
 
 Everything else -- examining papers, flagging them, scoring how the judge did,
 plotting -- is built on top of what this produces and lives in other modules
-(the dashes, profile_analysis). This module ends at the judge.
+(the dashes, error_analysis). This module ends at the judge.
 """
 
 import hashlib

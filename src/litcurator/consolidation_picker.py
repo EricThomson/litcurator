@@ -22,7 +22,7 @@ import anthropic
 from dotenv import load_dotenv
 
 from litcurator import (analysis_prompt_interface, db_interface, pick_prompt_interface,
-                        profile_analysis as PA, profile_interface)
+                        error_analysis as PA, profile_interface)
 
 load_dotenv()
 

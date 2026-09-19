@@ -1,5 +1,5 @@
 """
-profile_analysis.py -- synthesize flag patterns into the pattern memory.
+error_analysis.py -- synthesize flag patterns into the pattern memory.
 
 The offline learning path. It reads the numeric flags (the residuals between the
 judge and the user) and turns them into tracked PATTERNS -- recurring taste-gaps the
@@ -46,7 +46,8 @@ from datetime import datetime
 import anthropic
 from dotenv import load_dotenv
 
-from litcurator import analysis_prompt_interface, db_interface, profile_interface
+from litcurator import (analysis_prompt_interface, db_interface, profile_interface,
+                        prompt_interface)
 from litcurator.config import BEST_OF_RUNS, DATA_DIR, MAX_ACT_NOW
 
 load_dotenv()
@@ -257,7 +258,10 @@ def _format_existing_patterns(active, closed_patterns, examples=None, held=()):
             out.append(f"      papers: {titles}")
         return out
 
-    lines = ["## Existing pattern memory (match candidates against these by MEANING, using the id)"]
+    # `#` not `##`: one level ABOVE the headings inside the profile and the judge prompt, which
+    # are embedded whole in the same message. At the same level their "## Output" and
+    # "## Topic interests" read as siblings of the message's own sections.
+    lines = ["# Existing pattern memory (match candidates against these by MEANING, using the id)"]
     if active:
         lines.append("\nOPEN patterns (still awaiting a decision) -- a candidate that is the same "
                      "gap is merge_into_open with that id:")
@@ -512,26 +516,52 @@ def build_memory_block(conn):
 
 
 def run_consolidate_step(client, clusters_text, seed_text, existing_block, model,
-                         prompt=None):
+                         prompt=None, judge_prompt_text=None):
     """Assign every candidate a choice via forced tool-use (so the JSON is always
-    valid). Shown the clusters, the profile (context for judging what a candidate is really
-    about), and the existing patterns + closed patterns WITH ids
-    (to capture the cross-round match). Returns (candidates, cost).
+    valid). Shown the clusters, the profile, the judge prompt, and the existing patterns +
+    closed patterns WITH ids (to capture the cross-round match). Returns (candidates, cost).
 
     `prompt` defaults to the in-code seed; the live path passes the active consolidate section
-    from disk, the harness passes a draft. See run_cluster_step."""
+    from disk, the harness passes a draft. See run_cluster_step.
+
+    BOTH JUDGE ARTIFACTS, added 2026-09-18, because `blame` cannot be answered from one.
+    The field asks whether a taste is already written down, and four of the five rule families
+    (journal tier, article type, level of organization, score bands) live in the judge prompt
+    as well as the profile -- some, like the tier table, ONLY there. Shown the profile alone,
+    this step cannot tell "stated nowhere" (a real profile gap) from "stated in the prompt and
+    ignored" (a prompt job), which is precisely the distinction blame exists to draw. The
+    Annual Review pattern is the worked example: its rule lives in the judge prompt, the user
+    fixed it in the judge prompt, and a consolidate step that had never read that file would
+    have found no journal rules in the profile and called it a profile gap.
+
+    `judge_prompt_text=None` omits the block, which is what the harness wants -- its scenarios
+    are synthetic and have no meaningful judge prompt, and its profile is deliberately silent
+    on every planted gap.
+
+    NB the FULL authored file is sent, including the tail below `## Output` that
+    judge._batch_prompt drops before the judge ever sees it (1198 of 7757 chars today). That
+    is the right choice here -- the file is the artifact the user edits, so "is this written
+    down" means written down in it -- but it is a live discrepancy worth closing at the judge
+    end rather than papering over at this one."""
     prompt = _require_prompt(prompt, "consolidate")
     memory = f"{existing_block}\n\n---\n\n" if existing_block else ""
     tool = _consolidate_tool(has_memory=bool(memory))
+    # LABELS, NOT INSTRUCTIONS. The header used to append "a preference already clear here
+    # that the judge still gets wrong is judge-not-applying, not a gap" -- prompt text living
+    # in code, outside the hand-authored content-addressed prompt file, and the strongest
+    # single push toward the value removed on 2026-08-25. What to DO with these two blocks
+    # belongs in the authored consolidate prompt, not here.
+    judge_block = (
+        f"# THE JUDGE PROMPT (the scoring procedure the judge follows)\n\n"
+        f"This is what is currently written, not a claim that it is right.\n\n"
+        f"{judge_prompt_text}\n\n---\n\n"
+    ) if judge_prompt_text else ""
     user_msg = (
-        f"## Candidate patterns (with [N] paper numbers)\n\n{clusters_text}\n\n---\n\n"
+        f"# Candidate patterns (with [N] paper numbers)\n\n{clusters_text}\n\n---\n\n"
         f"{memory}"
-        # A LABEL, NOT AN INSTRUCTION. This used to append "a preference already clear here
-        # that the judge still gets wrong is judge-not-applying, not a gap" -- prompt text
-        # living in code, outside the hand-authored content-addressed prompt file, and the
-        # strongest single push toward the value removed on 2026-08-25.
-        f"## CURRENT PROFILE (the user's own prose about what they want to read)"
-        f"\n\n{seed_text}"
+        f"# CURRENT PROFILE (the user's own prose about what they want to read)"
+        f"\n\n{seed_text}\n\n---\n\n"
+        f"{judge_block}".rstrip("-\n ")
     )
     resp = client.messages.create(
         model=model,
@@ -1013,6 +1043,11 @@ def suggest_edits(start=None, end=None,
     seed_text = profile_interface.load_active()
     analysis_prompt = analysis_prompt_interface.load_active()
     cluster_prompt, consolidate_prompt = analysis_prompt_interface.split(analysis_prompt)
+    # The OTHER judge artifact. Consolidate needs both to answer `blame` -- see
+    # run_consolidate_step. Cluster deliberately does NOT get it: its job is recall from the
+    # papers and the user's notes, and handing the step that hunts for miscalibration the
+    # current calibration is the mistake the journal-ratings table made in 2026-08.
+    judge_prompt_text = prompt_interface.load_active()
 
     conn = db_interface.get_connection()
     try:
@@ -1083,8 +1118,9 @@ def suggest_edits(start=None, end=None,
                       f"{shuffle_order}]")
             if best_of > 1:
                 print("  consolidating ...", end="", flush=True)
-            candidates, cost2 = run_consolidate_step(client, shown, seed_text, existing_block,
-                                                     consolidate_model, prompt=consolidate_prompt)
+            candidates, cost2 = run_consolidate_step(
+                client, shown, seed_text, existing_block, consolidate_model,
+                prompt=consolidate_prompt, judge_prompt_text=judge_prompt_text)
             if best_of > 1:
                 print(f" {len(candidates)} patterns  ${cost2:.4f}")
             # BEFORE anything is written, so every report previews the real outcome. Recording

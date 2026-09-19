@@ -1,5 +1,5 @@
 """
-profile_workbench.py -- edit the active profile, curating the pattern memory.
+judge_workbench.py -- edit the active profile, curating the pattern memory.
 
 Left panel: the ACTIVE PATTERNS (db_interface.get_active_patterns) -- recurring
 taste-gaps the suggester surfaced from your flags, each with a drill-down to the
@@ -26,8 +26,8 @@ remembers. Typical flow: Discuss / edit a pattern -> author the profile edit on 
 right -> Set as active -> Incorporate the pattern (it stamps that version).
 
 Run:
-    litcurator profile_workbench
-    python src/litcurator/apps/profile_workbench.py
+    litcurator judge_workbench
+    python src/litcurator/apps/judge_workbench.py
 """
 
 import os
@@ -154,7 +154,7 @@ def _render_patterns(conn, tab="active"):
             "not yet worth your attention; it moves to Active once enough evidence arrives."
             if held else
             "No open patterns. Flag papers in the review feed, then run "
-            "`litcurator profile_analysis` to surface patterns here.",
+            "`litcurator error_analysis` to surface patterns here.",
             className="text-muted")]
     return [_pattern_card(conn, p, held=held) for p in patterns]
 

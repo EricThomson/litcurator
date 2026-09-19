@@ -126,7 +126,7 @@ CREATE TABLE IF NOT EXISTS prompts (
 )
 """
 
-# One profile_analysis invocation: which prompt and models produced this batch of patterns,
+# One error_analysis invocation: which prompt and models produced this batch of patterns,
 # over which flags, at what cost. The direct mirror of scoring_runs, and for the same reason --
 # provenance belongs on the RUN, and each item points at it. Without this, "which prompt made
 # this pattern" is unanswerable, which is the one gap the rest of the system does not have.
@@ -221,7 +221,7 @@ CREATE TABLE IF NOT EXISTS flags (
 
 # THE ONE PLACE THE DIRECTION VOCABULARY IS WRITTEN DOWN. It lives here, at the bottom
 # layer, because everything above imports db_interface already and nothing here imports
-# them back -- so the CHECK constraint below, the clamp in profile_analysis, the enum in
+# them back -- so the CHECK constraint below, the clamp in error_analysis, the enum in
 # the consolidate tool schema and the workbench dropdown all read the same tuple instead of
 # restating it.
 #
@@ -252,7 +252,7 @@ CREATE TABLE IF NOT EXISTS flags (
 # re-run judge_harness, watch the score), so it was never a label to assign by reading.
 #
 # Direction is what remains, and it is arithmetic: the sign of the cited flags' deltas, which
-# `profile_analysis.computed_sign` computes and records over whatever the model proposed.
+# `error_analysis.computed_sign` computes and records over whatever the model proposed.
 #
 # A SECOND REASON, which only showed up on the way out: the harness exempted the two diagnosis
 # values from four checks (fragmentation, min_purity, no_new_pattern_for, the chimera
@@ -333,7 +333,7 @@ CREATE TABLE IF NOT EXISTS pattern_flags (
 #
 # WHY `held` EXISTS. Until 2026-08-26 the consolidate step's `hold` choice wrote NOTHING -- no
 # row, no flags, no event, only a line in a markdown report no code reads. That is precisely the
-# failure profile_analysis's own docstring says the redesign killed ("dumped everything it did
+# failure error_analysis's own docstring says the redesign killed ("dumped everything it did
 # not act on into a free-text line that no code read"), and it meant a recognized-but-not-yet-
 # actionable pattern was lost every round and re-derived from scratch. A held pattern is an
 # ordinary pattern row with ordinary provenance whose status keeps it off the workbench queue.
@@ -517,7 +517,7 @@ _LATE_COLUMNS = [
     "ALTER TABLE patterns ADD COLUMN analysis_run_id TEXT REFERENCES analysis_runs(id)",
     "ALTER TABLE patterns ADD COLUMN rank INTEGER",
     "ALTER TABLE patterns ADD COLUMN blame TEXT NOT NULL DEFAULT 'profile'",
-    # WHO WROTE THIS ROW (added 2026-09-04, for undo_profile_analysis). A round's writes were
+    # WHO WROTE THIS ROW (added 2026-09-04, for undo_error_analysis). A round's writes were
     # identifiable on patterns but not on the attachments and events it added to OTHER rounds'
     # patterns, so "undo the last run" had no clean query. Stamped by the record step; NULL
     # means a human wrote it (workbench decisions), which is exactly what the undo guard
@@ -735,7 +735,7 @@ def get_seed_profile(conn):
 def create_analysis_run(conn, analysis_prompt_id, cluster_model, consolidate_model,
                         profile_id=None, date_start=None, date_end=None, n_flags=None,
                         cost_usd=None):
-    """Record one profile_analysis invocation and return its id. Unlike scoring runs there is
+    """Record one error_analysis invocation and return its id. Unlike scoring runs there is
     no find-or-create: each invocation is its own run even over identical inputs, because two
     runs of a nondeterministic pipeline are two different events and both produced patterns."""
     run_id = uuid.uuid4().hex
@@ -1339,7 +1339,7 @@ def attach_to_accumulator(conn, name, pmid):
     (open, so its flags leave the unattached pool and stop re-clustering every round) on
     first use. The human tally path for a KNOWN chronic gap: review-time certainty recorded
     directly, no discovery loop. Writes carry no analysis_run_id -- the human signature,
-    which is also what makes these attachments invisible to undo_profile_analysis.
+    which is also what makes these attachments invisible to undo_error_analysis.
 
     Returns (status, paper_count): 'attached' on success, 'already' if this paper is in,
     'no_flag' if the paper was never flagged (the score is still the human's to give --
@@ -1385,7 +1385,7 @@ def attach_to_accumulator(conn, name, pmid):
 
 
 # ---------------------------------------------------------------------------
-# Undoing an analysis run (undo_profile_analysis)
+# Undoing an analysis run (undo_error_analysis)
 # ---------------------------------------------------------------------------
 
 def latest_analysis_run(conn):
