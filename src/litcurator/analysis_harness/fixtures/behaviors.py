@@ -303,28 +303,32 @@ def named_disinterest():
 def blame_routing():
     """A fix must be routed to the artifact that can absorb it.
 
-    ONE session, TWO pools, one of each answer, graded together so the check is a
-    discrimination rather than a label the model could get right by always saying the same
-    thing:
+    ONE session, TWO pools, one of each answer, graded together so the check is a discrimination
+    rather than a label a model could get right by always saying the same word:
 
-      E  commentary and News-and-Views pieces, OVER-scored. scenarios.JUDGE_PROMPT states
-         outright that these formats score below 0.15, so the rule is written down and the
-         judge scored against it anyway -> blame 'prompt'.
-      F  motor-cortex circuit work, UNDER-scored. Neither document mentions motor systems ->
-         blame 'profile'. Purpose-built for this gate: the obvious candidate (B, formal
-         theory) carries a note on 2 of its 11 papers, and blame is read off the NOTE, so a
-         green check on B would have meant nothing.
+      E  review articles, UNDER-scored. scenarios.JUDGE_PROMPT caps secondary literature below
+         0.55, the judge OBEYS that cap, and the user wants these near the top. The written rule
+         is WRONG, so the only place to fix it is the scoring procedure -> blame 'prompt'.
+      D  translational disease models, OVER-scored. Neither document mentions them -> blame
+         'profile'. Reused rather than purpose-built: already calibrated, note-complete, and
+         pointing the opposite way.
 
-    WHY THIS IS THE GATE THAT PROVES THE WIRING. E's notes say only that the paper is a
-    commentary; they never say where the rule lives. So 'prompt' is unreachable without having
-    read the judge prompt, and withholding it flips E to 'profile' while leaving B untouched.
-    That is the negative control, and it is not a sabotage -- it is the exact configuration
-    every paid gate ran in until 2026-09-19.
+    WHY THIS PROVES THE WIRING. E's notes say only that reviews are scored too low; they never
+    say a cap exists or where it lives. So 'prompt' is unreachable without having read the judge
+    prompt, and withholding it flips E to 'profile' while leaving D untouched. That is the
+    negative control, and it is not a sabotage -- it is the exact configuration every paid gate
+    ran in until 2026-09-19.
+
+    THE FIRST VERSION OF THIS GATE WAS AMBIGUOUS AND FLICKERED. E used to be commentary pieces
+    the judge scored ABOVE a stated cap, i.e. a rule being ignored -- which let consolidate
+    reason "the scoring procedure already covers this" and DISCARD the candidate. It did, in 2
+    of 3 runs, and took pool-calibration red with it. The model was not wrong; the fixture was,
+    because "already covered" was defensible. A test may be HARD (accumulation is genuinely
+    tricky) but its right answer must never be arguable.
 
     OPPOSITE DIRECTIONS on purpose. Two pools erring the same way can always be joined by a
-    generalization that happens to be true ("the profile is too narrow"), so a check that they
-    stay separate would be asking the model not to notice something real. That is what the
-    deleted `robustness` gate got wrong, and its note says so."""
+    generalization that happens to be true, so a check that they stay separate would be asking
+    the model not to notice something real -- the mistake that removed `robustness`."""
     return GEN.ScenarioSpec(
         name="blame_routing(prompt job vs profile job, in one session)",
         n_sessions=1,
@@ -332,20 +336,20 @@ def blame_routing():
         judge_prompt=SC.JUDGE_PROMPT,
         pools_by_intended_pattern={
             "E": paper_pools.POOLS_BY_INTENDED_PATTERN["E"],
-            "F": paper_pools.POOLS_BY_INTENDED_PATTERN["F"],
+            "D": paper_pools.POOLS_BY_INTENDED_PATTERN["D"],
         },
         streams=[GEN.Stream("E", [0], count_per_session=4),
-                 GEN.Stream("F", [0], count_per_session=4)],
+                 GEN.Stream("D", [0], count_per_session=4)],
         terminal_expect={
             "blame_routing": [{"label": "E", "blame": "prompt"},
-                              {"label": "F", "blame": "profile"}],
-            # Both pools must also actually surface, stay apart and keep their sign. Without
-            # these, a blame check on a missing or fused pattern reads as a routing failure
-            # when it is really a recall failure, and the gate would point at the wrong thing.
-            "intended_patterns_surface": ["E", "F"],
-            "stay_separate": [("E", "F")],
-            "direction_not_inverted": [{"label": "E", "taste": "over"},
-                                       {"label": "F", "taste": "under"}],
+                              {"label": "D", "blame": "profile"}],
+            # Both pools must surface, stay apart and keep their sign. Without these, a blame
+            # check on a missing or fused pattern reads as a routing failure when it is really a
+            # recall failure -- which is exactly how the first version of this gate failed.
+            "intended_patterns_surface": ["E", "D"],
+            "stay_separate": [("E", "D")],
+            "direction_not_inverted": [{"label": "E", "taste": "under"},
+                                       {"label": "D", "taste": "over"}],
         },
     )
 

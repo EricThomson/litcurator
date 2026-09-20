@@ -66,137 +66,72 @@ POOLS_BY_INTENDED_PATTERN = _pools_from_fixture()
 # --- pools the lifecycle fixture does not supply ---------------------------------------------
 
 # E -- the PROMPT-BLAMED pool, and the only fixture here whose correct `blame` cannot be reached
-# from the profile. Commentary and News-and-Views pieces about rodent sensory circuits: dead-on
-# the profile's stated topic, which is why the judge over-scores them, while scenarios.JUDGE_PROMPT
-# says outright that these formats score below 0.15. So the rule IS written down, the judge scored
-# against it anyway, and the fix belongs in the scoring procedure rather than in more profile prose.
+# from the profile. Review articles, UNDER-scored. scenarios.JUDGE_PROMPT caps secondary
+# literature below 0.55; the judge OBEYS that cap and lands them in the 0.25-0.54 band, and the
+# user puts them at 0.80 because they are how he keeps up with fields next to his own.
 #
-# THE NOTES NEVER SAY WHERE THE RULE LIVES, and that is the whole point of the pool. If a note said
-# "the scoring prompt already says this", the model could answer blame='prompt' by reading the note
-# alone and the check would pass just as well with the judge prompt withheld -- which is the
-# configuration this pool exists to prove we have left. They state the complaint only ("this is a
-# commentary, why is it above threshold"), so reaching 'prompt' REQUIRES looking the rule up.
+# THE WRITTEN RULE IS WRONG, NOT IGNORED, and that is the whole design. The first version of this
+# pool had the judge VIOLATING a stated rule, which invited consolidate to reason "the scoring
+# procedure already covers this" and DISCARD the candidate -- it did exactly that in 2 of 3 runs
+# on 2026-09-19, dropping five flags on the floor and taking pool-calibration red with it. That
+# was not the model misbehaving; "already covered" was a defensible reading, and a case that needs
+# an argument is a coin flip wearing a verdict. Here nothing is ignored, so there is nothing to
+# call covered: the cap is simply set at the wrong value, and the only place to change it is the
+# scoring procedure. Tests should be EASY -- not trivial, but unarguable.
 #
-# Over-scored, deliberately: intended pattern B (formal theory) is the profile-blamed control it is
-# graded against, and B is UNDER-scored. Two pools with opposite directions cannot be fused by a
-# generalization that happens to be true, which is the trap the deleted `robustness` gate fell into.
-# Topic is rodent sensory circuits, so it also stays clear of A (human), C (invertebrate),
-# D (disease models) and W (connectomics).
-_COMMENTARY_STUBS = [
+# THE NOTES NEVER SAY WHERE THE RULE LIVES. If one said "the scoring prompt caps these", the model
+# could answer blame='prompt' from the note alone and the check would pass just as well with the
+# judge prompt withheld -- which is the configuration this pool exists to prove we have left.
+# They state the complaint only, so reaching 'prompt' REQUIRES reading the cap.
+#
+# Graded against pool D (disease models, OVER-scored) rather than a second new pool: opposite
+# directions cannot be fused by a generalization that happens to be true, and D is already
+# calibrated and note-complete. FORMAT is the single shared property here, so the topics are
+# deliberately spread across the profile's own interests and stay clear of B (formal theory).
+_REVIEW_STUBS = [
     GEN.SyntheticPaper(
-        "Whisking in the dark: what barrel cortex still has to teach us",
-        "A commentary on two recent studies of active touch in rodent somatosensory cortex, "
-        "discussing what they imply for models of sensory prediction. No new data are reported.",
-        "Neuron",
-        "Active touch in barrel cortex is squarely the circuit-to-behavior work the profile asks "
-        "for, and the piece engages the mechanism directly.",
-        "This is a commentary, not a research paper. Why is it anywhere near threshold?"),
+        "Coding of odour identity in the olfactory system: a review",
+        "A review synthesising two decades of work on how odour identity is represented across "
+        "receptor neurons, bulb and cortex, drawing together results from several laboratories.",
+        "Annual Review of Neuroscience",
+        "A secondary-literature summary rather than a study reporting new results.",
+        "Reviews are how I keep up with the parts of the field I do not work in. Scored much too low."),
     GEN.SyntheticPaper(
-        "News and Views: a new map of olfactory bulb output channels",
-        "An invited discussion of a recent paper reporting mitral and tufted cell projection "
-        "classes, placing the finding in the context of earlier work. No primary data.",
-        "Nature Neuroscience",
-        "Olfactory bulb output circuitry connects a sensory circuit to downstream behavior, which "
-        "the profile names as a core interest.",
-        "News and Views piece. Should be far below the line."),
-    GEN.SyntheticPaper(
-        "Editorial: the auditory cortex is not a microphone",
-        "An editorial arguing that response-property studies of auditory cortex have outrun their "
-        "behavioral grounding, illustrated with published examples.",
-        "Journal of Neurophysiology",
-        "A pointed argument about linking auditory circuit responses to behavior, matching the "
-        "profile's emphasis on function.",
-        "Editorial. Not primary research at all."),
-    GEN.SyntheticPaper(
-        "Perspective: closing the loop between retina and behavior",
-        "A perspective piece reviewing how retinal circuit motifs have been tied to visually "
-        "guided behavior in mice, and proposing priorities for the field. No experiments.",
-        "Current Biology",
-        "Retinal circuit motifs tied to visual behavior is close to the center of the stated "
-        "interest.",
-        "A perspective, no experiments in it. Keeps happening with these."),
-    GEN.SyntheticPaper(
-        "Meeting report: thalamic gating of sensory flow",
-        "A summary of talks from a symposium on thalamic control of sensory transmission, "
-        "collecting unpublished claims from several laboratories.",
+        "Thalamocortical loops in perception: current understanding",
+        "A survey of evidence on thalamic contributions to cortical sensory processing, "
+        "reconciling competing accounts from anatomy, physiology and behavior.",
         "Trends in Neurosciences",
-        "Thalamic gating of sensory transmission is a circuit mechanism with a clear behavioral "
-        "consequence, which the profile values.",
-        "Conference summary. Not a study."),
+        "A synthesis of published findings; no new data are reported here.",
+        "This kind of synthesis is worth more to me than most single papers. Far too low."),
+    GEN.SyntheticPaper(
+        "Cerebellar contributions to timing and prediction: a survey",
+        "A review covering cerebellar involvement in predictive timing across motor and "
+        "non-motor tasks, organised around the experimental findings from each preparation.",
+        "Nature Reviews Neuroscience",
+        "Secondary literature summarising results reported elsewhere.",
+        "A good review saves me a month of reading. This should be near the top, not the bottom."),
+    GEN.SyntheticPaper(
+        "Hippocampal replay: what twenty years of recordings have shown",
+        "A review of replay phenomena across sleep and wake, comparing findings across species "
+        "and recording techniques and identifying unresolved discrepancies.",
+        "Neuron",
+        "A review article rather than primary research.",
+        "Scored low again. I actively seek these out and the scores never reflect that."),
+    GEN.SyntheticPaper(
+        "Dendritic computation: a review of the evidence",
+        "A survey of recorded dendritic nonlinearities across cell types, and what each "
+        "measurement implies for how a single neuron integrates its inputs.",
+        "Nature Reviews Neuroscience",
+        "A summary of work published elsewhere, not a new experimental result.",
+        "Another review buried. They are consistently rated far below where I would put them."),
 ]
 
-# Over-scored by roughly 0.45-0.55: the judge lands them in the 0.50-0.62 band on topic match
-# while the user puts them at the floor. Large on purpose -- the point of this pool is the
-# ROUTING of the fix, not a marginal magnitude judgment, so nothing here should hinge on the
-# delta being subtle.
+# Under-scored by 0.30-0.45. The band matters here: `_scores` places an `under` judge in
+# [0.25, 0.55], so every generated judge score sits at or below the 0.55 cap the synthetic judge
+# prompt states, which is what makes "the judge obeyed a rule that is set wrong" true by
+# construction rather than by luck.
 POOLS_BY_INTENDED_PATTERN["E"] = GEN.IntendedPatternPool(
-    "E", "over", (0.45, 0.55), papers=_COMMENTARY_STUBS)
-
-
-# F -- the PROFILE-BLAMED control E is graded against, and it exists because the obvious
-# candidate did not work. B (formal theory) was the first choice: opposite direction, no topical
-# overlap, already calibrated. But B carries a note on 2 of its 11 papers, and blame is read off
-# the NOTE -- so B could not test blame at all, and a green check on it would have meant nothing.
-# The same is true of A (3 of 8), C (2 of 10) and D (1 of 7): the A-D pools were derived from the
-# lifecycle fixture, which was written while everyone believed a flag was essentially a number.
-#
-# Motor-cortex circuit work, UNDER-scored. The profile names sensory systems and never mentions
-# motor, so the judge reads it as off-topic and scores it low, and the user wants it. Stated in
-# NEITHER document -- the judge prompt is silent on topic entirely -- so the fix is new profile
-# prose and blame is 'profile'.
-#
-# EVERY PAPER CARRIES AN INFORMATIVE NOTE, and they lean the profile way on purpose ("I never
-# said", "that's on me"). That asymmetry against pool E is the design: F tests whether a stated
-# knob is CARRIED, E tests whether an unstated one is LOOKED UP. If F's notes were as reticent as
-# E's, a red would not tell you which of the two failed.
-_MOTOR_STUBS = [
-    GEN.SyntheticPaper(
-        "Premotor cortex sequences forelimb reaching through recurrent dynamics",
-        "Population recordings during a reach-to-grasp task show rotational dynamics in premotor "
-        "cortex; optogenetic perturbation mid-reach shifts the trajectory and the endpoint.",
-        "Neuron",
-        "Motor system work, and the profile's stated interests are sensory circuits, so this sits "
-        "outside the named scope.",
-        "This is exactly the kind of circuit-to-behavior work I want. My profile only ever talks "
-        "about sensory systems -- that is on me, not the judge."),
-    GEN.SyntheticPaper(
-        "A brainstem module for gait selection in freely moving mice",
-        "Cell-type-specific stimulation of a mesencephalic locomotor region subpopulation "
-        "switches mice between walking and bounding, with latencies under 100 ms.",
-        "Nature Neuroscience",
-        "Locomotor control rather than sensory processing; the profile does not name motor "
-        "systems as an interest.",
-        "Causal, mechanistic, circuit drives behavior. Ticks every box I wrote down except that "
-        "I forgot to say motor counts."),
-    GEN.SyntheticPaper(
-        "Cerebellar output shapes the timing of learned forelimb movements",
-        "Recordings and closed-loop perturbation of deep cerebellar nuclei during a timed "
-        "movement task show output activity setting movement onset rather than amplitude.",
-        "Cell",
-        "A motor timing study; the stated profile centers on sensory circuits and perception.",
-        "I never wrote down that motor timing is interesting to me, but it obviously is. Profile "
-        "gap."),
-    GEN.SyntheticPaper(
-        "Corticospinal control of skilled digit movement in the mouse",
-        "Chemogenetic silencing of a corticospinal subpopulation degrades individuated digit "
-        "control while leaving gross reaching intact.",
-        "Nature",
-        "Skilled motor control, outside the sensory focus the profile describes.",
-        "Another motor paper scored low. The profile needs a line saying motor circuits count "
-        "too."),
-    GEN.SyntheticPaper(
-        "Basal ganglia output gates movement vigor independently of selection",
-        "Simultaneous recording and stimulation dissociate vigor from action selection in the "
-        "substantia nigra pars reticulata during a self-paced task.",
-        "Neuron",
-        "Movement vigor is a motor variable; the profile emphasizes sensory computation.",
-        "Same issue as the other motor ones. My fault for writing a sensory-only profile."),
-]
-
-# Under-scored by roughly 0.35-0.45, the mirror of E. Opposite directions are what stop the two
-# pools being joined by a generalization that happens to be true.
-POOLS_BY_INTENDED_PATTERN["F"] = GEN.IntendedPatternPool(
-    "F", "under", (0.35, 0.45), papers=_MOTOR_STUBS)
+    "E", "under", (0.30, 0.45), papers=_REVIEW_STUBS)
 
 # W -- the weak-signal PROBE: structural connectomics / wiring diagrams with no functional or
 # behavioral readout. Under-scored (the profile wants circuit->behavior function, which these

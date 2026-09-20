@@ -576,6 +576,19 @@ def run_consolidate_step(client, clusters_text, seed_text, existing_block, model
         if block.type == "tool_use":
             candidates = block.input.get("candidates", [])
             break
+    # THE ONE PLACE MODEL OUTPUT ENTERS, so the one place its shape is enforced. Everything
+    # downstream (_apply_queue_cap, _record_consolidation, the graders) assumes candidates are
+    # dicts, and a single bare string in the array killed a whole pool-calibration run on
+    # 2026-09-19 -- AFTER both model calls were paid for, with the AttributeError surfacing
+    # three frames away from the cause. Same rule as an off-schema blame or an unrecognized
+    # choice: a model writing garbage must never take down the round. The dropped entry is
+    # printed in full because it is the only record of whatever the model was trying to say;
+    # its flags stay unattached and return next session, the same recovery story as a discard.
+    malformed = [c for c in candidates if not isinstance(c, dict)]
+    if malformed:
+        for m in malformed:
+            print(f"  WARNING: consolidate emitted a non-object candidate, dropping it: {m!r}")
+        candidates = [c for c in candidates if isinstance(c, dict)]
     return candidates, _cost(model, resp.usage)
 
 

@@ -158,10 +158,8 @@ Bands:
 
 ## Article format
 
-Commentaries, editorials, News-and-Views pieces, book reviews and meeting abstracts are not
-primary research. Score any of them in the bottom band, below 0.25, regardless of how well the
-topic matches. The user follows these formats elsewhere and does not want them in a literature
-feed.
+Review articles and other secondary literature summarise work published elsewhere rather than
+reporting new results. Cap them below 0.55 regardless of how well the topic matches.
 
 ## Missing information
 

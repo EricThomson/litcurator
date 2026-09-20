@@ -55,6 +55,7 @@ span both. Driven by `litcurator analysis_harness`; see cli.py.
 
 import os
 import time
+import traceback
 
 from litcurator import analysis_prompt_interface, error_analysis as PA
 
@@ -183,6 +184,7 @@ def run_gates(gates=None, cluster_prompt=None, consolidate_prompt=None,
                                       seconds=time.time() - started))
             except Exception as e:                        # noqa: BLE001 - report, never crash
                 results.append(_blank(name, 1, error=f"{type(e).__name__}: {e}",
+                                      transcript=traceback.format_exc(),
                                       seconds=time.time() - started))
             continue
 
@@ -205,7 +207,14 @@ def run_gates(gates=None, cluster_prompt=None, consolidate_prompt=None,
                                   passed=all(ok for ok, _, _ in checks), when_red=when_red,
                                   seconds=time.time() - started))
         except Exception as e:                            # noqa: BLE001 - report, never crash
+            # The full traceback goes to the transcript section, because an ERROR whose only
+            # record is its message costs a debugging session to localise: the 2026-09-19
+            # pool-calibration failure surfaced as one line ("'str' object has no attribute
+            # 'get'") that had to be reproduced from scratch to find its file and line. NB an
+            # exception here can also mean money was spent and never counted -- the cost
+            # travels in run()'s return value, which this path never receives.
             results.append(_blank(name, layer, error=f"{type(e).__name__}: {e}",
+                                  transcript=traceback.format_exc(),
                                   when_red=when_red, seconds=time.time() - started))
     return results, cluster_fp, consolidate_fp
 

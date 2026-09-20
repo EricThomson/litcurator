@@ -95,10 +95,10 @@ PAID_GATES = {
     "blame-routing": (
         4, _scenario_runner(*_SCENARIOS["blame-routing"]),
         "a fix was routed to the artifact that cannot absorb it. Read WHICH label went red. "
-        "E red (commentary pieces called a PROFILE job) means the judge prompt is not reaching "
+        "E red (under-scored REVIEWS called a PROFILE job) means the judge prompt is not reaching "
         "consolidate, or the CONSOLIDATE section still does not tell the model what to do with "
         "it -- check that section mentions blame at all before suspecting the model, because "
-        "until 2026-09-19 it did not. F red (motor-circuit work called a PROMPT job) is the opposite "
+        "until 2026-09-19 it did not. D red (disease models called a PROMPT job) is the opposite "
         "failure, the model answering 'prompt' by default, and it is what the negative control "
         "in sandbox/blame_fixture/ is written to catch. If both are red, look at the two "
         "companion checks first: a pattern that never surfaced or that fused with its partner "
