@@ -128,6 +128,70 @@ def pattern_intended(conn, flag_intended):
     return out
 
 
+def pattern_flag_details(conn, flag_intended):
+    """produced-pattern id -> [ {intended, title, judge, user, delta, direction, note}, ... ]
+    for every flag attached to it.
+
+    THE COMPANION TO pattern_intended, AND THE REASON IT EXISTS: that function collapses each
+    pattern's flags into a Counter at the first step, so by the time anything is graded the
+    identities are gone and a red reports arithmetic ('purity 0.50') with no way back to the
+    paper. That was survivable while every red was readable from the tally -- a shattered pool
+    or two fused pools tell their story in the counts -- but a ONE-PAPER unicorn is the case
+    where the tally says nothing and the identity IS the finding. On 2026-09-22 U2 came back at
+    purity 0.50 with one stray 'D' flag, and which D paper it was could not be recovered at all:
+    the scratch database is dropped in a finally, and consolidate is nondeterministic, so a
+    re-run need not reproduce it. Evidence discarded at the moment it was cheapest to keep.
+
+    Read nowhere except when reporting a failure, so it costs nothing on a green run."""
+    # judge_score, user_score and delta all live ON the flag row -- the delta is stored, not
+    # derived, so this reads the same number every grader does rather than recomputing one.
+    rows = conn.execute("""
+        SELECT pf.pattern_id, f.id AS flag_id, a.title, a.journal,
+               f.judge_score AS judge, f.user_score AS user, f.delta, f.note
+        FROM pattern_flags pf
+        JOIN flags f    ON f.id = pf.flag_id
+        JOIN articles a ON a.pmid = f.pmid
+    """).fetchall()
+    out = {}
+    for r in rows:
+        labels = flag_intended.get(r["flag_id"], "?")
+        delta = r["delta"]
+        out.setdefault(r["pattern_id"], []).append({
+            "intended": labels if isinstance(labels, str) else "+".join(labels),
+            "title": r["title"], "journal": r["journal"],
+            "judge": r["judge"], "user": r["user"], "delta": delta,
+            "direction": "under" if delta > 0 else "over", "note": r["note"] or "",
+        })
+    return out
+
+
+def describe_contamination(details, dominant):
+    """Lines explaining WHICH flags made a pattern impure, for a failing check to print.
+
+    Names the host and every foreign flag with its own delta and direction, and calls out a
+    contaminant whose direction CONTRADICTS the host -- that is a different and worse defect
+    than a merely adjacent paper, since one-direction-per-pattern is a stated invariant, and
+    the two are indistinguishable in a purity ratio."""
+    lines = []
+    for d in details:
+        if d["intended"] == dominant:
+            lines.append(f"       host:        [{d['intended']}] {d['title'][:58]}")
+            lines.append(f"                    judge {d['judge']:.2f} user {d['user']:.2f}  "
+                         f"delta {d['delta']:+.2f} ({d['direction']})")
+    hosts = [d for d in details if d["intended"] == dominant]
+    host_dir = hosts[0]["direction"] if hosts else None
+    for d in details:
+        if d["intended"] == dominant:
+            continue
+        clash = "   <-- DIRECTION CONFLICTS WITH HOST" if d["direction"] != host_dir else ""
+        lines.append(f"       contaminant: [{d['intended']}] {d['title'][:58]}")
+        lines.append(f"                    judge {d['judge']:.2f} user {d['user']:.2f}  "
+                     f"delta {d['delta']:+.2f} ({d['direction']}){clash}")
+        if d["note"]:
+            lines.append(f"                    note: {d['note'][:70]}")
+    return lines
+
+
 def patterns_by_flag(conn):
     """flag id -> the SET of produced patterns it is attached to. pattern_flags is many-to-many,
     so a paper instantiating two tastes should appear under a pattern for each; this is the view

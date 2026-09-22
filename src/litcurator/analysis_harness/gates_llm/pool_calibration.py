@@ -89,6 +89,10 @@ def _calibrate(ctx, name, papers, labels):
             ctx.cluster_prompt, ctx.consolidate_prompt, use_cache=ctx.use_cache,
             judge_prompt=SC.JUDGE_PROMPT)
         pp = H.pattern_intended(conn, flag_intended)
+        # Pulled BEFORE the finally drops the database. A contaminated unicorn is reported as a
+        # bare ratio otherwise, and the scratch DB holding the answer is deleted milliseconds
+        # later -- see H.pattern_flag_details.
+        details = H.pattern_flag_details(conn, flag_intended)
     finally:
         conn.close()
         CALIB_DB.unlink(missing_ok=True)
@@ -108,10 +112,17 @@ def _calibrate(ctx, name, papers, labels):
                            "MISSING -- no pattern holds it"))
             continue
         recovered.add(recovered_as)
-        checks.append((coverage >= MIN_COVERAGE and purity >= MIN_PURITY,
-                       f"calibration [{name}]: {label} recovered as one pattern",
-                       f"coverage {coverage:.2f} (>= {MIN_COVERAGE}), "
-                       f"purity {purity:.2f} (>= {MIN_PURITY})"))
+        ok = coverage >= MIN_COVERAGE and purity >= MIN_PURITY
+        detail = (f"coverage {coverage:.2f} (>= {MIN_COVERAGE}), "
+                  f"purity {purity:.2f} (>= {MIN_PURITY})")
+        if not ok:
+            # The texture, not just the verdict: which papers actually landed together. A
+            # purity number cannot distinguish a defensibly adjacent neighbour from a flag
+            # pointing the opposite way, and those want different fixes.
+            lines.append(f"\ncontamination detail for {label} "
+                         f"(pattern {recovered_as[:10]}, purity {purity:.2f}):")
+            lines += H.describe_contamination(details.get(recovered_as, []), label)
+        checks.append((ok, f"calibration [{name}]: {label} recovered as one pattern", detail))
 
     extra = [pid for pid in pp if pid not in recovered]
     lines.append(f"\nintended patterns recovered: {len(recovered)}   "

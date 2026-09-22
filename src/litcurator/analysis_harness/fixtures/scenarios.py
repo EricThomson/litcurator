@@ -362,6 +362,14 @@ _SESSION_2 = [
     # a fourth entry in the crowded under-scored-interest category, which is what made the old
     # one confusable in the first place. U1 was always easy because it is the only named
     # disinterest here; a unicorn needs an empty neighbourhood, not just a distinct label.
+    # AND A DECISIVE NOTE (2026-09-20, the second lesson this paper has taught). With hold
+    # in the vocabulary, a lone flag whose note states a principle but asks for nothing is
+    # defensibly held -- consolidate did exactly that once, and the addition check counts a
+    # held unicorn as missing because the user never sees it. U1 never flickers, and its
+    # note is an imperative plus an absolute ('add it to my active disinterest list, I
+    # never want these'). U2's note now matches that bar. The doctrine already said it:
+    # what makes a unicorn worth a pattern is a clean bounded category, USUALLY WITH A
+    # NOTE -- the note is load-bearing, not decoration.
     ("U2", "Optogenetic silencing of barrel cortex abolishes a learned whisker discrimination",
      "Mice trained on a two-alternative whisker discrimination task lose performance when "
      "layer 4 of barrel cortex is silenced on single trials, and recover within one session "
@@ -369,7 +377,8 @@ _SESSION_2 = [
      "Somatosensory Research Letters", 0.42, 0.90,
      "A competent circuit study, but published in a minor specialist journal with limited reach.",
      "this is exactly my core interest -- causal circuit manipulation tied to a perceptual "
-     "decision. the venue should not drag it down."),
+     "decision. the venue should not drag it down -- fix the venue weighting, I want "
+     "work this good surfaced no matter the journal."),
 
     ("D", "Deep brain stimulation restores gait in a parkinsonian primate model",
      "Stimulation of the pedunculopontine nucleus in MPTP-treated primates restored "
@@ -444,18 +453,18 @@ _SESSION_4 = [
      "spike-frequency adaptation, giving closed-form transfer functions and the adaptation "
      "timescale at which the population response becomes non-monotonic.",
      "Journal of Computational Neuroscience", 0.29, 0.73,
-     "An analytical derivation with no empirical measurement or causal manipulation.",
+     "A closed-form mathematical result, far from the experimental systems work the profile emphasizes.",
      "formal theory again -- I keep having to correct this one"),
     ("B", "A variational principle for metabolically efficient spiking codes",
      "Minimizing spike cost subject to a fixed information rate yields an optimal firing "
      "threshold, and we characterize how the optimum shifts with input signal-to-noise.",
      "Neural Computation", 0.31, 0.77,
-     "A theoretical optimality argument rather than an experimental circuit study.", "A principled account of efficient coding. Undervalued again."),
+     "A theoretical optimality argument rather than an experimental circuit study.", "more formal theory scored low. a derivation with a testable optimum is precisely the maths I read for"),
     ("B", "Bifurcation structure of ring attractor networks with heterogeneous coupling",
      "Continuation analysis shows how heterogeneity in recurrent coupling deforms the "
      "attractor manifold and identifies the coupling variance at which the bump destabilizes.",
      "SIAM Journal on Applied Dynamical Systems", 0.25, 0.70,
-     "A dynamical-systems analysis with no behavioral or physiological data.", "Bifurcation analysis of a circuit model. The maths is the contribution."),
+     "A dynamical-systems analysis with no behavioral or physiological data.", "pure dynamical-systems work. the theorem is the contribution and it got scored like filler"),
 
     # C: invertebrate neuroethology, one shared property (a small identified circuit driving a
     # natural behavior in an invertebrate) and scattered on phylum, sense, and journal. Kept
@@ -473,12 +482,23 @@ _SESSION_4 = [
      "Stimulation of one identified interneuron is sufficient to elicit the full backward "
      "swim motor program, and its ablation abolishes the behavior.",
      "Journal of Neurophysiology", 0.31, 0.76,
-     "An invertebrate preparation, further from the mammalian circuits emphasized.", "One interneuron triggering a whole behavior. Undervalued."),
-    ("C", "Statocyst input drives postural righting in the sea slug Clione",
-     "Unilateral statocyst removal biases the righting response, and recording from the "
-     "identified righting interneurons shows they integrate gravity signals from both sides.",
-     "Proceedings of the Royal Society B", 0.36, 0.82,
-     "A simple invertebrate system with limited circuit resolution.", "Statocyst driving righting. These keep landing below where I would put them."),
+     "An invertebrate preparation, further from the mammalian circuits emphasized.", "an identified command neuron driving a natural behavior -- textbook invertebrate neuroethology, and my scores keep saying so"),
+    # REPLACED 2026-09-20 (was: Clione statocyst righting). The user's verdict on the old
+    # paper: "something I would have trouble recognizing honestly" -- and a case the user
+    # cannot easily call is not an easy call. Its anatomy confirmed him: a lesion that BIASES
+    # a reflex plus recordings SHOWING integration is descriptive-flavored payoff, the one C
+    # paper brushing the causal-vs-descriptive axis -- the exact axis the 2026-09-20 chimera
+    # was built on -- and even its judge rationale was the odd one out (a method complaint,
+    # where its siblings' are purely organism). The replacement is canon with a sufficiency-
+    # AND-necessity manipulation, on a sense (audition) no other C paper uses.
+    ("C", "An identified auditory interneuron steers phonotaxis in walking crickets",
+     "Females walking on a trackball turn toward conspecific song. Unilaterally "
+     "hyperpolarizing the AN1 auditory interneuron abolishes turns toward that side, and "
+     "driving it elicits turning in silence.",
+     "Journal of Experimental Biology", 0.33, 0.80,
+     "An insect preparation outside the mammalian systems the profile emphasizes.",
+     "classic neuroethology -- an identified neuron steering a natural behavior, exactly "
+     "what I want more of"),
 ]
 
 

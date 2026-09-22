@@ -14,7 +14,8 @@ from collections import Counter
 
 from litcurator import db_interface as DB
 
-from .machinery import pattern_intended, dominant_intended, purity_of
+from .machinery import (pattern_intended, dominant_intended, purity_of,
+                        pattern_flag_details)
 
 # The cross-cutting carve-outs that used to live here went with the diagnosis directions
 # (2026-08-25) -- see the note in machinery.py for why, and for the rule if one is ever
@@ -84,10 +85,20 @@ def check_round(conn, expect, summary, candidates, flag_intended, new_ids,
     # finding (one built from 8 A flags, 4 B and 3 D, purity 0.53). Those directions are gone, so
     # every pattern is a claim about one taste and the check applies to all of them.
     if "min_purity" in expect and new_ids:
-        worst = min((purity_of(pp.get(p, Counter())) for p in new_ids), default=1.0)
+        by_purity = sorted(new_ids, key=lambda p: purity_of(pp.get(p, Counter())))
+        worst_id = by_purity[0]
+        worst = purity_of(pp.get(worst_id, Counter()))
+        detail = f"worst {worst:.2f} over {len(new_ids)} pattern(s)"
+        if worst < expect["min_purity"]:
+            # Name the offending papers, not just the ratio. A purity number cannot tell a
+            # defensibly adjacent neighbour from a flag pointing the opposite way, and those
+            # want opposite fixes -- see machinery.pattern_flag_details for why this exists.
+            offenders = pattern_flag_details(conn, flag_intended).get(worst_id, [])
+            detail += "  |  " + "; ".join(
+                f"[{d['intended']}] {d['title'][:42]} ({d['delta']:+.2f} {d['direction']})"
+                for d in offenders)
         chk(f"purity: every new pattern >= {expect['min_purity']}",
-            worst >= expect["min_purity"],
-            f"worst {worst:.2f} over {len(new_ids)} pattern(s)")
+            worst >= expect["min_purity"], detail)
 
     # --- NOTHING TO MERGE INTO: a merge on an empty memory is always wrong ---------------
     # Not a fixture expectation, because it needs no judgement -- with no patterns recorded,
