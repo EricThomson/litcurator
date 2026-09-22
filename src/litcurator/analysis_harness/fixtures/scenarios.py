@@ -437,7 +437,8 @@ _SESSION_3 = [
      "Antisense oligonucleotide treatment preserved motor neuron counts and grip "
      "strength in SOD1 mice.",
      "Nature", 0.70, 0.28,
-     "A strong causal intervention with a behavioral outcome, in a top journal.", "A treatment study. Off my list."),
+     "A therapeutic intervention with a clear functional outcome in a disease model.",
+     "A treatment study in a disease model. The pathology framing is the whole paper, and it is not what I read for."),
 ]
 
 

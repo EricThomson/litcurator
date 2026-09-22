@@ -592,6 +592,49 @@ def run_consolidate_step(client, clusters_text, seed_text, existing_block, model
     return candidates, _cost(model, resp.usage)
 
 
+# THE SIGN SPLIT: BUILT AND REVERTED, 2026-09-22. Code that split mixed-sign candidates by the
+# arithmetic of their deltas, plus a second consolidate call to re-evaluate the split-offs. Removed
+# the same day it was written. Kept as a note because the REASONING is the useful part, and because
+# the case for building it looked strong right up until it was measured.
+#
+# WHAT IT WAS FOR: a 38-flag harness session put an OVER-scored ALS paper (delta -0.42) in an
+# UNDER-scored venue pattern (+0.48), violating "one direction per pattern". The argument was the
+# usual one -- the sign is arithmetic on stored deltas, so code should own it, exactly as
+# computed_sign and _apply_queue_cap own what is computable.
+#
+# WHY IT WAS WRONG, and every point here is a number rather than an opinion:
+#   - THE PROMPT RULE ALREADY WORKS. 21 of 21 patterns in the live database are single-sign; 0
+#     mixed-sign events in 39; 0 bidirectional direction labels across 247 real cluster lines. In
+#     the round after the 2026-09-04 rewrite, cluster handed consolidate TWO explicitly
+#     bidirectional candidates and consolidate produced zero mixed patterns. It is not a contested
+#     instruction in practice, so the amplify-to-lift argument for code did not apply.
+#   - THE PRECEDENT DOES NOT TRANSFER. computed_sign, the fix always cited as the model, has fired
+#     ZERO times on real data. _apply_queue_cap was built after the cap was breached on every dry
+#     run, twice at exactly ten. This had one incident.
+#   - THE INCIDENT WAS A FIXTURE COLLISION, AND SELF-INFLICTED. Exactly 2 of 38 lifecycle papers
+#     mention a journal anywhere, so cluster's pairing was the only one available -- and U2's note
+#     had just been amplified to "fix the venue weighting, I want work this good surfaced no matter
+#     the journal", making venue the loudest axis in the fixture. The failure appeared on the next
+#     run. The gate's own when_red text said to fix the fixture.
+#   - THE "REPRODUCTION" WAS ONE DRAW. Both runs hit the same cached cluster output ($0.1027 then
+#     $0.0463, consolidate only), so it was a single grouping scored twice.
+#   - AND IT WOULD HAVE MADE `direction` LOAD-BEARING. Today the field is display-only: a memory
+#     block line, a workbench badge, a report parse. Nothing branches on it. The split would have
+#     made it decide pattern MEMBERSHIP and trigger a second paid model call -- reinflating the
+#     exact field this file stripped values from on 2026-08-25 for accumulating defenses nobody
+#     questioned.
+#
+# TWO THINGS WORTH KEEPING. The mixing is CLUSTER's, and cluster is never given the one-direction
+# rule -- it is told the opposite ("let the cause stay open"), so if enforcement is ever wanted,
+# cluster is the stage that sees the per-paper deltas. And cluster's DIRECTION field is
+# unvalidated free prose: it wrote "Bidirectional" once in 206 synthetic runs, correctly, and
+# nothing downstream listened. Detection already exists; only routing is missing.
+#
+# THE TRIGGER TO REVIVE IT: mixed-sign patterns appearing in REAL rounds more than rarely. The free
+# measurement is already wired -- computed_sign logs `mixed` when the cited flags genuinely split,
+# so the count is sitting in pattern_events whenever anyone wants it.
+
+
 def _record_consolidation(conn, candidates, ordered_flags, analysis_run_id=None):
     """Write each candidate's choice into the pattern memory. Provenance: paper
     number N -> ordered_flags[N-1] -> flag id. The event attached to a merge/recurs is
@@ -1145,6 +1188,7 @@ def suggest_edits(start=None, end=None,
                 prompt=consolidate_prompt, judge_prompt_text=judge_prompt_text)
             if best_of > 1:
                 print(f" {len(candidates)} patterns  ${cost2:.4f}")
+
             # BEFORE anything is written, so every report previews the real outcome. Recording
             # calls it again; it is idempotent.
             _apply_queue_cap(candidates)
