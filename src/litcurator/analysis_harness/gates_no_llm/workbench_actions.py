@@ -99,6 +99,10 @@ class _ProfileShim:
 
         Kept as a list so a check can assert WHAT would have been written, which is the
         property save-and-stamp actually needs graded."""
+        # VALIDATE exactly as the real module does, by calling ITS rule rather than carrying a
+        # copy that could drift. A fake that accepts what the real one refuses makes the
+        # refusal path untestable, which is the half of save-and-stamp that must never write.
+        profile_interface.validate(text)
         self.set_active_calls.append(text)
         self._text = text
         return None
@@ -177,8 +181,13 @@ def _world(n_patterns=1, papers_each=2):
 
 
 def _events(conn, pid):
+    """prompt_id is selected alongside profile_id, and its absence was a real blind spot: the
+    blame field landed 2026-09-08 so a prompt-blamed decision stamps the JUDGE PROMPT instead
+    of a profile version, and this helper could not see that column at all. Every check here
+    reading only profile_id would have scored a prompt-blamed stamp as NULL -- indistinguishable
+    from no stamp at all, which is the exact provenance break the field exists to end."""
     return [dict(r) for r in conn.execute(
-        "SELECT event, note, profile_id FROM pattern_events WHERE pattern_id = ? "
+        "SELECT event, note, profile_id, prompt_id FROM pattern_events WHERE pattern_id = ? "
         "ORDER BY id", (pid,))]
 
 
@@ -190,20 +199,28 @@ def _open_ids(conn):
     return {p["id"] for p in DB.get_active_patterns(conn)}
 
 
-def _click_fate(wb, pids, pid, which, reject_notes=None, tab="active"):
+def _click_fate(wb, pids, pid, which, reject_notes=None, tab="active", drafts=None):
     """Drive cb_pattern_fate the way Dash does: one n_clicks list per Input (one slot per
     card, in layout order, the clicked slot set), plus the reject-note States and the tab.
 
     `tab` is what the pane re-renders after the click. It matters for pat-promote, which is
-    only ever clicked from the Held tab."""
+    only ever clicked from the Held tab. `drafts` maps artifact -> the text in that editor
+    pane, which Incorporate now SAVES before stamping."""
     notes = reject_notes or {}
     note_states = [{"id": {"type": "pat-reject-note", "pid": p}, "value": notes.get(p)}
                    for p in pids]
-    wb.ctx = _Ctx({"type": which, "pid": pid}, [note_states])
+    # THREE state groups, in declaration order: reject notes, the tab, then the editor drafts
+    # save-and-stamp reads. The callback indexes ctx.states_list[2] for the drafts, so a fake
+    # that supplies fewer would IndexError rather than exercising the path.
+    editor_states = [{"id": {"type": "art-editor", "artifact": a}, "value": v}
+                     for a, v in (drafts or {}).items()]
+    wb.ctx = _Ctx({"type": which, "pid": pid},
+                  [note_states, {"id": "pattern-tabs", "value": tab}, editor_states])
     clicks = {t: [1 if (p == pid and t == which) else None for p in pids] for t in _ORDER}
     return wb.cb_pattern_fate(clicks["pat-hold"], clicks["pat-incorporate"],
                               clicks["pat-reject"], clicks["pat-promote"],
-                              [notes.get(p) for p in pids], tab)
+                              [notes.get(p) for p in pids], tab,
+                              [s["value"] for s in editor_states])
 
 
 def _click_save(wb, pids, pid, values):
@@ -384,7 +401,7 @@ def test_a_render_with_no_click_writes_nothing():
                       [[{"id": {"type": "pat-reject-note", "pid": p}, "value": None}
                         for p in pids]])
         out = wb.cb_pattern_fate([None, None], [None, None], [None, None], [None, None],
-                                 [None, None], "active")
+                                 [None, None], "active", [])
 
         assert all(o is wb.no_update for o in out), f"a no-click render returned writes: {out}"
         assert {p: _events(conn, p) for p in pids} == before, "a no-click render wrote an event"
@@ -491,7 +508,74 @@ def test_promote_moves_a_held_pattern_onto_the_active_list():
         print("promote: a held pattern is listed under Held, and Promote moves it to Active")
 
 
+def test_incorporate_saves_the_draft_before_stamping_it():
+    """THE POINT OF SAVE-AND-STAMP. The event must name a version that CONTAINS the edit, so
+    the draft in the editor is set active first and the stamp is computed from what was
+    written -- not from whatever happened to be on disk when the button was pressed.
+
+    The failure this ends is in the live log: the Annual Review pattern stamped a profile
+    version for a fix that lives only in the judge prompt, and even after blame routed
+    correctly the prompt editor was a different app on a different port, so the natural order
+    was click-then-go-edit and the stamp named the PRE-edit artifact every time."""
+    with _world() as (conn, wb, pids):
+        edited = ACTIVE_PROFILE + "\n\nAnd reviews of lesser-known model systems."
+        _click_fate(wb, pids, pids[0], "pat-incorporate", drafts={"profile": edited})
+
+        assert wb.profile_interface.set_active_calls == [edited],             f"the draft was not saved: {wb.profile_interface.set_active_calls}"
+        stamp = _events(conn, pids[0])[-1]["profile_id"]
+        assert stamp == DB._sha256(edited), "stamped a version that predates the edit"
+        assert DB.get_profile(conn, stamp)["content"] == edited
+        print("incorporate: saves the draft, then stamps the version containing it")
+
+
+def test_incorporate_refuses_and_writes_nothing_when_the_draft_is_invalid():
+    """Half a save-and-stamp is worse than neither. If set_active refuses -- the guards live
+    there, so a refusal means nothing reached disk -- then no event may be written either, or
+    the log would name a version that does not exist."""
+    with _world() as (conn, wb, pids):
+        before = _events(conn, pids[0])
+        out = _click_fate(wb, pids, pids[0], "pat-incorporate", drafts={"profile": "   "})
+
+        assert wb.profile_interface.set_active_calls == [], "an invalid draft was written"
+        assert _events(conn, pids[0]) == before, "stamped despite refusing to save"
+        assert "Not incorporated" in str(out[2]), out[2]
+        print("invalid draft: refused, nothing saved, nothing stamped")
+
+
+def test_incorporate_with_an_unchanged_draft_mints_no_version():
+    """Deciding a pattern without touching the prose is the common case -- you already set the
+    profile active, or the fix was someone else's card. It must not write a redundant version
+    or a _pre_active backup on every click, and it must still stamp correctly."""
+    with _world() as (conn, wb, pids):
+        _click_fate(wb, pids, pids[0], "pat-incorporate", drafts={"profile": ACTIVE_PROFILE})
+
+        assert wb.profile_interface.set_active_calls == [], "rewrote an unchanged artifact"
+        assert _events(conn, pids[0])[-1]["profile_id"] == DB._sha256(ACTIVE_PROFILE)
+        print("unchanged draft: no write, still stamped the active version")
+
+
+def test_prompt_blamed_incorporate_never_writes_the_profile():
+    """The worst thing this retool could introduce: profile prose landing in judge_prompt.md,
+    or the reverse. Both panes are mounted at once, so the routing is what keeps them apart --
+    a prompt-blamed card must read the PROMPT pane's draft no matter which tab is visible, and
+    must leave the profile untouched."""
+    with _world() as (conn, wb, pids):
+        DB.update_pattern_content(conn, pids[0], blame="prompt")
+        drafts = {"profile": "PROFILE PROSE THAT MUST NOT BE WRITTEN TO THE PROMPT",
+                  "prompt": "a judge prompt draft\n\n## Output\n\nJSON please."}
+        _click_fate(wb, pids, pids[0], "pat-incorporate", drafts=drafts)
+
+        assert wb.profile_interface.set_active_calls == [],             "a prompt-blamed decision wrote the PROFILE"
+        ev = _events(conn, pids[0])[-1]
+        assert ev["profile_id"] is None and ev["prompt_id"] is not None, dict(ev)
+        print("prompt-blamed: profile untouched, event stamps the judge prompt")
+
+
 CHECKS = [
+    test_incorporate_saves_the_draft_before_stamping_it,
+    test_incorporate_refuses_and_writes_nothing_when_the_draft_is_invalid,
+    test_incorporate_with_an_unchanged_draft_mints_no_version,
+    test_prompt_blamed_incorporate_never_writes_the_profile,
     test_incorporate_stamps_the_currently_active_profile,
     test_incorporate_walks_back_to_its_papers,
     test_incorporate_closes_the_pattern,

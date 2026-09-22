@@ -73,6 +73,21 @@ def read_active_or_empty():
     return ""
 
 
+def validate(text):
+    """Raise ValueError if `text` could not serve as the judge prompt. Separate from set_active
+    so the same rule can be checked without writing -- which is what lets the workbench gate's
+    stand-in refuse exactly as the real module does, rather than carrying a second copy of the
+    rule that could drift from this one."""
+    if not (text or "").strip():
+        raise ValueError("Refused: an empty judge prompt would leave the judge with no scoring "
+                         "procedure. Nothing was written.")
+    if OUTPUT_MARKER not in text:
+        raise ValueError(
+            f"Refused: the judge prompt must contain a '{OUTPUT_MARKER}' section -- the batch "
+            f"judge derives its output contract from it, so a prompt without one silently "
+            f"loses its output spec. Nothing was written.")
+
+
 def set_active(text, notes=None):
     """Write text to the active prompt, snapshotting the outgoing active first, and
     register the new version in the DB prompts table (parent_id = SHA256 of the
@@ -85,14 +100,7 @@ def set_active(text, notes=None):
     go through that UI: a script, a future app, or the same callback after a refactor could set
     a headless or empty prompt active with nothing to stop it. Guarding the gatekeeper covers
     every caller, and it is what lets a shared editor drop its per-artifact guard hook."""
-    if not (text or "").strip():
-        raise ValueError("Refused: an empty judge prompt would leave the judge with no scoring "
-                         "procedure. Nothing was written.")
-    if OUTPUT_MARKER not in text:
-        raise ValueError(
-            f"Refused: the judge prompt must contain a '{OUTPUT_MARKER}' section -- the batch "
-            f"judge derives its output contract from it, so a prompt without one silently "
-            f"loses its output spec. Nothing was written.")
+    validate(text)
     backup = None
     parent_id = None
     current = None

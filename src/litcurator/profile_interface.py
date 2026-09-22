@@ -58,6 +58,14 @@ def read_active_or_empty():
     return ""
 
 
+def validate(text):
+    """Raise ValueError if `text` could not serve as the profile. Mirrors
+    prompt_interface.validate; see there for why it is separable from set_active."""
+    if not (text or "").strip():
+        raise ValueError("Refused: an empty profile would leave the judge with no taste input "
+                         "at all. Nothing was written.")
+
+
 def set_active(text):
     """Write text to the active profile, snapshotting the outgoing active first,
     and register the new version in the DB (parent_id = SHA256 of the outgoing
@@ -69,9 +77,7 @@ def set_active(text):
     the one that matters, because the judge scores against the profile alone and an empty one
     is not a neutral profile, it is a judge with no taste input at all.
     """
-    if not (text or "").strip():
-        raise ValueError("Refused: an empty profile would leave the judge with no taste input "
-                         "at all. Nothing was written.")
+    validate(text)
     backup = None
     parent_id = None
     if USER_PROFILE_PATH.exists():

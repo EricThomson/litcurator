@@ -483,9 +483,12 @@ def cb_refresh_patterns(_n, tab):
     Input({"type": "pat-promote", "pid": ALL}, "n_clicks"),
     State({"type": "pat-reject-note", "pid": ALL}, "value"),
     State("pattern-tabs", "value"),
+    # APPENDED, never inserted: _state_value reads ctx.states_list[0] for the reject notes, so
+    # putting a new State ahead of it would silently file reject reasons from the wrong list.
+    State(_aid("editor", ALL), "value"),
     prevent_initial_call=True,
 )
-def cb_pattern_fate(_hold, _incorp, _reject, _promote, _reject_notes, tab):
+def cb_pattern_fate(_hold, _incorp, _reject, _promote, _reject_notes, tab, _drafts):
     trig = ctx.triggered_id
     clicks = (_hold or []) + (_incorp or []) + (_reject or []) + (_promote or [])
     if not trig or not any(c for c in clicks if c):
@@ -515,20 +518,42 @@ def cb_pattern_fate(_hold, _incorp, _reject, _promote, _reject_notes, tab):
             msg = ("Held -- off the queue, kept in memory, and its papers go back into the "
                    "pool for next round.")
         elif typ == "pat-incorporate":
-            # Stamp the artifact that actually absorbed the fix. Before this, a prompt-blamed
-            # pattern recorded a profile version that does not and never will contain the edit
-            # -- which is what happened to the Annual Review pattern on 2026-09-01.
+            # SAVE AND STAMP, in that order, in one click. The stamp names the artifact that
+            # absorbed the fix -- and now it also names a version that CONTAINS it, because the
+            # draft in the editor is set active first.
+            #
+            # Splitting those two acts is what produced the untruth this is built to end. The
+            # Annual Review pattern (2026-09-01) stamped a PROFILE version for a fix that lives
+            # only in the judge prompt; and even once blame routed correctly, the editor for a
+            # prompt-blamed card was a different app on a different port, so the natural order
+            # was click-Incorporate-then-go-edit and the stamp named the PRE-edit prompt every
+            # time. One button, one transaction, no ordering to remember.
             row = conn.execute("SELECT blame FROM patterns WHERE id = ?", (pid,)).fetchone()
-            if row and row["blame"] == "prompt":
-                prompt_id = db_interface.get_or_create_prompt(
-                    conn, prompt_interface.read_active_or_empty())
-                db_interface.add_pattern_event(conn, pid, "incorporated", prompt_id=prompt_id)
-                msg = f"Incorporated into active JUDGE PROMPT {prompt_id[:12]}."
+            artifact = "prompt" if (row and row["blame"] == "prompt") else "profile"
+            iface = _interface(artifact)
+            draft = next((s["value"] for s in ctx.states_list[2]
+                          if s["id"]["artifact"] == artifact), None)
+            label = _ARTIFACT_LABEL[artifact]
+
+            saved = ""
+            if draft is not None and draft.strip() != iface.read_active_or_empty().strip():
+                try:
+                    iface.set_active(draft)
+                except ValueError as e:
+                    # The guards live in set_active, so a refusal means nothing was written --
+                    # and nothing must be stamped either, or the event would name a version
+                    # that does not exist. Refuse the whole decision rather than half of it.
+                    return no_update, no_update, f"Not incorporated. {e}", True
+                saved = f" Saved your edited {label} first."
+            # Idempotent: set_active has already registered this text, so this returns the id
+            # it just minted rather than creating a second row.
+            if artifact == "prompt":
+                vid = db_interface.get_or_create_prompt(conn, iface.read_active_or_empty())
+                db_interface.add_pattern_event(conn, pid, "incorporated", prompt_id=vid)
             else:
-                profile_id = db_interface.get_or_create_profile(
-                    conn, profile_interface.read_active_or_empty())
-                db_interface.add_pattern_event(conn, pid, "incorporated", profile_id=profile_id)
-                msg = f"Incorporated into active profile {profile_id[:12]}."
+                vid = db_interface.get_or_create_profile(conn, iface.read_active_or_empty())
+                db_interface.add_pattern_event(conn, pid, "incorporated", profile_id=vid)
+            msg = f"Incorporated into active {label} {vid[:12]}.{saved}"
         else:  # pat-reject
             note = _state_value(ctx.states_list[0], pid)
             db_interface.add_pattern_event(conn, pid, "rejected", note=note or None)
