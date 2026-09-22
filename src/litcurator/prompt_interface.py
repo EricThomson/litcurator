@@ -4,7 +4,7 @@ prompt_interface.py -- read, version, and activate the judge prompt.
 The judge prompt (config.JUDGE_PROMPT_PATH, conventionally judge_prompt.md) is the
 scoring procedure the judge follows -- the judge's second input alongside the user
 profile. This module is the single gatekeeper for it (the judge via the pipeline
-and the prompt workbench all go through here), exactly mirroring profile_interface,
+and the judge workbench all go through here), exactly mirroring profile_interface,
 so "set active backs up the outgoing prompt first" lives in one place.
 
 Same as profile_interface, including the "no prompt" state: litcurator ships no default judge
@@ -33,7 +33,7 @@ AUTOSAVE_PATH = VERSIONS_DIR / "_autosave.md"
 # JSON-array contract. So a prompt without it silently loses its output spec.
 #
 # DEFINED HERE, ONCE (2026-09-22). It used to exist twice -- `judge._OUTPUT_MARKER` to SPLIT on
-# and `prompt_workbench.OUTPUT_MARKER` to VALIDATE against -- two copies of one contract in
+# and the prompt workbench's own copy to VALIDATE against -- two copies of one contract in
 # modules that must agree or the judge breaks silently. This module is the gatekeeper for this
 # artifact, so the constant belongs with it and both callers import it.
 OUTPUT_MARKER = "## Output"
@@ -61,8 +61,8 @@ def load_active():
     if not JUDGE_PROMPT_PATH.exists():
         raise FileNotFoundError(
             f"No active judge prompt at {JUDGE_PROMPT_PATH}. litcurator ships no default -- "
-            f"author one in `litcurator prompt_workbench`, or promote a version with "
-            f"set_active().")
+            f"author one in `litcurator judge_workbench` (the judge prompt tab), or promote "
+            f"a version with set_active().")
     return JUDGE_PROMPT_PATH.read_text(encoding="utf-8", errors="replace")
 
 

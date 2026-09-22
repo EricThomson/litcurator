@@ -110,7 +110,8 @@ def _require_prompt(system_prompt):
         return system_prompt
     raise ValueError(
         "No judge prompt. litcurator ships no default -- author one and set it active "
-        "(litcurator prompt_workbench), or pass system_prompt= explicitly. "
+        "(litcurator judge_workbench, the judge prompt tab), or pass system_prompt= "
+        "explicitly. "
         "The active prompt lives at prompt/judge_prompt.md in your data directory.")
 
 
