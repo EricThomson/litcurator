@@ -63,7 +63,15 @@ def set_active(text):
     and register the new version in the DB (parent_id = SHA256 of the outgoing
     active, so the lineage stays a clean chain). Returns the backup path (or None
     if there was no prior active profile).
+
+    Refuses empty text with a ValueError, mirroring prompt_interface. The profile has no
+    structural marker to check, so this is the whole of its validation -- but the empty case is
+    the one that matters, because the judge scores against the profile alone and an empty one
+    is not a neutral profile, it is a judge with no taste input at all.
     """
+    if not (text or "").strip():
+        raise ValueError("Refused: an empty profile would leave the judge with no taste input "
+                         "at all. Nothing was written.")
     backup = None
     parent_id = None
     if USER_PROFILE_PATH.exists():

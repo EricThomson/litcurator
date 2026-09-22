@@ -40,7 +40,8 @@ load_dotenv()
 # feedback_prompt_authorship and feedback_critic_in_loop memories).
 CRITIC_MODEL = "claude-opus-4-8"
 
-OUTPUT_MARKER = "## Output"   # structural contract: the batch judge derives from this
+# The marker lives in prompt_interface, which validates against it on set_active.
+OUTPUT_MARKER = prompt_interface.OUTPUT_MARKER
 
 
 # ---------------------------------------------------------------------------
@@ -210,12 +211,13 @@ def cb_save_version(_n, text):
     prevent_initial_call=True,
 )
 def cb_set_active(_n, text):
-    text = text or ""
-    if OUTPUT_MARKER not in text:
-        return (f"Refused: the prompt must contain a '{OUTPUT_MARKER}' section -- the batch judge "
-                f"derives its output contract from it. Add it before setting active.",
-                True, "danger", no_update, no_update)
-    backup = prompt_interface.set_active(text)
+    # The guards now live in prompt_interface.set_active, so every caller gets them rather
+    # than only this button. Catching ValueError keeps the refusal on screen instead of in a
+    # traceback the user never sees.
+    try:
+        backup = prompt_interface.set_active(text or "")
+    except ValueError as e:
+        return str(e), True, "danger", no_update, no_update
     msg = "Set as active judge prompt."
     if backup:
         msg += f" Outgoing prompt backed up to {backup.name}."

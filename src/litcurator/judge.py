@@ -66,8 +66,12 @@ SYSTEM_PROMPT = PROMPT_NOT_AUTHORED
 # The editable prompt is a SINGLE-paper prompt; the batch (multi-paper) variant is
 # derived from it -- everything up to the '## Output' marker, then this JSON-array
 # contract. So there is ONE authored artifact, and '## Output' is a structural
-# marker the prompt must keep (the workbench validates it).
-_OUTPUT_MARKER = "## Output"
+# marker the prompt must keep.
+#
+# IMPORTED, NOT REDEFINED (2026-09-22). This module SPLITS on the marker and
+# prompt_interface.set_active VALIDATES against it; when each owned a copy, one contract lived
+# in two places that had to agree or the judge would silently lose its output spec.
+from litcurator.prompt_interface import OUTPUT_MARKER as _OUTPUT_MARKER
 
 _BATCH_OUTPUT = """## Output
 

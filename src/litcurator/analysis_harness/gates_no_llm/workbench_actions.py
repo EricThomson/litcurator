@@ -81,11 +81,33 @@ class _ProfileShim:
 
     def __init__(self, text):
         self._text = text
+        self.set_active_calls = []
 
     def read_active_or_empty(self):
         return self._text
 
+    def set_active(self, text, *args, **kwargs):
+        """RECORD the write, never perform it. __getattr__ below delegates anything not
+        overridden to the REAL module, so without this the delegation reaches
+        profile_interface.set_active and a FREE, $0, model-free gate overwrites the user's
+        actual ~/.litcurator/profile/user_profile.md.
+
+        Harmless until 2026-09-22 only because the Incorporate branch merely READ the active
+        profile. The moment Incorporate became save-and-stamp it would have written, and the
+        blast radius is the one artifact this whole project exists to protect. Added BEFORE
+        that change rather than after, which is the only ordering that is not a gamble.
+
+        Kept as a list so a check can assert WHAT would have been written, which is the
+        property save-and-stamp actually needs graded."""
+        self.set_active_calls.append(text)
+        self._text = text
+        return None
+
     def __getattr__(self, name):
+        # DELEGATION IS THE HAZARD AS WELL AS THE POINT: it keeps a callback working when it
+        # starts using another part of the module, and it silently un-fakes anything not
+        # overridden above. Any NEW module-level write this gate's callbacks reach needs an
+        # override here, not just a read.
         return getattr(profile_interface, name)
 
 

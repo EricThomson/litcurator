@@ -28,6 +28,16 @@ from litcurator.config import JUDGE_PROMPT_PATH, PROMPT_DIR
 VERSIONS_DIR = PROMPT_DIR / "versions"
 AUTOSAVE_PATH = VERSIONS_DIR / "_autosave.md"
 
+# The structural contract between the authored prompt and the batch judge: everything above
+# this marker is the shared preamble, and judge._batch_prompt swaps what follows for the
+# JSON-array contract. So a prompt without it silently loses its output spec.
+#
+# DEFINED HERE, ONCE (2026-09-22). It used to exist twice -- `judge._OUTPUT_MARKER` to SPLIT on
+# and `prompt_workbench.OUTPUT_MARKER` to VALIDATE against -- two copies of one contract in
+# modules that must agree or the judge breaks silently. This module is the gatekeeper for this
+# artifact, so the constant belongs with it and both callers import it.
+OUTPUT_MARKER = "## Output"
+
 
 def _ts():
     return datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -67,7 +77,22 @@ def set_active(text, notes=None):
     """Write text to the active prompt, snapshotting the outgoing active first, and
     register the new version in the DB prompts table (parent_id = SHA256 of the
     outgoing active, so the lineage stays a clean chain). Returns the backup path
-    (or None if there was no prior active prompt)."""
+    (or None if there was no prior active prompt).
+
+    VALIDATES BEFORE WRITING ANYTHING, raising ValueError, exactly where
+    analysis_prompt_interface.set_active puts its own split() check. Both guards used to live
+    in the workbench callback instead, which meant they protected the ONE path that happened to
+    go through that UI: a script, a future app, or the same callback after a refactor could set
+    a headless or empty prompt active with nothing to stop it. Guarding the gatekeeper covers
+    every caller, and it is what lets a shared editor drop its per-artifact guard hook."""
+    if not (text or "").strip():
+        raise ValueError("Refused: an empty judge prompt would leave the judge with no scoring "
+                         "procedure. Nothing was written.")
+    if OUTPUT_MARKER not in text:
+        raise ValueError(
+            f"Refused: the judge prompt must contain a '{OUTPUT_MARKER}' section -- the batch "
+            f"judge derives its output contract from it, so a prompt without one silently "
+            f"loses its output spec. Nothing was written.")
     backup = None
     parent_id = None
     current = None
