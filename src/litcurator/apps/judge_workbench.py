@@ -80,13 +80,14 @@ def _render_provenance(prov):
     return out
 
 
-def _pattern_card(conn, p, held=False):
+def _pattern_card(conn, p, held=False, prelude=None):
     """One pattern, editable. `held` swaps the fate buttons: a pattern you have not been shown
     yet cannot sensibly be Carried (it is not on your list) or Incorporated (you have not read
     it), so it offers Promote -- put it on the list -- and Reject."""
     pid = p["id"]
     prov = db_interface.get_pattern_provenance(conn, pid)
     return html.Div(dbc.Card(dbc.CardBody([
+        *(prelude or []),
         html.Div([
             dbc.Badge(p["direction"], color=_DIR_COLOR.get(p["direction"], "secondary"),
                       className="me-2", style={"flex": "0 0 auto"}),
@@ -155,11 +156,60 @@ def _pattern_card(conn, p, held=False):
         id={"type": "pat-card", "pid": pid})
 
 
+def _recurrence_prelude(conn, p):
+    """The banner on a closed pattern that keeps coming back. It LEADS WITH THE DECISION -- what
+    you chose, when, and how many times it has returned since -- because the whole hazard of
+    showing these beside held patterns is re-deciding something you already decided without
+    realising it.
+
+    The papers are shown rather than summarised. A count is ambiguous three ways (the edit did
+    not take / the rejection was wrong / a vague pattern is attracting false merges) and only
+    the papers separate them: same kind of paper is a real return, drift is an attractor."""
+    decided = (p.get("status_at") or "")[:10]
+    verb = "INCORPORATED" if p["status"] == "incorporated" else "REJECTED"
+    meaning = ("the edit did not take -- you stated this and the judge still gets it wrong"
+               if p["status"] == "incorporated"
+               else "the rejection may have been wrong -- the flags keep bringing it back")
+    papers = db_interface.get_post_closure_papers(conn, p["id"])
+    return [
+        dbc.Alert([
+            html.Div([
+                dbc.Badge(f"{verb} {decided}", color="dark", className="me-2"),
+                dbc.Badge(f"returned {p['recurrence_count']}x", color="warning",
+                          text_color="dark"),
+            ], className="mb-1"),
+            html.Div(meaning, className="small"),
+            html.Details([
+                html.Summary(f"{len(papers)} paper(s) since you decided",
+                             className="small"),
+                html.Div([
+                    html.Div(f"delta {x['delta']:+.2f}  {x['journal'] or ''}: "
+                             f"{x['title'] or ''}"
+                             + (f"  -- {x['note']}" if x.get("note") else ""),
+                             className="small text-muted")
+                    for x in papers] or [html.Div("(none recorded)",
+                                                  className="small text-muted")],
+                    className="mt-1"),
+            ], className="mt-1"),
+        ], color="warning", className="py-2 px-2 mb-2"),
+    ]
+
+
 def _render_patterns(conn, tab="active"):
     held = tab == "held"
     patterns = (db_interface.get_held_patterns(conn) if held
                 else db_interface.get_active_patterns(conn))
-    if not patterns:
+    # CLOSED PATTERNS THAT KEEP COMING BACK share the Held tab, because the semantics rhyme:
+    # held is "not decided, evidence accumulating", recurring-closed is "decided, evidence
+    # accumulating AGAINST the decision". Both are accumulation watch-lists wanting the same
+    # actions, and Promote already does the right thing on a closed row -- it writes `carried`,
+    # which under latest-event-wins REOPENS it. No new event semantics, no second tab.
+    #
+    # get_closed_recurrences was written, correct and caller-less from 2026-08-25 until now:
+    # the signal was recorded faithfully and shown to nobody, while the harness graded it 3/3
+    # every sweep. A green test for an orphaned producer is camouflage.
+    recurring = db_interface.get_closed_recurrences(conn) if held else []
+    if not patterns and not recurring:
         return [html.Div(
             "Nothing held. The consolidate step records a pattern here when it is real but "
             "not yet worth your attention; it moves to Active once enough evidence arrives."
@@ -167,7 +217,10 @@ def _render_patterns(conn, tab="active"):
             "No open patterns. Flag papers in the review feed, then run "
             "`litcurator error_analysis` to surface patterns here.",
             className="text-muted")]
-    return [_pattern_card(conn, p, held=held) for p in patterns]
+    cards = [_pattern_card(conn, p, held=held) for p in patterns]
+    cards += [_pattern_card(conn, p, held=True, prelude=_recurrence_prelude(conn, p))
+              for p in recurring]
+    return cards
 
 
 def _counts(conn):

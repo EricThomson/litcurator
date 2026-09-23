@@ -571,7 +571,64 @@ def test_prompt_blamed_incorporate_never_writes_the_profile():
         print("prompt-blamed: profile untouched, event stamps the judge prompt")
 
 
+def test_a_recurring_closed_pattern_surfaces_in_the_held_tab():
+    """get_closed_recurrences was written, correct and CALLER-LESS from 2026-08-25: the signal
+    was recorded faithfully and shown to nobody, while this harness graded it green every
+    sweep. A closed pattern whose gap came back must now appear in the Held tab, and its card
+    must LEAD WITH THE DECISION -- otherwise it reads as an undecided pattern and gets decided
+    twice."""
+    with _world() as (conn, wb, pids):
+        pid = pids[0]
+        DB.add_pattern_event(conn, pid, "incorporated",
+                             profile_id=DB.get_or_create_profile(conn, ACTIVE_PROFILE))
+        DB.add_pattern_event(conn, pid, "recurred", note="the flags brought it back")
+
+        assert [r["id"] for r in DB.get_closed_recurrences(conn)] == [pid]
+        rendered = str(wb._render_patterns(conn, "held"))
+        assert "INCORPORATED" in rendered, "the card does not lead with the prior decision"
+        assert "returned 1x" in rendered, "the recurrence count is not shown"
+        assert pid in rendered, "the recurring pattern is not in the Held tab at all"
+        print("recurring-closed: shown in Held, decision first, count visible")
+
+
+def test_a_recurring_closed_card_offers_promote_and_not_incorporate():
+    """The Held tab now renders TWO kinds of card, and `held` is no longer 1:1 with
+    get_held_patterns. A recurring-closed card must offer Promote -- which is how you reopen a
+    decision you want back -- and must NOT offer Incorporate, because incorporating something
+    already closed would stamp a second decision on top of the one being questioned."""
+    with _world() as (conn, wb, pids):
+        pid = pids[0]
+        DB.add_pattern_event(conn, pid, "rejected", note="not a real gap")
+        DB.add_pattern_event(conn, pid, "recurred")
+
+        rendered = str(wb._render_patterns(conn, "held"))
+        assert "pat-promote" in rendered, "no way to reopen a decision the flags keep reversing"
+        assert "pat-incorporate" not in rendered,             "a closed card offered Incorporate -- it would stamp a decision on a closed pattern"
+        print("recurring-closed: Promote offered, Incorporate withheld")
+
+
+def test_promote_reopens_a_closed_pattern():
+    """Reopening needs NO new event semantics, which is why these share the Held tab at all:
+    Promote writes `carried`, and under latest-event-wins a `carried` after a `rejected` puts
+    the pattern back on the active list with its whole history intact."""
+    with _world() as (conn, wb, pids):
+        pid = pids[0]
+        DB.add_pattern_event(conn, pid, "rejected", note="not a real gap")
+        DB.add_pattern_event(conn, pid, "recurred")
+        assert _status(conn, pid) == "rejected"
+
+        _click_fate(wb, pids, pid, "pat-promote", tab="held")
+
+        assert _status(conn, pid) == "carried", "Promote did not reopen the closed pattern"
+        assert pid in {p["id"] for p in DB.get_active_patterns(conn)}
+        assert [e["event"] for e in _events(conn, pid)] ==             ["created", "rejected", "recurred", "carried"], _events(conn, pid)
+        print("promote on a closed pattern: reopened, nothing deleted")
+
+
 CHECKS = [
+    test_a_recurring_closed_pattern_surfaces_in_the_held_tab,
+    test_a_recurring_closed_card_offers_promote_and_not_incorporate,
+    test_promote_reopens_a_closed_pattern,
     test_incorporate_saves_the_draft_before_stamping_it,
     test_incorporate_refuses_and_writes_nothing_when_the_draft_is_invalid,
     test_incorporate_with_an_unchanged_draft_mints_no_version,

@@ -1336,6 +1336,40 @@ def get_pattern_examples(conn, pattern_ids, limit=3):
     return out
 
 
+def get_post_closure_papers(conn, pattern_id):
+    """The papers attached to a CLOSED pattern AFTER the decision that closed it.
+
+    A rising recurrence count is ambiguous three ways and the count alone cannot separate them:
+    an INCORPORATED pattern coming back means the profile edit did not take (the highest-value
+    signal this system produces); a REJECTED one coming back means the rejection was probably
+    wrong; but EITHER can instead be an ATTRACTOR -- a broad or vaguely-named closed pattern
+    collecting false merges, which by count looks identical to both. The disambiguator is
+    whether the new papers RESEMBLE the old ones, so the papers are what has to be shown.
+
+    Dated by the analysis_run that attached the flag rather than by the flag's own timestamp:
+    pattern_flags carries analysis_run_id (2026-09-04) and a flag can be re-flagged long after
+    it was first attached, so flagged_at would misdate an old paper as a fresh return. A human
+    attachment carries no run id -- the same absence undo keys on -- and is treated as pre-
+    closure, because a human who attaches a paper by hand is not reporting a recurrence."""
+    decision = conn.execute("""
+        SELECT created_at FROM pattern_events WHERE pattern_id = ?
+        AND event IN ('created', 'carried', 'incorporated', 'rejected')
+        ORDER BY created_at DESC, id DESC LIMIT 1
+    """, (pattern_id,)).fetchone()
+    if not decision:
+        return []
+    rows = conn.execute("""
+        SELECT f.delta, f.judge_score, f.user_score, f.note, a.title, a.journal
+        FROM pattern_flags pf
+        JOIN flags f          ON f.id = pf.flag_id
+        JOIN articles a       ON a.pmid = f.pmid
+        JOIN analysis_runs r  ON r.id = pf.analysis_run_id
+        WHERE pf.pattern_id = ? AND r.created_at > ?
+        ORDER BY ABS(f.delta) DESC
+    """, (pattern_id, decision["created_at"])).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_closed_recurrences(conn):
     """Closed patterns (incorporated or rejected) whose gap RESURFACED -- a
     'recurred' event that came AFTER the current deciding event. These are alerts for
