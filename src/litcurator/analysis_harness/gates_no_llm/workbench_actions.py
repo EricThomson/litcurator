@@ -50,7 +50,7 @@ control in sandbox/workbench_actions_negative_control/, which is what those are 
 
 import contextlib
 
-from litcurator import config, db_interface as DB, profile_interface
+from litcurator import config, db_interface as DB, profile_interface, prompt_interface
 
 from .. import machinery as M
 
@@ -60,6 +60,11 @@ from .. import machinery as M
 # original profile -- or any profile at all -- would score green.
 SCENARIO_PROFILE = "I follow systems neuroscience: circuits, computation, and behavior."
 ACTIVE_PROFILE = SCENARIO_PROFILE + "\n\nInvertebrate neuroethology counts as systems work."
+
+# The "active" judge prompt during a check. Needs its '## Output' section, because
+# prompt_interface.validate refuses a prompt without one and the shim calls that same rule.
+ACTIVE_PROMPT = ("Score the paper's expected interest for this user.\n\n"
+                 "## Output\n\nReturn JSON with four keys.")
 
 _ORDER = ("pat-hold", "pat-incorporate", "pat-reject", "pat-promote")
 
@@ -74,12 +79,24 @@ class _Ctx:
 
 
 class _ProfileShim:
-    """The real profile_interface with one method overridden, so the ACTIVE PROFILE TEXT is
-    known here and the expected stamp is computable. Delegating the rest means a callback
-    that starts using another part of the module keeps working rather than failing in a way
-    that looks like a bug in the callback."""
+    """A stand-in for ONE artifact interface: the active TEXT is known here so the expected
+    stamp is computable, and writes are recorded instead of performed. Delegating everything
+    else means a callback that starts using another part of the module keeps working rather
+    than failing in a way that looks like a bug in the callback.
 
-    def __init__(self, text):
+    ONE OF THESE IS NEEDED PER ARTIFACT, and getting that wrong cost the user's judge prompt on
+    2026-09-22. The gate shimmed profile_interface only; the new prompt-blamed check set a
+    pattern's blame to 'prompt', so the callback routed to the REAL prompt_interface and
+    set_active wrote a 45-character test string over the live judge_prompt.md. The check passed
+    -- it asserted the PROFILE was untouched -- while destroying the other artifact. Recovered
+    from the _pre_active backup set_active takes before writing, which is the only reason this
+    was ten minutes rather than a rebuild.
+
+    `real` is the module this stands in for, so both artifacts get the same treatment and a
+    third (the analysis prompt, if its lab ever graduates) needs no new class."""
+
+    def __init__(self, text, real=None):
+        self._real = real if real is not None else profile_interface
         self._text = text
         self.set_active_calls = []
 
@@ -102,7 +119,7 @@ class _ProfileShim:
         # VALIDATE exactly as the real module does, by calling ITS rule rather than carrying a
         # copy that could drift. A fake that accepts what the real one refuses makes the
         # refusal path untestable, which is the half of save-and-stamp that must never write.
-        profile_interface.validate(text)
+        self._real.validate(text)
         self.set_active_calls.append(text)
         self._text = text
         return None
@@ -112,7 +129,7 @@ class _ProfileShim:
         # starts using another part of the module, and it silently un-fakes anything not
         # overridden above. Any NEW module-level write this gate's callbacks reach needs an
         # override here, not just a read.
-        return getattr(profile_interface, name)
+        return getattr(self._real, name)
 
 
 def _paper(intended, n):
@@ -165,7 +182,21 @@ def _world(n_patterns=1, papers_each=2):
     try:
         import litcurator.apps.judge_workbench as wb
         saved_ctx = wb.ctx
-        wb.profile_interface = _ProfileShim(ACTIVE_PROFILE)
+        wb.profile_interface = _ProfileShim(ACTIVE_PROFILE, profile_interface)
+        # BOTH artifacts, because the callback routes on a pattern's blame and an unshimmed one
+        # is a live file. ACTIVE_PROMPT carries the '## Output' section prompt_interface.validate
+        # requires, so a check can exercise a legitimate prompt write.
+        wb.prompt_interface = _ProfileShim(ACTIVE_PROMPT, prompt_interface)
+        # EVERY artifact the callbacks can route to must be a stand-in before any check runs.
+        # This is the guard for the 2026-09-22 incident: the gate shimmed one of two, a check
+        # routed to the other, and a $0 gate destroyed a live artifact while reporting green.
+        # Asserted against the app's own ARTIFACTS tuple, so adding a third artifact to the
+        # workbench fails HERE -- loudly, before a check can write to it.
+        for _artifact in wb.ARTIFACTS:
+            _mod = wb._interface(_artifact)
+            assert isinstance(_mod, _ProfileShim), (
+                f"{_artifact!r} routes to the REAL {getattr(_mod, '__name__', _mod)} -- a check "
+                f"that writes it would overwrite the user's live artifact")
         yield conn, wb, [p["id"] for p in DB.get_active_patterns(conn)]
     finally:
         if wb is not None:
@@ -173,6 +204,7 @@ def _world(n_patterns=1, papers_each=2):
             # frames restoration as the contract, and leaving a stale _Ctx on the shared
             # module for the rest of the process is how one gate quietly conditions the next.
             wb.profile_interface = profile_interface
+            wb.prompt_interface = prompt_interface
             if saved_ctx is not None:
                 wb.ctx = saved_ctx
         DB.LITCURATOR_DB = config.LITCURATOR_DB      # the module's original binding
@@ -566,9 +598,16 @@ def test_prompt_blamed_incorporate_never_writes_the_profile():
         _click_fate(wb, pids, pids[0], "pat-incorporate", drafts=drafts)
 
         assert wb.profile_interface.set_active_calls == [],             "a prompt-blamed decision wrote the PROFILE"
+        # ASSERT THE WRITE LANDED, not merely that the other artifact was spared. The first
+        # version of this check only asserted the negative, so it passed while routing the
+        # write to the UNSHIMMED real prompt_interface and overwriting the user's live
+        # judge_prompt.md. A check that verifies only what must NOT happen cannot tell a
+        # correct write from a write that went somewhere it should never reach.
+        assert wb.prompt_interface.set_active_calls == [drafts["prompt"]],             f"the prompt draft did not land on the stand-in: "             f"{wb.prompt_interface.set_active_calls}"
         ev = _events(conn, pids[0])[-1]
         assert ev["profile_id"] is None and ev["prompt_id"] is not None, dict(ev)
-        print("prompt-blamed: profile untouched, event stamps the judge prompt")
+        print("prompt-blamed: prompt written via the stand-in, profile untouched, "
+              "event stamps the judge prompt")
 
 
 def test_a_recurring_closed_pattern_surfaces_in_the_held_tab():
