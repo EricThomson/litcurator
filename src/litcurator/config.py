@@ -72,6 +72,12 @@ LOCKED_TEST_END = "2025-11-30"
 # epub-ahead-of-print artifact. The date window above stays as belt-and-suspenders.
 LOCKED_TEST_PMIDS_FILE = DATA_DIR / "locked_test_set.json"
 
+# pmid -> the last note you wrote on that paper, written when a reset wipes the flags
+# table. The review feed prefills the note box from it, so re-flagging a paper you have
+# seen before starts from what you said last time instead of from nothing. Read-only and
+# optional: absent file means no prefill, which is the normal state once flags exist again.
+ARCHIVED_NOTES_FILE = DATA_DIR / "archived_notes.json"
+
 # ---------------------------------------------------------------------------
 # Judge harness
 # ---------------------------------------------------------------------------

@@ -23,7 +23,7 @@ import dash_bootstrap_components as dbc
 from dash import ALL, Dash, Input, Output, State, callback, ctx, dcc, html, no_update
 
 from litcurator import db_interface
-from litcurator.config import SINKHOLE_PATTERN_NAME
+from litcurator.config import ARCHIVED_NOTES_FILE, SINKHOLE_PATTERN_NAME
 
 # Optional CLI dates pre-fill the in-app date picker. parse_known_args so Dash's
 # own flags do not choke. Blank = show all.
@@ -64,6 +64,22 @@ def _score_color(score):
     if score < 0.8:   return "#f0b429"
     if score < 0.9:   return "#e05c1a"
     return "#b01010"
+
+
+_ARCHIVED_NOTES = None
+
+
+def _archived_notes():
+    """{pmid: note} from the last reset, loaded once. Empty when the file is absent, which is
+    the normal state -- it only exists after a reset has wiped the flags table, and it goes
+    stale harmlessly as real flags accumulate again (a live flag's note always wins)."""
+    global _ARCHIVED_NOTES
+    if _ARCHIVED_NOTES is None:
+        try:
+            _ARCHIVED_NOTES = json.loads(ARCHIVED_NOTES_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            _ARCHIVED_NOTES = {}
+    return _ARCHIVED_NOTES
 
 
 def _render_authors(authors_json):
@@ -176,6 +192,10 @@ def _render_card(item, rank, total):
         className="d-flex align-items-baseline flex-wrap")
 
     pre = flag or {}
+    # A paper with no live flag falls back to the note you wrote before the last reset, so the
+    # box opens with your own words rather than empty. Only ever a PREFILL: saving writes a
+    # normal flag, and once one exists its note wins.
+    prior_note = "" if flag else _archived_notes().get(pmid, "")
     remove_btn = dbc.Button("Remove flag", id={"type": "flag-delete", "pmid": pmid},
                             color="danger", outline=True, size="sm", className="mt-2",
                             style=_remove_btn_style(flagged))
@@ -205,8 +225,10 @@ def _render_card(item, rank, total):
                      className="text-danger fw-bold mb-2"),
             dbc.Label("Note (optional, private)", className="small mb-1"),
             dbc.Input(id={"type": "flag-note", "pmid": pmid}, type="text",
-                      value=pre.get("note", ""), placeholder="e.g. ECoG, not single-unit",
-                      size="sm"),
+                      value=pre.get("note") or prior_note,
+                      placeholder="e.g. ECoG, not single-unit", size="sm"),
+            *([html.Small("prefilled from your note before the last reset",
+                          className="text-muted")] if prior_note else []),
             remove_btn,
             sinkhole_btn,
         ]), color="light", className="mt-2"),
