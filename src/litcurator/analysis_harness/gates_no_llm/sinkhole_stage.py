@@ -5,13 +5,14 @@ attach_to_accumulator is a one-click permanent write from the review feed, so ev
 can return is exercised against a scratch database, plus the two properties the design leans
 on: an attached paper leaves the unattached pool (the accumulator silences the discovery loop
 for papers already diagnosed), and the attachment is invisible to undo_error_analysis (a
-human write carries no run stamp).
+human write carries no run stamp). Plus the Levels Bucket's one special rule: it stays off
+error_analysis's list of existing patterns, so only the user ever puts papers in it.
 """
 
 import contextlib
 import os
 
-from litcurator import db_interface as DB
+from litcurator import config, db_interface as DB, error_analysis as PA
 
 from .. import machinery as H
 
@@ -98,10 +99,28 @@ def test_invisible_to_undo():
         print("human attachment survives an unrelated undo untouched")
 
 
+def test_levels_bucket_is_not_a_pattern():
+    """The ordinary pattern beside it is the control: without one, an empty list would pass
+    this check for the wrong reason."""
+    with _world() as (conn, _profile_id):
+        DB.attach_to_accumulator(conn, config.LEVELS_BUCKET_NAME, "SYNSINK1")
+        flag2 = conn.execute("SELECT id FROM flags WHERE pmid = 'SYNSINK2'").fetchone()["id"]
+        DB.create_pattern(conn, name="Ordinary pattern", direction="under",
+                          description="control", flag_ids=[flag2], note="control")
+        block, active, _held, _closed = PA.build_memory_block(conn)
+        assert "Ordinary pattern" in block, "control failed: the ordinary pattern is missing"
+        assert config.LEVELS_BUCKET_NAME not in block, "the bucket leaked into error_analysis"
+        assert [p["name"] for p in active] == ["Ordinary pattern"], [p["name"] for p in active]
+        bucket = DB.get_levels_bucket(conn)
+        assert bucket is not None and bucket["paper_count"] == 1, bucket
+        print("bucket stays off error_analysis's list; the ordinary pattern beside it is shown")
+
+
 CHECKS = [
     test_first_click_creates_and_attaches,
     test_second_click_is_idempotent_and_second_paper_counts,
     test_unflagged_paper_is_refused,
     test_closed_accumulator_refuses,
     test_invisible_to_undo,
+    test_levels_bucket_is_not_a_pattern,
 ]

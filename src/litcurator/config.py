@@ -271,12 +271,15 @@ MAX_ACT_NOW = 8
 # run one round and skip the picker entirely, which needs no pick prompt.
 BEST_OF_RUNS = 3
 
-# The accumulator pattern the review feed's one-click button feeds. A KNOWN chronic judge
-# failure (molecular papers leaking through) does not need the discovery loop re-deriving it
-# every round -- it needs a tally. The button attaches the paper's flag straight to this
-# pattern, bypassing cluster/consolidate, and the workbench card's climbing count is the
-# whole interface: NO threshold anywhere in code -- shown, never branched on -- the user
-# decides when critical mass has arrived and attacks it as its own problem.
-# NB the lookup is BY NAME among open patterns: if you rename the pattern in the workbench,
-# rename it here in the same breath or the next click mints a duplicate.
-SINKHOLE_PATTERN_NAME = "Molecular sinkhole"
+# THE LEVELS BUCKET (decided 2026-09-27): a hand-filled garbage pail for levels-of-organization
+# mistakes in either direction. It is not a pattern and not a flag. The user throws papers in from
+# the review feed and leaves them until there are enough to know how to handle them. It is stored
+# as a pattern row only because that table links back to papers; get_active_patterns leaves it
+# out, so error_analysis never sees it and the workbench shows only its count. NO threshold in
+# code. The lookup is BY NAME, and the workbench offers no way to rename it.
+LEVELS_BUCKET_NAME = "Levels Bucket"
+LEVELS_BUCKET_DESCRIPTION = (
+    "Levels-of-organization mistakes, either direction: systems papers scored too low because "
+    "of molecular methods or keywords, and molecular papers scored too high because a topic "
+    "you like dragged them up. Filled by hand from the review feed; left alone until there "
+    "are enough papers to know how to handle them.")

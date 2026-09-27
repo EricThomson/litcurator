@@ -48,6 +48,7 @@ import uuid
 from datetime import date, datetime, timezone
 
 from litcurator.config import (
+    LEVELS_BUCKET_NAME,
     LITCURATOR_DB,
     LOCKED_TEST_END,
     LOCKED_TEST_PMIDS_FILE,
@@ -1244,8 +1245,25 @@ def get_patterns(conn, statuses=None):
 def get_active_patterns(conn):
     """The workbench queue: patterns whose latest decision is 'created' or 'carried' --
     the ones the user is shown and still has to decide. HELD patterns are deliberately
-    excluded; they are real and recorded but not yet worth the user's attention."""
-    return get_patterns(conn, statuses=ACTIVE_STATUSES)
+    excluded; they are real and recorded but not yet worth the user's attention.
+
+    The LEVELS BUCKET is excluded too: it is stored as a pattern row but is not a pattern (see
+    config.LEVELS_BUCKET_NAME). Leaving it out HERE is what keeps it out of error_analysis's
+    list of existing patterns, the workbench cards and the workbench count all at once."""
+    return [p for p in get_patterns(conn, statuses=ACTIVE_STATUSES)
+            if p["name"] != LEVELS_BUCKET_NAME]
+
+
+def get_levels_bucket(conn):
+    """The Levels Bucket's row plus how many papers are in it, or None before the first click.
+    The one reader allowed to see it, since get_active_patterns leaves it out on purpose."""
+    row = conn.execute(
+        "SELECT p.*, COUNT(DISTINCT f.pmid) AS paper_count FROM patterns p "
+        "LEFT JOIN pattern_flags pf ON pf.pattern_id = p.id "
+        "LEFT JOIN flags f ON f.id = pf.flag_id "
+        "WHERE p.name = ? GROUP BY p.id ORDER BY p.rowid DESC LIMIT 1",
+        (LEVELS_BUCKET_NAME,)).fetchone()
+    return dict(row) if row else None
 
 
 def get_held_patterns(conn):
@@ -1400,15 +1418,15 @@ def get_closed_recurrences(conn):
 
 
 # ---------------------------------------------------------------------------
-# Accumulator patterns (the review feed's sinkhole button)
+# Accumulator patterns (the review feed's Levels Bucket button)
 # ---------------------------------------------------------------------------
 
-def attach_to_accumulator(conn, name, pmid):
+def attach_to_accumulator(conn, name, pmid, description=None):
     """Attach a paper's LATEST flag to the named accumulator pattern, creating the pattern
     (open, so its flags leave the unattached pool and stop re-clustering every round) on
-    first use. The human tally path for a KNOWN chronic gap: review-time certainty recorded
-    directly, no discovery loop. Writes carry no analysis_run_id -- the human signature,
-    which is also what makes these attachments invisible to undo_error_analysis.
+    first use, with `description` stored on it. The human tally path: review-time certainty
+    recorded directly, no discovery loop. Writes carry no analysis_run_id -- the human
+    signature, which is also what makes these attachments invisible to undo_error_analysis.
 
     Returns (status, paper_count): 'attached' on success, 'already' if this paper is in,
     'no_flag' if the paper was never flagged (the score is still the human's to give --
@@ -1436,11 +1454,10 @@ def attach_to_accumulator(conn, name, pmid):
         return "no_flag", _count(pattern["id"]) if pattern else 0
 
     if pattern is None:
+        # direction is a placeholder the schema requires. Nothing reads it: an accumulator is
+        # not a pattern, and get_active_patterns keeps the Levels Bucket off every pattern list.
         pid = create_pattern(
-            conn, name=name, direction="over",
-            description=("Human-fed accumulator: papers the judge let through despite the "
-                         "molecular/cellular rule. Counted here until critical mass; do not "
-                         "re-derive this gap from these flags."),
+            conn, name=name, direction="over", description=description,
             flag_ids=[flag["id"]], note="accumulator created from the review feed")
         return "attached", _count(pid)
 

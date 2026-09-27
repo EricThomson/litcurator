@@ -23,7 +23,7 @@ import dash_bootstrap_components as dbc
 from dash import ALL, Dash, Input, Output, State, callback, ctx, dcc, html, no_update
 
 from litcurator import db_interface
-from litcurator.config import ARCHIVED_NOTES_FILE, SINKHOLE_PATTERN_NAME
+from litcurator.config import ARCHIVED_NOTES_FILE, LEVELS_BUCKET_DESCRIPTION, LEVELS_BUCKET_NAME
 
 # Optional CLI dates pre-fill the in-app date picker. parse_known_args so Dash's
 # own flags do not choke. Blank = show all.
@@ -199,13 +199,13 @@ def _render_card(item, rank, total):
     remove_btn = dbc.Button("Remove flag", id={"type": "flag-delete", "pmid": pmid},
                             color="danger", outline=True, size="sm", className="mt-2",
                             style=_remove_btn_style(flagged))
-    # The accumulator button: one click files this paper's flag under the known chronic
-    # pattern, no discovery loop. Needs a saved flag first -- the score is always yours.
-    sinkhole_btn = html.Div([
-        dbc.Button(f"Add to {SINKHOLE_PATTERN_NAME}",
-                   id={"type": "sinkhole-add", "pmid": pmid},
+    # The Levels Bucket button: one click drops this paper's flag in the bucket, no discovery
+    # loop. Needs a saved flag first -- the score is always yours.
+    bucket_btn = html.Div([
+        dbc.Button(f"Add to {LEVELS_BUCKET_NAME}",
+                   id={"type": "bucket-add", "pmid": pmid}, title=LEVELS_BUCKET_DESCRIPTION,
                    color="dark", outline=True, size="sm", className="mt-2 me-2"),
-        html.Span(id={"type": "sinkhole-msg", "pmid": pmid}, className="small text-muted"),
+        html.Span(id={"type": "bucket-msg", "pmid": pmid}, className="small text-muted"),
     ], className="d-flex align-items-center")
     flag_panel = dbc.Collapse(
         dbc.Card(dbc.CardBody([
@@ -230,7 +230,7 @@ def _render_card(item, rank, total):
             *([html.Small("prefilled from your note before the last reset",
                           className="text-muted")] if prior_note else []),
             remove_btn,
-            sinkhole_btn,
+            bucket_btn,
         ]), color="light", className="mt-2"),
         id={"type": "flag-collapse", "pmid": pmid},
         is_open=flagged)
@@ -414,28 +414,29 @@ def cb_save_flag(n_clicks_list, scores, notes, start, end, min_score):
 
 
 @callback(
-    Output({"type": "sinkhole-msg", "pmid": ALL}, "children"),
-    Input({"type": "sinkhole-add", "pmid": ALL}, "n_clicks"),
+    Output({"type": "bucket-msg", "pmid": ALL}, "children"),
+    Input({"type": "bucket-add", "pmid": ALL}, "n_clicks"),
     prevent_initial_call=True,
 )
-def cb_sinkhole_add(n_clicks_list):
-    """One click, one attachment, no discovery loop: the paper's latest flag lands on the
-    accumulator pattern (db_interface.attach_to_accumulator creates it on first use). The
-    message echoes the running count -- the count is the entire interface, no threshold."""
+def cb_bucket_add(n_clicks_list):
+    """One click, one attachment, no discovery loop: the paper's latest flag lands in the
+    Levels Bucket (db_interface.attach_to_accumulator creates it on first use). The message
+    echoes the running count -- the count is the entire interface, no threshold."""
     triggered = ctx.triggered_id
     if not triggered or not any(n for n in n_clicks_list if n):
         return [no_update] * len(n_clicks_list)
     pmid = triggered["pmid"]
     conn = db_interface.get_connection()
     try:
-        status, count = db_interface.attach_to_accumulator(conn, SINKHOLE_PATTERN_NAME, pmid)
+        status, count = db_interface.attach_to_accumulator(
+            conn, LEVELS_BUCKET_NAME, pmid, description=LEVELS_BUCKET_DESCRIPTION)
     finally:
         conn.close()
     msg = {
-        "attached": f"in. {SINKHOLE_PATTERN_NAME}: {count} papers.",
+        "attached": f"in. {LEVELS_BUCKET_NAME}: {count} papers.",
         "already": f"already in ({count} papers).",
-        "no_flag": "flag it first -- save a score, then sink it.",
-        "closed": f"the accumulator was closed after {count} papers; just flag normally now.",
+        "no_flag": "flag it first -- save a score, then add it.",
+        "closed": f"the bucket was closed after {count} papers; just flag normally now.",
     }[status]
     return [msg if out["id"]["pmid"] == pmid else no_update
             for out in ctx.outputs_list]

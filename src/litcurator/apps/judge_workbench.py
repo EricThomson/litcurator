@@ -41,6 +41,7 @@ from dash_resizable_panels import Panel, PanelGroup, PanelResizeHandle
 from dotenv import load_dotenv
 
 from litcurator import db_interface, profile_interface, prompt_interface
+from litcurator.config import LEVELS_BUCKET_DESCRIPTION
 
 load_dotenv()
 
@@ -195,10 +196,27 @@ def _recurrence_prelude(conn, p):
     ]
 
 
+def _levels_bucket_line(conn):
+    """The Levels Bucket as ONE line: its name and how many papers are in it, with the
+    description on hover. It is not a pattern (see config.LEVELS_BUCKET_NAME), so it gets none
+    of the card's fields or buttons, which is also why no callback can touch it and it cannot
+    be renamed out from under the review feed's lookup. Nothing shows before the first click."""
+    bucket = db_interface.get_levels_bucket(conn)
+    if bucket is None:
+        return []
+    n = bucket["paper_count"]
+    return [html.Div(
+        html.Span(f"{bucket['name']}: {n} paper{'' if n == 1 else 's'}",
+                  title=LEVELS_BUCKET_DESCRIPTION,
+                  style={"cursor": "help", "textDecoration": "underline dotted"}),
+        className="small text-muted mb-3")]
+
+
 def _render_patterns(conn, tab="active"):
     held = tab == "held"
     patterns = (db_interface.get_held_patterns(conn) if held
                 else db_interface.get_active_patterns(conn))
+    bucket = [] if held else _levels_bucket_line(conn)
     # CLOSED PATTERNS THAT KEEP COMING BACK share the Held tab, because the semantics rhyme:
     # held is "not decided, evidence accumulating", recurring-closed is "decided, evidence
     # accumulating AGAINST the decision". Both are accumulation watch-lists wanting the same
@@ -210,7 +228,7 @@ def _render_patterns(conn, tab="active"):
     # every sweep. A green test for an orphaned producer is camouflage.
     recurring = db_interface.get_closed_recurrences(conn) if held else []
     if not patterns and not recurring:
-        return [html.Div(
+        return bucket + [html.Div(
             "Nothing held. The consolidate step records a pattern here when it is real but "
             "not yet worth your attention; it moves to Active once enough evidence arrives."
             if held else
@@ -220,7 +238,7 @@ def _render_patterns(conn, tab="active"):
     cards = [_pattern_card(conn, p, held=held) for p in patterns]
     cards += [_pattern_card(conn, p, held=True, prelude=_recurrence_prelude(conn, p))
               for p in recurring]
-    return cards
+    return bucket + cards
 
 
 def _counts(conn):
