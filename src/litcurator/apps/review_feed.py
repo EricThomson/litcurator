@@ -41,15 +41,18 @@ CLI_END = _cli_args.end
 
 def _load_feed(start=None, end=None):
     """Latest curation evaluation per paper in the window, each merged with its
-    latest flag (if any). Sorted by score desc (from latest_curation)."""
+    latest flag (if any) and whether it is in the Levels Bucket. Sorted by score desc
+    (from latest_curation)."""
     conn = db_interface.get_connection()
     try:
         items = db_interface.latest_curation(conn, start, end)
         flags = {f["pmid"]: f for f in db_interface.get_flags(conn, start=start, end=end)}
+        bucketed = db_interface.levels_bucket_pmids(conn)
     finally:
         conn.close()
     for it in items:
         it["flag"] = flags.get(it["pmid"])
+        it["in_bucket"] = it["pmid"] in bucketed
     return items
 
 
@@ -115,20 +118,33 @@ def _render_authors(authors_json):
     return out
 
 
-def _flag_badge(flag):
+def _flag_badge(flag, in_bucket=False):
     """Inner content of the 'your flag' badge, or None when unflagged. The OUTER
     span (carrying the fixed flag-badge id) is always in the DOM, so a save or
-    delete fills/empties it surgically instead of rebuilding the card."""
+    delete fills/empties it surgically instead of rebuilding the card. A paper in
+    the Levels Bucket also carries the bucket's tag, visible with the panel closed."""
     if not flag:
         return None
-    return html.Span(f"you: {flag['user_score']:.2f}  (delta {flag['delta']:+.2f})",
-                     className="badge bg-danger")
+    score = html.Span(f"you: {flag['user_score']:.2f}  (delta {flag['delta']:+.2f})",
+                      className="badge bg-danger")
+    if not in_bucket:
+        return score
+    return [score, html.Span(LEVELS_BUCKET_NAME, title=LEVELS_BUCKET_DESCRIPTION,
+                             className="badge bg-dark ms-1")]
 
 
-def _remove_btn_style(flagged):
-    """Show the Remove-flag button only when flagged. Toggled via display so the
+def _remove_btn_style(flagged, in_bucket=False):
+    """Show the Remove-flag button only when flagged and NOT in the Levels Bucket (a
+    bucketed paper is taken out first, then removed). Toggled via display so the
     fixed id stays mounted (no conditional render -> no n_clicks-reset glitch)."""
-    return {} if flagged else {"display": "none"}
+    return {} if flagged and not in_bucket else {"display": "none"}
+
+
+def _bucket_btn_styles(in_bucket):
+    """(Add, Take out) button styles: exactly one shows. Both stay mounted and swap
+    via display, for the same reason as _remove_btn_style."""
+    hidden = {"display": "none"}
+    return (hidden, {}) if in_bucket else ({}, hidden)
 
 
 def _coerce_floor(min_score):
@@ -164,6 +180,7 @@ def _render_card(item, rank, total):
     pmid = item["pmid"]
     flag = item.get("flag")
     flagged = flag is not None
+    in_bucket = item.get("in_bucket", False)
 
     badge = html.Span(
         f"{score:.2f}",
@@ -178,7 +195,7 @@ def _render_card(item, rank, total):
         badges.append(html.Span(f"your label: {item['curation_label']}/5",
                                 className="badge bg-secondary me-2"))
     # Always present (fixed id) so a save/delete can fill or empty it surgically.
-    badges.append(html.Span(_flag_badge(flag), id={"type": "flag-badge", "pmid": pmid}))
+    badges.append(html.Span(_flag_badge(flag, in_bucket), id={"type": "flag-badge", "pmid": pmid}))
 
     journal_em = html.Em(item.get("journal") or "(journal unknown)",
                          style={"fontSize": "1rem", "fontWeight": "500", "color": "#5a4b8a"})
@@ -198,14 +215,21 @@ def _render_card(item, rank, total):
     prior_note = "" if flag else _archived_notes().get(pmid, "")
     remove_btn = dbc.Button("Remove flag", id={"type": "flag-delete", "pmid": pmid},
                             color="danger", outline=True, size="sm", className="mt-2",
-                            style=_remove_btn_style(flagged))
-    # The Levels Bucket button: one click drops this paper's flag in the bucket, no discovery
-    # loop. Needs a saved flag first -- the score is always yours.
-    bucket_btn = html.Div([
+                            style=_remove_btn_style(flagged, in_bucket))
+    # The Levels Bucket buttons. Add saves the score and note STRAIGHT into the bucket, no
+    # Save first, so the paper never passes through error_analysis's pool. Take out is the
+    # undo, for mis-clicks and regrets. Exactly one shows at a time.
+    add_style, out_style = _bucket_btn_styles(in_bucket)
+    bucket_btns = html.Div([
         dbc.Button(f"Add to {LEVELS_BUCKET_NAME}",
-                   id={"type": "bucket-add", "pmid": pmid}, title=LEVELS_BUCKET_DESCRIPTION,
-                   color="dark", outline=True, size="sm", className="mt-2 me-2"),
-        html.Span(id={"type": "bucket-msg", "pmid": pmid}, className="small text-muted"),
+                   id={"type": "bucket-add", "pmid": pmid, "eid": item["evaluation_id"]},
+                   title=LEVELS_BUCKET_DESCRIPTION, color="dark", outline=True, size="sm",
+                   className="mt-2 me-2", style=add_style),
+        dbc.Button(f"Take out of {LEVELS_BUCKET_NAME}",
+                   id={"type": "bucket-out", "pmid": pmid},
+                   title="Your score and note stay, as an ordinary flag for error_analysis.",
+                   color="secondary", outline=True, size="sm", className="mt-2 me-2",
+                   style=out_style),
     ], className="d-flex align-items-center")
     flag_panel = dbc.Collapse(
         dbc.Card(dbc.CardBody([
@@ -230,7 +254,7 @@ def _render_card(item, rank, total):
             *([html.Small("prefilled from your note before the last reset",
                           className="text-muted")] if prior_note else []),
             remove_btn,
-            bucket_btn,
+            bucket_btns,
         ]), color="light", className="mt-2"),
         id={"type": "flag-collapse", "pmid": pmid},
         is_open=flagged)
@@ -337,12 +361,30 @@ def cb_toggle_flag(_n, is_open_list):
             for sid, is_open in zip(ctx.states_list[0], is_open_list)]
 
 
+def _parse_score(raw, doing):
+    """(score, None) for a valid 0-1 entry, else (None, message). `doing` finishes the
+    sentence "Enter a score before ...", so each button names its own action."""
+    if raw is None or str(raw).strip() == "":
+        return None, f"Enter a score (0.0 - 1.0) before {doing}."
+    try:
+        score = float(str(raw).strip())
+    except ValueError:
+        return None, f"'{raw}' is not a number -- enter a value 0.0 - 1.0."
+    if not (0.0 <= score <= 1.0):
+        return None, "Score must be between 0.0 and 1.0."
+    return score, None
+
+
 @callback(
     Output("feed-summary", "children", allow_duplicate=True),
     Output({"type": "flag-badge", "pmid": ALL}, "children"),
     Output({"type": "flag-delete", "pmid": ALL}, "style"),
     Output({"type": "flag-error", "pmid": ALL}, "children"),
+    Output({"type": "bucket-add", "pmid": ALL, "eid": ALL}, "style"),
+    Output({"type": "bucket-out", "pmid": ALL}, "style"),
     Input({"type": "flag-save", "pmid": ALL, "eid": ALL}, "n_clicks"),
+    Input({"type": "bucket-add", "pmid": ALL, "eid": ALL}, "n_clicks"),
+    Input({"type": "bucket-out", "pmid": ALL}, "n_clicks"),
     State({"type": "flag-score", "pmid": ALL}, "value"),
     State({"type": "flag-note", "pmid": ALL}, "value"),
     State("date-filter", "start_date"),
@@ -350,96 +392,76 @@ def cb_toggle_flag(_n, is_open_list):
     State("min-score", "value"),
     prevent_initial_call=True,
 )
-def cb_save_flag(n_clicks_list, scores, notes, start, end, min_score):
-    # Surgical update: a save rewrites ONLY the triggered card's flag badge, its
-    # remove button, and the summary line -- every other card is left untouched.
-    # This is exactly why litcurator is on Dash and not Streamlit; do NOT regress
-    # to bumping a reload counter that re-renders the whole feed on each save.
-    # Output order, for ctx.outputs_list: 0 summary, 1 flag-badge, 2 flag-delete,
-    # 3 flag-error -- the last three are per-card ALL outputs.
-    badge_slots = ctx.outputs_list[1]
-    remove_slots = ctx.outputs_list[2]
-    error_slots = ctx.outputs_list[3]
+def cb_flag_panel_buttons(save_clicks, add_clicks, out_clicks, scores, notes,
+                          start, end, min_score):
+    """The flag panel's three writing buttons. Save records an ordinary flag for
+    error_analysis (or, for a paper already in the Levels Bucket, a newer version in the
+    bucket). Add to Levels Bucket puts the score and note straight into the bucket. Take out
+    turns it back into an ordinary flag. One callback, because all three redraw the same
+    parts of the same card."""
+    # Surgical update: rewrites ONLY the triggered card's slots and the summary line --
+    # every other card is left untouched. This is exactly why litcurator is on Dash and not
+    # Streamlit; do NOT regress to bumping a reload counter that re-renders the whole feed.
+    # Output order, for ctx.outputs_list: 0 summary, then the per-card ALL outputs
+    # 1 flag-badge, 2 flag-delete, 3 flag-error, 4 bucket-add, 5 bucket-out.
+    badge_slots, remove_slots, error_slots, add_slots, out_slots = ctx.outputs_list[1:]
+    card_slots = (badge_slots, remove_slots, error_slots, add_slots, out_slots)
 
-    def per_card(slots, pmid, value, default=no_update):
+    def per_card(slots, pmid, value):
         """Set value on the triggered card's slot, hold the rest."""
-        return [value if s["id"]["pmid"] == pmid else default for s in slots]
+        return [value if s["id"]["pmid"] == pmid else no_update for s in slots]
 
     def hold(slots):
         return [no_update] * len(slots)
 
-    def fail(pmid, msg):
-        # Validation error: loud, persistent, inline on the triggered card only.
-        return no_update, hold(badge_slots), hold(remove_slots), per_card(error_slots, pmid, msg)
-
     triggered = ctx.triggered_id
-    if not triggered or not any(n for n in n_clicks_list if n):
-        return no_update, hold(badge_slots), hold(remove_slots), hold(error_slots)
-    pmid = triggered["pmid"]
-    evaluation_id = triggered["eid"]
+    if not triggered or not any(n for n in save_clicks + add_clicks + out_clicks if n):
+        return (no_update, *(hold(s) for s in card_slots))
+    pmid, action = triggered["pmid"], triggered["type"]
 
-    user_score = None
-    note = ""
-    for sid, s in zip(ctx.states_list[0], scores):
-        if sid["id"]["pmid"] == pmid:
-            user_score = s
-    for nid, n in zip(ctx.states_list[1], notes):
-        if nid["id"]["pmid"] == pmid:
-            note = n or ""
+    if action == "bucket-out":
+        conn = db_interface.get_connection()
+        try:
+            db_interface.remove_from_levels_bucket(conn, pmid)
+            flag = db_interface.get_latest_flag(conn, pmid)
+        finally:
+            conn.close()
+        in_bucket = False
+    else:
+        raw_score = next((s for sid, s in zip(ctx.states_list[0], scores)
+                          if sid["id"]["pmid"] == pmid), None)
+        note = next((n for nid, n in zip(ctx.states_list[1], notes)
+                     if nid["id"]["pmid"] == pmid), None) or ""
+        doing = "saving" if action == "flag-save" else f"adding it to the {LEVELS_BUCKET_NAME}"
+        user_score, error = _parse_score(raw_score, doing)
+        if error:
+            # Validation error: loud, persistent, inline on the triggered card only.
+            return (no_update, hold(badge_slots), hold(remove_slots),
+                    per_card(error_slots, pmid, error), hold(add_slots), hold(out_slots))
+        conn = db_interface.get_connection()
+        try:
+            if action == "bucket-add":
+                flag_id, _count = db_interface.add_to_levels_bucket(
+                    conn, triggered["eid"], user_score, note or None)
+                in_bucket = True
+            else:
+                flag_id, in_bucket = db_interface.save_flag(
+                    conn, triggered["eid"], user_score, note or None)
+            flag = db_interface.get_flag(conn, flag_id)
+        finally:
+            conn.close()
 
-    if user_score is None or str(user_score).strip() == "":
-        return fail(pmid, "Enter a score (0.0 - 1.0) before saving.")
-    try:
-        user_score = float(str(user_score).strip())
-    except ValueError:
-        return fail(pmid, f"'{user_score}' is not a number -- enter a value 0.0 - 1.0.")
-    if not (0.0 <= user_score <= 1.0):
-        return fail(pmid, "Score must be between 0.0 and 1.0.")
-
-    conn = db_interface.get_connection()
-    try:
-        flag_id = db_interface.insert_flag(conn, evaluation_id, user_score, note or None)
-        flag = db_interface.get_flag(conn, flag_id)
-    finally:
-        conn.close()
     items = _load_feed(start, end)   # cheap data-only reload (no rendering) for the count
     shown, floor = _apply_floor(items, min_score)
-
+    add_style, out_style = _bucket_btn_styles(in_bucket)
     return (
         _summary_text(items, shown, start, end, floor),
-        per_card(badge_slots, pmid, _flag_badge(flag)),
-        per_card(remove_slots, pmid, _remove_btn_style(True)),
+        per_card(badge_slots, pmid, _flag_badge(flag, in_bucket)),
+        per_card(remove_slots, pmid, _remove_btn_style(flag is not None, in_bucket)),
         per_card(error_slots, pmid, ""),   # clear this card's error on success
+        per_card(add_slots, pmid, add_style),
+        per_card(out_slots, pmid, out_style),
     )
-
-
-@callback(
-    Output({"type": "bucket-msg", "pmid": ALL}, "children"),
-    Input({"type": "bucket-add", "pmid": ALL}, "n_clicks"),
-    prevent_initial_call=True,
-)
-def cb_bucket_add(n_clicks_list):
-    """One click, one attachment, no discovery loop: the paper's latest flag lands in the
-    Levels Bucket (db_interface.attach_to_accumulator creates it on first use). The message
-    echoes the running count -- the count is the entire interface, no threshold."""
-    triggered = ctx.triggered_id
-    if not triggered or not any(n for n in n_clicks_list if n):
-        return [no_update] * len(n_clicks_list)
-    pmid = triggered["pmid"]
-    conn = db_interface.get_connection()
-    try:
-        status, count = db_interface.attach_to_accumulator(
-            conn, LEVELS_BUCKET_NAME, pmid, description=LEVELS_BUCKET_DESCRIPTION)
-    finally:
-        conn.close()
-    msg = {
-        "attached": f"in. {LEVELS_BUCKET_NAME}: {count} papers.",
-        "already": f"already in ({count} papers).",
-        "no_flag": "flag it first -- save a score, then add it.",
-        "closed": f"the bucket was closed after {count} papers; just flag normally now.",
-    }[status]
-    return [msg if out["id"]["pmid"] == pmid else no_update
-            for out in ctx.outputs_list]
 
 
 @callback(

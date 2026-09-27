@@ -48,6 +48,7 @@ import uuid
 from datetime import date, datetime, timezone
 
 from litcurator.config import (
+    LEVELS_BUCKET_DESCRIPTION,
     LEVELS_BUCKET_NAME,
     LITCURATOR_DB,
     LOCKED_TEST_END,
@@ -985,9 +986,10 @@ def latest_curation(conn, start=None, end=None):
 # Flags (append-only numeric corrections)
 # ---------------------------------------------------------------------------
 
-def insert_flag(conn, evaluation_id, user_score, note=None):
+def insert_flag(conn, evaluation_id, user_score, note=None, commit=True):
     """Record the user's numeric flag against a specific evaluation. judge_score is
-    snapshotted from that evaluation; delta = user_score - judge_score. Returns id."""
+    snapshotted from that evaluation; delta = user_score - judge_score. Returns id.
+    commit=False lets add_to_levels_bucket write the flag and its bucket link together."""
     ev = conn.execute("SELECT pmid, score FROM evaluations WHERE id = ?",
                       (evaluation_id,)).fetchone()
     if ev is None:
@@ -999,8 +1001,17 @@ def insert_flag(conn, evaluation_id, user_score, note=None):
             (evaluation_id, pmid, judge_score, user_score, delta, note)
         VALUES (?, ?, ?, ?, ?, ?)
     """, (evaluation_id, ev["pmid"], judge_score, user_score, delta, note))
-    conn.commit()
+    if commit:
+        conn.commit()
     return cur.lastrowid
+
+
+def get_latest_flag(conn, pmid):
+    """The paper's newest flag as a dict, or None if it was never flagged. Same ordering as
+    get_flags, so "newest" means the same thing everywhere."""
+    row = conn.execute("SELECT id FROM flags WHERE pmid = ? ORDER BY flagged_at DESC, id DESC "
+                       "LIMIT 1", (pmid,)).fetchone()
+    return get_flag(conn, row["id"]) if row else None
 
 
 def get_flag(conn, flag_id):
@@ -1418,56 +1429,57 @@ def get_closed_recurrences(conn):
 
 
 # ---------------------------------------------------------------------------
-# Accumulator patterns (the review feed's Levels Bucket button)
+# The Levels Bucket (see config.LEVELS_BUCKET_NAME)
 # ---------------------------------------------------------------------------
 
-def attach_to_accumulator(conn, name, pmid, description=None):
-    """Attach a paper's LATEST flag to the named accumulator pattern, creating the pattern
-    (open, so its flags leave the unattached pool and stop re-clustering every round) on
-    first use, with `description` stored on it. The human tally path: review-time certainty
-    recorded directly, no discovery loop. Writes carry no analysis_run_id -- the human
-    signature, which is also what makes these attachments invisible to undo_error_analysis.
+def levels_bucket_pmids(conn):
+    """Every paper in the Levels Bucket, whichever version of its flag is linked."""
+    return {r["pmid"] for r in conn.execute(
+        "SELECT DISTINCT f.pmid FROM pattern_flags pf "
+        "JOIN flags f ON f.id = pf.flag_id "
+        "JOIN patterns p ON p.id = pf.pattern_id WHERE p.name = ?", (LEVELS_BUCKET_NAME,))}
 
-    Returns (status, paper_count): 'attached' on success, 'already' if this paper is in,
-    'no_flag' if the paper was never flagged (the score is still the human's to give --
-    this button never invents one), 'closed' if the accumulator was incorporated/rejected
-    (the attack happened; new leaks go through normal flagging so they read as recurrence)."""
-    def _count(pattern_id):
-        return conn.execute(
-            "SELECT COUNT(DISTINCT f.pmid) FROM pattern_flags pf "
-            "JOIN flags f ON f.id = pf.flag_id WHERE pf.pattern_id = ?",
-            (pattern_id,)).fetchone()[0]
 
-    rows = conn.execute("SELECT id FROM patterns WHERE name = ? ORDER BY rowid",
-                        (name,)).fetchall()
-    statuses = {p["id"]: p["status"] for p in get_patterns(conn)}
-    open_rows = [r for r in rows if statuses.get(r["id"]) not in CLOSED_STATUSES]
-    if rows and not open_rows:
-        # Every accumulator of this name has been decided -- the attack happened. New leaks
-        # go through normal flagging, where they surface as recurrence rather than tally.
-        return "closed", _count(rows[-1]["id"])
-    pattern = open_rows[0] if open_rows else None
+def add_to_levels_bucket(conn, evaluation_id, user_score, note=None):
+    """Save the user's score and note STRAIGHT INTO the Levels Bucket. The flag and its
+    link to the bucket are committed together, so the paper is never an ordinary flag in
+    error_analysis's pool, not even for a moment. Creates the bucket on first use; adding a
+    paper already in it saves a newer version there. No analysis_run_id (the human
+    signature), so undo_error_analysis cannot touch it. Returns (flag_id, paper_count)."""
+    flag_id = insert_flag(conn, evaluation_id, user_score, note, commit=False)
+    bucket = conn.execute("SELECT id FROM patterns WHERE name = ? ORDER BY rowid DESC LIMIT 1",
+                          (LEVELS_BUCKET_NAME,)).fetchone()
+    if bucket is None:
+        # direction is a placeholder the schema requires; nothing reads it for the bucket.
+        create_pattern(conn, name=LEVELS_BUCKET_NAME, direction="over",
+                       description=LEVELS_BUCKET_DESCRIPTION, flag_ids=[flag_id],
+                       note="created from the review feed")
+    else:
+        attach_flags_to_pattern(conn, bucket["id"], [flag_id])
+    return flag_id, len(levels_bucket_pmids(conn))
 
-    flag = conn.execute(
-        "SELECT id FROM flags WHERE pmid = ? ORDER BY id DESC LIMIT 1", (pmid,)).fetchone()
-    if flag is None:
-        return "no_flag", _count(pattern["id"]) if pattern else 0
 
-    if pattern is None:
-        # direction is a placeholder the schema requires. Nothing reads it: an accumulator is
-        # not a pattern, and get_active_patterns keeps the Levels Bucket off every pattern list.
-        pid = create_pattern(
-            conn, name=name, direction="over", description=description,
-            flag_ids=[flag["id"]], note="accumulator created from the review feed")
-        return "attached", _count(pid)
+def remove_from_levels_bucket(conn, pmid):
+    """Take a paper back out, for mis-clicks and regrets. Deletes only the bucket's links to
+    this paper: every score and note stays in `flags`, and the newest becomes an ordinary
+    flag in error_analysis's pool again. Nothing else reads these links. Returns the count."""
+    conn.execute("DELETE FROM pattern_flags "
+                 "WHERE pattern_id IN (SELECT id FROM patterns WHERE name = ?) "
+                 "AND flag_id IN (SELECT id FROM flags WHERE pmid = ?)",
+                 (LEVELS_BUCKET_NAME, pmid))
+    conn.commit()
+    return len(levels_bucket_pmids(conn))
 
-    already = conn.execute(
-        "SELECT 1 FROM pattern_flags pf JOIN flags f ON f.id = pf.flag_id "
-        "WHERE pf.pattern_id = ? AND f.pmid = ?", (pattern["id"], pmid)).fetchone()
-    if already:
-        return "already", _count(pattern["id"])
-    attach_flags_to_pattern(conn, pattern["id"], [flag["id"]])
-    return "attached", _count(pattern["id"])
+
+def save_flag(conn, evaluation_id, user_score, note=None):
+    """The review feed's Save. A paper already in the Levels Bucket stays there: its new
+    version goes into the bucket, so re-saving can never leak it back into error_analysis's
+    pool. Returns (flag_id, in_bucket)."""
+    ev = conn.execute("SELECT pmid FROM evaluations WHERE id = ?", (evaluation_id,)).fetchone()
+    if ev is not None and ev["pmid"] in levels_bucket_pmids(conn):
+        flag_id, _count = add_to_levels_bucket(conn, evaluation_id, user_score, note)
+        return flag_id, True
+    return insert_flag(conn, evaluation_id, user_score, note), False
 
 
 # ---------------------------------------------------------------------------
