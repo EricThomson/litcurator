@@ -2,9 +2,9 @@
 # litcurator 
 An LLM-based literature filter. 
 
-Litcurator works in two stages. First, retrieve publications from PubMed within your field of interest. Then, use an LLM (armed with a description of your specific interests) to narrow them down to a final curated list. 
+After retrieving publications from PubMed within your field of interest (e.g., neuroscience), it applies a two-stage LLM-based filter. A *coarse* filter coarse filter narrows things down within your field (e.g., systems neuroscience). The second finer-grained filter uses a specific user profile to extract papers with higher precision (e.g., somatosensory processing). 
 
-Initial focus is on systems neuroscience. 
+Initial focus is on systems neuroscience, but litcurator should work for any field (with a little kneading). 
 
 ## API Keys Needed
 For this to work you need some API keys that you should store in `.env`:
@@ -12,6 +12,7 @@ For this to work you need some API keys that you should store in `.env`:
 - An API key for an LLM vendor (I'm currently using anthropic). 
 
 ## Status
-- Major refactor with error analysis.  
-- Run 2025 simulation with labeled data to see how it works.  
+- Running 2025 benchmark trial to compare results to ground truth labeled dataset. 
+- Then will go live to see how we do. 
+
 
