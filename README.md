@@ -2,9 +2,9 @@
 # litcurator 
 An LLM-based literature filter. 
 
-After retrieving publications from PubMed within your field of interest (e.g., neuroscience), it applies a two-stage LLM-based filter. A *coarse* filter coarse filter narrows things down within your field (e.g., systems neuroscience). The second finer-grained filter uses a specific user profile to extract papers with higher precision (e.g., somatosensory processing). 
+After retrieving publications from PubMed within your field of interest (e.g., neuroscience), it applies a two-stage LLM-based filter. A *coarse* filter narrows things down within your field (e.g., systems neuroscience). The second finer-grained filter uses a user profile to extract papers with higher precision (e.g., somatosensory processing). 
 
-Initial focus is on systems neuroscience, but litcurator should work for any field (with a little kneading). 
+Initial focus is on systems neuroscience, but with a little kneading, litcurator should work for any field. 
 
 ## API Keys Needed
 For this to work you need some API keys that you should store in `.env`:
