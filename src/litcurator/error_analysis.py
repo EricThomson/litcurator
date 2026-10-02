@@ -133,7 +133,7 @@ MIN_FLAGS = 10
 # prompt/analysis_prompt.md in your data directory, which is versioned and content-addressed
 # exactly like your profile and your judge prompt. These constants exist only to seed that file
 # the first time. Editing them changes nothing for an existing install -- edit the active prompt
-# in the analysis prompt lab (it has a Set ACTIVE button) or the file itself.
+# in `litcurator analysis_workbench` or the file itself.
 #
 # They are MINIMAL on purpose, and the split is deliberate: the prose carries only what the
 # machinery cannot enforce for itself. The four choices, the two directions and the required
@@ -162,7 +162,7 @@ def _require_prompt(prompt, which):
         return prompt
     raise ValueError(
         f"No {which} prompt. litcurator ships no default -- author one and set it active "
-        f"(the analysis prompt lab has a Set ACTIVE button), or pass prompt= explicitly. "
+        f"(`litcurator analysis_workbench` edits and sets it), or pass prompt= explicitly. "
         f"The active prompt lives at prompt/analysis_prompt.md in your data directory.")
 
 # ---------------------------------------------------------------------------
@@ -1066,7 +1066,8 @@ def _summary_line(summary):
 def suggest_edits(start=None, end=None,
                   cluster_model=DEFAULT_CLUSTER_MODEL, consolidate_model=DEFAULT_CONSOLIDATE_MODEL,
                   persist=True, shuffle_seed=None, include_attached=False,
-                  reuse_clusters=None, best_of=None, pick_model=None):
+                  reuse_clusters=None, best_of=None, pick_model=None,
+                  analysis_prompt_text=None):
     """Cluster the UNATTACHED (not-yet-patterned) flags in [start, end], consolidate each
     candidate against the pattern memory, and RECORD every real one (new / merge into an
     open pattern / recurs against a closed pattern).
@@ -1091,13 +1092,22 @@ def suggest_edits(start=None, end=None,
     best_of = BEST_OF_RUNS if best_of is None else best_of
     if best_of < 1:
         raise ValueError(f"best_of must be at least 1, got {best_of}")
+    if analysis_prompt_text is not None and persist:
+        raise ValueError(
+            "a draft analysis prompt is a preview and cannot be recorded: patterns minted under "
+            "wording that was never set active would point at a prompt that never ran for real. "
+            "Preview it as a dry run, or set it active first.")
     if include_attached and persist:
         raise ValueError(
             "include_attached is a comparison mode and cannot be recorded: clustering flags that "
             "are already attached would mint duplicate patterns over the same papers. Re-run with "
             "--dry-run.")
     seed_text = profile_interface.load_active()
-    analysis_prompt = analysis_prompt_interface.load_active()
+    # A DRAFT, from the analysis workbench's preview: the counterfactual pipeline.run already
+    # offers for scoring. The preview runs this real pipeline rather than a private copy of it,
+    # which is the copy the old sandbox lab kept and which drifted. Recording one is refused above.
+    analysis_prompt = (analysis_prompt_text if analysis_prompt_text is not None
+                       else analysis_prompt_interface.load_active())
     cluster_prompt, consolidate_prompt = analysis_prompt_interface.split(analysis_prompt)
     # The OTHER judge artifact. Consolidate needs both to answer `blame` -- see
     # run_consolidate_step. Cluster deliberately does NOT get it: its job is recall from the
@@ -1210,7 +1220,8 @@ def suggest_edits(start=None, end=None,
             if best_of > 1:
                 print(f"  -> {path.name}  (${total:.4f})")
 
-        winner, verdict, pick_cost, by_label = _pick_winner(rounds, start, end, pick_model)
+        winner, verdict, pick_cost, by_label = _pick_winner(rounds, start, end, pick_model,
+                                                            consolidate_prompt)
         round_cost += pick_cost
 
         # A round the picker calls bad is the one case where recording it anyway would ignore
@@ -1293,7 +1304,7 @@ def _cluster_for_round(client, papers_block, n, seed_text, model, prompt, reuse_
     return clusters, cost
 
 
-def _pick_winner(rounds, start, end, pick_model):
+def _pick_winner(rounds, start, end, pick_model, consolidate_prompt):
     """(winner_path, verdict, cost). With one round there is nothing to pick, so no pick prompt
     is needed and nothing is spent -- which is what keeps BEST_OF_RUNS=1 usable before anyone
     has authored one."""
@@ -1303,8 +1314,11 @@ def _pick_winner(rounds, start, end, pick_model):
     from litcurator import consolidation_picker
     print(f"\n=== Picking among {len(rounds)} rounds ===")
     kwargs = {"model": pick_model} if pick_model else {}
+    # The consolidate text these rounds RAN, not whatever is active, so a draft's rounds are
+    # graded against the draft's own standard.
     verdict, presented, cost = consolidation_picker.pick_best(
-        [p for p, _ in rounds], start=start, end=end, **kwargs)
+        [p for p, _ in rounds], start=start, end=end, consolidate_prompt=consolidate_prompt,
+        **kwargs)
     by_label = {label: path for label, path, _ in presented}
     winner = by_label[verdict["ranking"][0]]
     print("Presented as: " + ", ".join(f"{lb}={p.name}" for lb, p, _ in presented))

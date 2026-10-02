@@ -127,6 +127,7 @@ FREE_GATES = {
     "undo-stage": ("undo_stage", _run_named),
     "sinkhole-stage": ("sinkhole_stage", _run_named),
     "blame-stage": ("blame_stage", _run_named),
+    "analysis-workbench": ("analysis_workbench_actions", _run_named),
 }
 
 

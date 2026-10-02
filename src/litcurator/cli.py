@@ -6,7 +6,7 @@ cli.py -- litcurator command line.
     litcurator review
 
 Thin dispatch over the pipeline (run), DB summaries (status), the Dash apps (review,
-judge_workbench, the labelers), the offline error_analysis
+judge_workbench, analysis_workbench, the labelers), the offline error_analysis
 suggester, and the two harnesses: judge_harness for the judge, analysis_harness for the
 error-analysis machinery. Each subcommand is a thin wrapper over its module.
 """
@@ -438,6 +438,11 @@ def _cmd_judge_workbench(args):
     judge_workbench.run_app()
 
 
+def _cmd_analysis_workbench(args):
+    from litcurator.apps import analysis_workbench
+    analysis_workbench.run_app()
+
+
 def _cmd_judge_harness(args):
     from pathlib import Path
     from litcurator import judge_harness, pipeline
@@ -697,6 +702,11 @@ def main():
     pw_p = sub.add_parser("judge_workbench",
                            help="launch the judge workbench (review patterns, edit the profile, set active)")
     pw_p.set_defaults(func=_cmd_judge_workbench)
+
+    aw_p = sub.add_parser("analysis_workbench",
+                           help="launch the analysis workbench (edit the cluster and consolidate "
+                                "prompts, preview a draft on your flags)")
+    aw_p.set_defaults(func=_cmd_analysis_workbench)
 
 
     jh_p = sub.add_parser("judge_harness",
