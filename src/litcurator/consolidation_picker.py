@@ -151,14 +151,9 @@ def _build_message(profile_text, papers_block, memory_block, rounds, consolidate
     return "\n\n---\n\n".join(parts)
 
 
-def pick_best(report_paths, start=None, end=None, model=PICKER_MODEL, seed=None,
-              consolidate_prompt=None):
+def pick_best(report_paths, start=None, end=None, model=PICKER_MODEL, seed=None):
     """Returns (verdict, rounds, cost). `rounds` is the label -> filename mapping, held here
-    and never sent to the model. `consolidate_prompt` is the standard the rounds are graded
-    against: error_analysis passes the text the rounds actually ran (a draft, in a workbench
-    preview); left out, it is today's active section, which is right for reports on disk."""
-    if consolidate_prompt is None:
-        consolidate_prompt = _active_consolidate_prompt()
+    and never sent to the model."""
     report_paths = _expand(report_paths)
     if len(report_paths) < 2:
         raise ValueError("give at least two reports -- there is nothing to pick between.")
@@ -184,7 +179,8 @@ def pick_best(report_paths, start=None, end=None, model=PICKER_MODEL, seed=None,
         system=pick_prompt,
         messages=[{"role": "user",
                    "content": _build_message(profile_interface.load_active(), papers_block,
-                                             memory, rounds, consolidate_prompt)}],
+                                             memory, rounds,
+                                             _active_consolidate_prompt())}],
         # Structured output, not the forced tool-use consolidate uses: same JSON guarantee and
         # it composes with the adaptive thinking Opus 5 runs by default. No temperature -- it
         # is removed on Opus 5 and sending one is a 400.

@@ -9,15 +9,14 @@ overwriting a live prompt while reporting green.
 
 The promises checked: a tab's Set Active changes only its own section; a refusal writes nothing;
 a saved version is a whole runnable prompt that loads back per tab; the two tabs' autosaves do
-not collide; the shared editor's buttons route each tab to its own section; and the preview runs
-the real error_analysis on the drafts on screen, never recording them.
+not collide; and the shared editor's buttons route each tab to its own section.
 """
 
 import contextlib
 import shutil
 
 from litcurator import analysis_prompt_interface as API
-from litcurator import db_interface as DB, error_analysis as PA
+from litcurator import db_interface as DB
 from litcurator.apps import artifact_editor as AE
 
 from .. import machinery as M
@@ -136,38 +135,10 @@ def test_the_shared_buttons_route_each_tab():
         print("Set Active, a refusal, Save version and Load all routed to the clicked tab")
 
 
-def test_the_preview_runs_the_real_pipeline_on_the_drafts():
-    with _world() as (aw, _conn):
-        calls = []
-        real = aw.error_analysis.suggest_edits
-        aw.error_analysis.suggest_edits = lambda **kw: calls.append(kw)   # returns None
-        try:
-            aw.cb_preview(1, "draft CLUSTER", "draft CONSOLIDATE", "2025-01-01", "2025-01-15")
-            aw.cb_preview(1, f"bad\n{API.CLUSTER_MARKER}", "draft CONSOLIDATE", None, None)
-        finally:
-            aw.error_analysis.suggest_edits = real
-        assert len(calls) == 1, f"{len(calls)} runs; the marker-carrying draft must not run"
-        kw = calls[0]
-        assert kw["analysis_prompt_text"] == API.compose("draft CLUSTER", "draft CONSOLIDATE")
-        assert kw["persist"] is False and kw["best_of"] == aw.PREVIEW_ROUNDS, kw
-        assert (kw["start"], kw["end"]) == ("2025-01-01", "2025-01-15"), kw
-        print("the preview sends both tabs' drafts to suggest_edits as a dry run")
-
-
-def test_recording_a_draft_is_refused():
-    try:
-        PA.suggest_edits(persist=True, analysis_prompt_text="a draft")
-        raise AssertionError("suggest_edits recorded a round from a draft prompt")
-    except ValueError:
-        print("suggest_edits refuses to record a round run on a draft")
-
-
 CHECKS = [
     test_a_tab_sets_only_its_own_section,
     test_refusals_write_nothing,
     test_a_saved_version_is_whole_and_loads_back_per_tab,
     test_the_two_autosaves_do_not_collide,
     test_the_shared_buttons_route_each_tab,
-    test_the_preview_runs_the_real_pipeline_on_the_drafts,
-    test_recording_a_draft_is_refused,
 ]
