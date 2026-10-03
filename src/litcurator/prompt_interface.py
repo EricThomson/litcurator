@@ -19,11 +19,11 @@ Layout under PROMPT_DIR:
     versions/_autosave.md            the workbench crash-safety draft
 """
 
-import hashlib
 from datetime import datetime
 from pathlib import Path
 
 from litcurator.config import JUDGE_PROMPT_PATH, PROMPT_DIR
+from litcurator.content_address import content_address, short_id
 
 VERSIONS_DIR = PROMPT_DIR / "versions"
 AUTOSAVE_PATH = VERSIONS_DIR / "_autosave.md"
@@ -106,7 +106,7 @@ def set_active(text, notes=None):
     current = None
     if JUDGE_PROMPT_PATH.exists():
         current = JUDGE_PROMPT_PATH.read_text(encoding="utf-8", errors="replace")
-        parent_id = hashlib.sha256(current.encode("utf-8")).hexdigest()
+        parent_id = content_address(current)
         VERSIONS_DIR.mkdir(parents=True, exist_ok=True)
         backup = VERSIONS_DIR / f"_pre_active_{_ts()}.md"
         backup.write_text(current, encoding="utf-8")
@@ -187,17 +187,8 @@ def load_autosave():
 # Version identity (for stamping / display)
 # ---------------------------------------------------------------------------
 
-def content_hash(text):
-    """Short display id for a prompt's content: the 12-char prefix of its SHA256, so
-    it lines up with the DB content-address (prompts.id = SHA256(content)). Mirrors
-    profile_interface.content_hash and judge._fingerprint. Display only; the
-    load-bearing provenance is the full sha256 judge_prompt_hash on each scoring_run,
-    not this short form."""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
-
-
 def active_version_id():
-    """content_hash of the active prompt, or None if there is none."""
+    """short_id of the active prompt, or None if there is none."""
     if not JUDGE_PROMPT_PATH.exists():
         return None
-    return content_hash(read_active_or_empty())
+    return short_id(read_active_or_empty())

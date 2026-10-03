@@ -10,17 +10,10 @@ Failures come first and carry their interpretation. Empty sections are omitted e
 clean run has no failure headers at all.
 """
 
-import hashlib
 import re
 from datetime import datetime
 
 from litcurator import config
-
-def fingerprint(text):
-    """The 12-char content address of a prompt, so an archived report says exactly which text
-    produced it. Same scheme as the profile and prompt ids in the database."""
-    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:12]
-
 
 def _ascii(text):
     """Model-written pattern names can carry glyphs a cp1252 console cannot print."""

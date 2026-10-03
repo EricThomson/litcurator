@@ -1,8 +1,8 @@
 """
 Domain-specific configuration for litcurator.
 
-To adapt this tool for a different field, update JOURNALS, NEURO_KEYWORD, and the
-DOMAIN_FILTER_PROMPT_* prompts in this file. The rest of the pipeline (retrieve,
+To adapt this tool for a different field, update JOURNALS, NEURO_KEYWORD, and
+DOMAIN_FILTER_PROMPT_TITLE in this file. The rest of the pipeline (retrieve,
 storage, domain filter, judge) is domain-agnostic.
 """
 
@@ -52,6 +52,64 @@ LABELING_QUEUE_FILE = DATA_DIR / "labeling_queue.json"
 
 DOMAIN_THRESHOLD = 0.5          # stage 1: domain-filter score at-or-above this advances to the judge
 SCORE_THRESHOLD = 0.5           # stage 2: judge score at-or-above this surfaces in the reading list
+
+# ---------------------------------------------------------------------------
+# Models and prices
+# ---------------------------------------------------------------------------
+# Every model litcurator calls is chosen here. Runs are stamped with their model, so changing
+# one mints new runs beside the old ones instead of overwriting them.
+#
+# NOT YET, by decision (2026-10-03): the newest models (Fable, Opus 5.5, Sonnet 5.5) run refusal
+# classifiers with a `bio` category, and every paper here is biology. False refusals have been
+# common; wait for that to settle before trying one. Fable is also twice Opus's price, with no
+# clear gain over Opus seen yet.
+
+DOMAIN_FILTER_MODEL = "claude-haiku-4-5-20251001"   # stage 1: cheap, reads every retrieved title
+JUDGE_MODEL = "claude-sonnet-4-6"                    # stage 2: scores against profile + judge prompt
+
+# error_analysis. Consolidate stays Sonnet: Opus 5 was tried on 2026-08-30 and was not better,
+# at about 40% more cost.
+CLUSTER_MODEL = "claude-sonnet-4-6"
+CONSOLIDATE_MODEL = "claude-sonnet-4-6"
+
+# Picks the best of the BEST_OF_RUNS rounds. Opus 5 because the only evidence this task is
+# doable is an Opus session doing it on two real rounds and naming the exact causes. About
+# $0.07 more per round than Sonnet.
+PICKER_MODEL = "claude-opus-5"
+
+# The judge workbench chat: a Sonnet thinking partner for the profile (Opus pads prose and adds
+# vocabulary the user did not write), a bounded Opus critic for the judge prompt.
+WORKBENCH_PROFILE_CHAT_MODEL = "claude-sonnet-4-6"
+WORKBENCH_PROMPT_CRITIC_MODEL = "claude-opus-4-8"
+
+# (dollars per million input tokens, dollars per million output tokens): Anthropic's list
+# prices, checked 2026-10-03. Every cost litcurator records comes from this table.
+MODEL_PRICES_PER_MILLION_TOKENS = {
+    "claude-opus-5": (5.0, 25.0),
+    "claude-opus-4-8": (5.0, 25.0),
+    "claude-opus-4-7": (5.0, 25.0),
+    "claude-opus-4-6": (5.0, 25.0),
+    "claude-sonnet-5": (2.0, 10.0),
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-haiku-4-5": (1.0, 5.0),
+    "claude-haiku-4-5-20251001": (1.0, 5.0),
+}
+
+_unpriced_models = {DOMAIN_FILTER_MODEL, JUDGE_MODEL, CLUSTER_MODEL, CONSOLIDATE_MODEL,
+                    PICKER_MODEL, WORKBENCH_PROFILE_CHAT_MODEL,
+                    WORKBENCH_PROMPT_CRITIC_MODEL} - MODEL_PRICES_PER_MILLION_TOKENS.keys()
+if _unpriced_models:
+    raise ValueError(f"{sorted(_unpriced_models)} missing from MODEL_PRICES_PER_MILLION_TOKENS; "
+                     "add the price, or every cost recorded for that model is wrong")
+
+
+def api_cost_usd(model, usage):
+    """Dollar cost of one API response, from its usage. A model missing from the table (a
+    --model override, say) is priced as Sonnet 4.6, which under-reports every Opus-tier model:
+    add its row rather than trust the fallback."""
+    input_price, output_price = MODEL_PRICES_PER_MILLION_TOKENS.get(
+        model, MODEL_PRICES_PER_MILLION_TOKENS["claude-sonnet-4-6"])
+    return (usage.input_tokens * input_price + usage.output_tokens * output_price) / 1_000_000
 
 # ---------------------------------------------------------------------------
 # Locked test set
@@ -169,7 +227,7 @@ JOURNALS = [
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Stage 1: Domain filter prompts
+# Stage 1: Domain filter prompt
 # ---------------------------------------------------------------------------
 
 DOMAIN_FILTER_PROMPT_TITLE = """
@@ -199,44 +257,6 @@ More broadly, molecular terminology in a title does not preclude systems-level c
 AI and machine learning papers that address neuroscience questions -- such as learning rules, memory consolidation, neural coding, or computational models of brain function -- should score high. This includes theoretical ML work that informs our understanding of how biological neural systems work.
 
 When in doubt, score higher rather than lower. This is meant to be a quick screen, not a final filter. The goal is to not miss out on articles, so false positives are better than false negatives for this stage. But also bear in mind that mere mention of a behavioral assay does not make a paper systems neuroscience if the primary story is molecular or cellular.
-
-Return a JSON object with two fields: "score" (a number between 0.0 and 1.0) and "reasoning" (one sentence explaining your score).
-""".strip()
-
-DOMAIN_FILTER_PROMPT_ABSTRACT = """
-You are a neuroscience literature filter. Your job is to assess whether a
-paper's primary focus is at the level of neural systems and behavior.
-
-Score each abstract from 0.0 to 1.0:
-- 1.0 = primary focus is clearly circuits, systems, behavior, or cognition
-        (including computational work targeting these levels)
-- 0.0 = primary focus is clearly molecular, cellular, or subcellular
-        (ion channels, receptors, gene expression, etc.)
-- 0.5 = mixed or ambiguous
-
-Ask: what is the primary system of interest? If it is the immune system,
-cardiovascular system, metabolism, reproduction, or other non-neural organ
-systems -- score low, even if neural pathways are mentioned. If the paper primarily focuses on the
-the nervous system itself, or behavior, score accordingly.
-
-Computational methods, electrophysiology, and optical imaging tools developed
-specifically for systems and behavioral neuroscience should score high, even
-if the contribution is methodological. This includes in vivo recording tools
-such as genetically encoded voltage indicators and calcium sensors.
-
-Theoretical, conceptual, and review articles on systems neuroscience topics
-should score high even without empirical data.
-
-Synaptic plasticity -- the strengthening and weakening of synaptic connections,
-including LTP and LTD -- is a core systems neuroscience topic and should score
-higher even when the framing is mechanistic.
-
-AI and machine learning papers that address neuroscience questions 
--- neural coding, computational models of brain function, memory, plasticity -- should score high. This includes theoretical ML work that
-informs our understanding of biological neural systems.
-
-When in doubt, score higher. False positives are better than false negatives
-at this stage.
 
 Return a JSON object with two fields: "score" (a number between 0.0 and 1.0) and "reasoning" (one sentence explaining your score).
 """.strip()

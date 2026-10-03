@@ -23,12 +23,10 @@ from dotenv import load_dotenv
 
 from litcurator import (analysis_prompt_interface, db_interface, pick_prompt_interface,
                         error_analysis as PA, profile_interface)
+from litcurator.config import PICKER_MODEL, api_cost_usd
+from litcurator.content_address import short_id
 
 load_dotenv()
-
-# Opus 5: the only evidence this task is doable is an Opus session doing it on two of these
-# rounds and naming the exact causes. ~$0.07 more per round than Sonnet.
-PICKER_MODEL = "claude-opus-5"
 
 LABELS = "ABCDEFGH"
 
@@ -187,7 +185,7 @@ def pick_best(report_paths, start=None, end=None, model=PICKER_MODEL, seed=None)
         output_config={"format": {"type": "json_schema", "schema": _VERDICT_SCHEMA}},
     )
     text = next(b.text for b in response.content if b.type == "text")
-    return json.loads(text), rounds, PA._cost(model, response.usage)
+    return json.loads(text), rounds, api_cost_usd(model, response.usage)
 
 
 def write_verdict(verdict, rounds, cost, model, out_dir=None):
@@ -196,12 +194,12 @@ def write_verdict(verdict, rounds, cost, model, out_dir=None):
     out_dir.mkdir(parents=True, exist_ok=True)
     by_label = {label: path for label, path, _ in rounds}
     winner = verdict["ranking"][0]
-    prompt_hash = pick_prompt_interface.content_hash(pick_prompt_interface.load_active())
+    prompt_hash = short_id(pick_prompt_interface.load_active())
 
     lines = [
         "# Pick verdict\n",
         f"model: {model}  |  pick prompt: {prompt_hash}  |  graded against consolidate "
-        f"prompt: {analysis_prompt_interface.content_hash(_active_consolidate_prompt())}  |  "
+        f"prompt: {short_id(_active_consolidate_prompt())}  |  "
         f"cost: ${cost:.4f}  |  {datetime.now():%Y-%m-%d %H:%M:%S}\n",
         f"WINNER: {pathlib.Path(by_label[winner]).name}\n",
     ]

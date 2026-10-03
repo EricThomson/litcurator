@@ -6,14 +6,13 @@ set_active, no autosave, no version list. Version history happens on USE instead
 snapshot_active archives the file by content hash when the picker runs, which a hand-edited
 file cannot bypass the way a Save hook can.
 
-Not registered in the prompts table: nothing JOINs back to it. content_hash is sha256[:12],
-the same address the DB uses, so the hash stamped in a verdict is the id the row would have
-had if that ever changes.
+Not registered in the prompts table: nothing JOINs back to it. Its short id is the same
+content address the DB uses, so the id stamped in a verdict is the one the row would have had
+if that ever changes.
 """
 
-import hashlib
-
 from litcurator.config import PROMPT_DIR
+from litcurator.content_address import short_id
 
 PICK_PROMPT_PATH = PROMPT_DIR / "pick_prompt.md"
 VERSIONS_DIR = PROMPT_DIR / "versions"
@@ -32,16 +31,10 @@ def load_active():
     return PICK_PROMPT_PATH.read_text(encoding="utf-8", errors="replace")
 
 
-def content_hash(text):
-    """Short id: sha256[:12], matching the DB content-address. Use this, never a fresh
-    hashlib call -- mixed hash schemes are a bug this project has already had once."""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
-
-
 def snapshot_active(text):
     """Archive this prompt under versions/, keyed by content hash. No-ops if unchanged."""
     VERSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    path = VERSIONS_DIR / f"pick_prompt_{content_hash(text)}.md"
+    path = VERSIONS_DIR / f"pick_prompt_{short_id(text)}.md"
     if not path.exists():
         path.write_text(text, encoding="utf-8")
     return path

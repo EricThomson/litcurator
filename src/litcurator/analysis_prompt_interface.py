@@ -32,11 +32,11 @@ task and is on the long-term list -- a mediocre one would silently shape every p
 machinery ever produces.
 """
 
-import hashlib
 from datetime import datetime
 from pathlib import Path
 
 from litcurator.config import ANALYSIS_PROMPT_PATH, PROMPT_DIR
+from litcurator.content_address import content_address, short_id
 
 VERSIONS_DIR = PROMPT_DIR / "versions"
 
@@ -160,7 +160,7 @@ def set_active(text, notes=None):
     current = None
     if ANALYSIS_PROMPT_PATH.exists():
         current = ANALYSIS_PROMPT_PATH.read_text(encoding="utf-8", errors="replace")
-        parent_id = hashlib.sha256(current.encode("utf-8")).hexdigest()
+        parent_id = content_address(current)
         VERSIONS_DIR.mkdir(parents=True, exist_ok=True)
         backup = VERSIONS_DIR / f"_pre_active_analysis_{_ts()}.md"
         backup.write_text(current, encoding="utf-8")
@@ -216,18 +216,11 @@ def read_version(path):
 # Version identity (for stamping / display)
 # ---------------------------------------------------------------------------
 
-def content_hash(text):
-    """Short display id: the 12-char prefix of SHA256, lining up with the DB content-address
-    (prompts.id = SHA256(content)). Display only; the load-bearing provenance is the full
-    sha256 analysis_prompt_id on each analysis_run."""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
-
-
 def active_version_id():
-    """content_hash of the active prompt, or None if there is none."""
+    """short_id of the active prompt, or None if there is none."""
     if not ANALYSIS_PROMPT_PATH.exists():
         return None
-    return content_hash(read_active_or_empty())
+    return short_id(read_active_or_empty())
 
 
 # ---------------------------------------------------------------------------

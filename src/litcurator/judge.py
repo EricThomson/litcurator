@@ -1,35 +1,21 @@
 """
-judge.py -- the curation judge (v4, profile-only).
+judge.py -- stage 2, the curation judge.
 
-The judge reads a paper's title, abstract, and journal and estimates the
-user's interest given their user profile alone. No card intermediary, no
-precedents.
+The judge reads a paper's title, abstract, journal and page range, with the active profile and
+the active judge prompt, and estimates the user's interest in it.
 """
 
-import hashlib
 import json
-import os
 import time
 
 import anthropic
 from dotenv import load_dotenv
 
+from litcurator.config import JUDGE_MODEL, api_cost_usd
+from litcurator.content_address import short_id
+
 load_dotenv()
 
-MODEL = "claude-sonnet-4-6"
-
-
-def _fingerprint(text):
-    """Short display id of a prompt: the 12-char prefix of its SHA256, so it lines up
-    with the DB content-address (prompts.id = SHA256(content)); mirrors
-    profile_interface.content_hash. Attached to a judgment dict for display; the
-    persisted provenance is the full sha256 judge_prompt_hash on the scoring_run."""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
-
-# Must track MODEL. Sonnet 4.6 is 3/15; Opus 4.8 is 15/75; Haiku 4.5 is 1/5. A
-# stale pair here makes scoring_runs.cost_usd silently wrong by 5x.
-COST_PER_M_INPUT = 3.0
-COST_PER_M_OUTPUT = 15.0
 
 VALID_SURFACE_DECISION = {"surface", "maybe", "do_not_surface"}
 
@@ -116,7 +102,7 @@ def _require_prompt(system_prompt):
 
 
 def _client():
-    return anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    return anthropic.Anthropic()
 
 
 def _article_to_text(title, abstract, journal, pages=None):
@@ -161,7 +147,7 @@ def _judge_call(system_prompt, user_message, max_tokens, parse):
         response = None
         try:
             response = _client().messages.create(
-                model=MODEL,
+                model=JUDGE_MODEL,
                 max_tokens=max_tokens,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_message}],
@@ -171,8 +157,7 @@ def _judge_call(system_prompt, user_message, max_tokens, parse):
 
         if response is not None:
             usage = response.usage
-            total_cost += (usage.input_tokens * COST_PER_M_INPUT
-                           + usage.output_tokens * COST_PER_M_OUTPUT) / 1_000_000
+            total_cost += api_cost_usd(JUDGE_MODEL, usage)
             raw = response.content[0].text.strip() if response.content else ""
             if not raw:
                 last_error = ValueError("empty response from judge")
@@ -210,8 +195,8 @@ def judge_article(title, abstract, journal, profile_text, pages=None, system_pro
         return judgment
 
     judgment, usage, cost = _judge_call(system_prompt, user_message, 700, parse)
-    judgment["judge_prompt_version"] = _fingerprint(system_prompt)
-    judgment["judge_model"] = MODEL
+    judgment["judge_prompt_version"] = short_id(system_prompt)
+    judgment["judge_model"] = JUDGE_MODEL
     return judgment, usage, cost
 
 
@@ -248,8 +233,8 @@ def judge_articles_batch(items, profile_text, system_prompt=None):
             raise ValueError(f"Expected {len(items)} judgments, got {len(judgments)}")
         for j in judgments:
             _validate(j)
-            j["judge_prompt_version"] = _fingerprint(system_prompt)
-            j["judge_model"] = MODEL
+            j["judge_prompt_version"] = short_id(system_prompt)
+            j["judge_model"] = JUDGE_MODEL
         return judgments
 
     judgments, _usage, total_cost = _judge_call(batch_prompt, user_message, len(items) * 700, parse)

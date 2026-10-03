@@ -32,7 +32,6 @@ Run:
     python src/litcurator/apps/judge_workbench.py
 """
 
-import os
 
 import anthropic
 import dash_bootstrap_components as dbc
@@ -44,20 +43,18 @@ from dotenv import load_dotenv
 from litcurator import db_interface, profile_interface, prompt_interface
 from litcurator.apps import artifact_editor
 from litcurator.apps.artifact_editor import aid
-from litcurator.config import LEVELS_BUCKET_DESCRIPTION
+from litcurator.config import (LEVELS_BUCKET_DESCRIPTION, WORKBENCH_PROFILE_CHAT_MODEL,
+                               WORKBENCH_PROMPT_CRITIC_MODEL)
 
 load_dotenv()
-
-CHAT_MODEL = "claude-sonnet-4-6"          # profile: a thinking PARTNER
-CRITIC_MODEL = "claude-opus-4-8"          # judge prompt: a bounded CRITIC
 
 # The chat is the one place the two artifacts genuinely differ, so it is the one place
 # with an explicit branch. Editing taste prose and critiquing a scoring procedure are
 # different jobs with different models -- a doctrine split predating the merge, carried
 # across unchanged rather than harmonised into a single bland assistant.
 _CHAT_CONFIG = {
-    "profile": {"model": CHAT_MODEL, "max_tokens": 1200},
-    "prompt": {"model": CRITIC_MODEL, "max_tokens": 1500},
+    "profile": {"model": WORKBENCH_PROFILE_CHAT_MODEL, "max_tokens": 1200},
+    "prompt": {"model": WORKBENCH_PROMPT_CRITIC_MODEL, "max_tokens": 1500},
 }
 
 DIRECTIONS = list(db_interface.DIRECTIONS)
@@ -673,7 +670,7 @@ def cb_chat_send(_n, user_text, history, artifact, drafts):
                   if s["id"]["artifact"] == artifact), "")
     history = list(history or [])
     history.append({"role": "user", "content": user_text.strip()})
-    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    client = anthropic.Anthropic()
     cfg = _CHAT_CONFIG[artifact]
     system = (_prompt_critic_system if artifact == "prompt" else _chat_system)(
         _interface(artifact).read_active_or_empty(), draft or "")

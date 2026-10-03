@@ -12,11 +12,12 @@ error-analysis machinery. Each subcommand is a thin wrapper over its module.
 """
 
 import argparse
-import hashlib
 from datetime import datetime, timezone
 
 from litcurator import pipeline, db_interface, profile_interface, prompt_interface
-from litcurator.config import BEST_OF_RUNS, DOMAIN_THRESHOLD, SCORE_THRESHOLD
+from litcurator.content_address import content_address
+from litcurator.config import (BEST_OF_RUNS, CLUSTER_MODEL, CONSOLIDATE_MODEL,
+                               DOMAIN_THRESHOLD, PICKER_MODEL, SCORE_THRESHOLD)
 
 
 def _cmd_run(args):
@@ -157,7 +158,7 @@ def _print_profiles(conn):
         return
     active_id = None
     if profile_interface.exists():
-        active_id = hashlib.sha256(profile_interface.load_active().encode("utf-8")).hexdigest()
+        active_id = content_address(profile_interface.load_active())
     print(f"\nprofiles ({len(profs)}, oldest first):")
     for p in profs:
         tags = []
@@ -220,7 +221,7 @@ def _cmd_pick_best(args):
     comparing reports that were never part of one round."""
     from litcurator import consolidation_picker
 
-    model = args.model or consolidation_picker.PICKER_MODEL
+    model = args.model or PICKER_MODEL
     verdict, rounds, cost = consolidation_picker.pick_best(
         args.reports, start=args.start, end=args.end, model=model, seed=args.seed)
     by_label = {label: path for label, path, _ in rounds}
@@ -321,8 +322,8 @@ def _cmd_promote_suggestions(args):
         run_id = db_interface.create_analysis_run(
             conn,
             analysis_prompt_id,
-            error_analysis.DEFAULT_CLUSTER_MODEL,
-            error_analysis.DEFAULT_CONSOLIDATE_MODEL,
+            CLUSTER_MODEL,
+            CONSOLIDATE_MODEL,
             profile_id=profile_id,
             date_start=args.start, date_end=args.end, n_flags=n_now, cost_usd=0.0,
             judge_prompt_id=judge_prompt_id,
@@ -461,7 +462,7 @@ def _cmd_judge_harness(args):
         print("\n" + judge_harness.format_report(results, prompt_fp, profile_fp))
         print("\n" + judge_harness.verdict_line(results))
         return
-    # The harness scores under whatever judge.MODEL is -- say so before spending.
+    # The harness scores under whatever JUDGE_MODEL is -- say so before spending.
     pipeline.print_model_banner(benchmark=True)
     prompt_text = Path(args.prompt).read_text(encoding="utf-8") if args.prompt else None
     profile_text = Path(args.profile).read_text(encoding="utf-8") if args.profile else None
@@ -514,8 +515,8 @@ def _cmd_analysis_harness(args):
         raise SystemExit(0 if ok else 2)
 
     if any(g not in AH.FREE_GATES for g in gates):
-        print(f"models: cluster={AH.PA.DEFAULT_CLUSTER_MODEL}  "
-              f"consolidate={AH.PA.DEFAULT_CONSOLIDATE_MODEL}", flush=True)
+        print(f"models: cluster={CLUSTER_MODEL}  consolidate={CONSOLIDATE_MODEL}",
+              flush=True)
     results, cluster_fp, consolidate_fp = AH.run_gates(
         gates, cluster_prompt=cluster_prompt, consolidate_prompt=consolidate_prompt,
         progress=lambda gate, done, total: print(f"  [{done}/{total}] {gate}", flush=True))

@@ -46,7 +46,7 @@ def _world():
     ordered = sorted(DB.get_flags(conn, exclude_attached=True),
                      key=lambda f: (-abs(f["delta"]), f["id"]))
     try:
-        run1 = _record(conn, profile_id, [
+        _record(conn, profile_id, [
             _new("A", [1, 2]),
             _new("B", [3]),
         ], ordered)

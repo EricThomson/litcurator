@@ -57,12 +57,14 @@ import os
 import time
 import traceback
 
-from litcurator import analysis_prompt_interface, error_analysis as PA
+from litcurator import analysis_prompt_interface
+from litcurator.config import CLUSTER_MODEL, CONSOLIDATE_MODEL
+from litcurator.content_address import short_id
 
 from .gates_llm import COLD_CACHE_GATES, PAID_GATES
 from .gates_no_llm import FREE_GATES, run_free_gate
 from .machinery import GateContext
-from .report import (fingerprint, format_all_checks, format_report, format_transcripts, quick,
+from .report import (format_all_checks, format_report, format_transcripts, quick,
                      verdict_line, write_report)
 
 # Every gate in the order it should run: free first, then by layer. A red free gate stops the
@@ -173,7 +175,7 @@ def run_gates(gates=None, cluster_prompt=None, consolidate_prompt=None,
     if gates is None:
         gates = select_gates()
     cluster_text, consolidate_text = resolve_prompts(cluster_prompt, consolidate_prompt)
-    cluster_fp, consolidate_fp = fingerprint(cluster_text), fingerprint(consolidate_text)
+    cluster_fp, consolidate_fp = short_id(cluster_text), short_id(consolidate_text)
 
     ctx = None
     results = []
@@ -201,9 +203,9 @@ def run_gates(gates=None, cluster_prompt=None, consolidate_prompt=None,
         layer, run, when_red, _calls = PAID_GATES[name]
         if ctx is None:
             ctx = GateContext(
-                client=anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY")),
-                cluster_model=cluster_model or PA.DEFAULT_CLUSTER_MODEL,
-                consolidate_model=consolidate_model or PA.DEFAULT_CONSOLIDATE_MODEL,
+                client=anthropic.Anthropic(),
+                cluster_model=cluster_model or CLUSTER_MODEL,
+                consolidate_model=consolidate_model or CONSOLIDATE_MODEL,
                 cluster_prompt=cluster_text, consolidate_prompt=consolidate_text,
                 use_cache=use_cache)
         started = time.time()
@@ -250,10 +252,9 @@ def dry_run(gates=None, cluster_prompt=None, consolidate_prompt=None):
     cluster_text, consolidate_text = resolve_prompts(cluster_prompt, consolidate_prompt)
     calls, n_free = budget(gates)
     out = ["ANALYSIS HARNESS -- dry run (nothing runs, nothing is spent)",
-           f"cluster prompt      {fingerprint(cluster_text)}",
-           f"consolidate prompt  {fingerprint(consolidate_text)}",
-           f"models              cluster={PA.DEFAULT_CLUSTER_MODEL}  "
-           f"consolidate={PA.DEFAULT_CONSOLIDATE_MODEL}",
+           f"cluster prompt      {short_id(cluster_text)}",
+           f"consolidate prompt  {short_id(consolidate_text)}",
+           f"models              cluster={CLUSTER_MODEL}  consolidate={CONSOLIDATE_MODEL}",
            "", "preconditions"]
     checks = preconditions()
     for ok, what, detail in checks:

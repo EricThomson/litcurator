@@ -20,7 +20,6 @@ preconditions and nothing to clean up but one scratch file.
     python -m litcurator.analysis_harness.gates_no_llm.round_grader
 """
 
-from collections import Counter
 
 from litcurator import db_interface as DB, error_analysis as PA
 

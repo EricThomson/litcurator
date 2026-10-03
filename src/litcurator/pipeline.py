@@ -19,12 +19,13 @@ plotting -- is built on top of what this produces and lives in other modules
 (the dashes, error_analysis). This module ends at the judge.
 """
 
-import hashlib
 import time
 
 from litcurator import (retrieve, domain_filter, judge, db_interface,
                         profile_interface, prompt_interface)
-from litcurator.config import DOMAIN_THRESHOLD, LOCKED_TEST_START, LOCKED_TEST_END
+from litcurator.content_address import content_address
+from litcurator.config import (DOMAIN_FILTER_MODEL, DOMAIN_THRESHOLD, JUDGE_MODEL,
+                               LOCKED_TEST_END, LOCKED_TEST_START, api_cost_usd)
 
 JUDGE_BATCH_SIZE = 5
 
@@ -43,11 +44,11 @@ def print_model_banner(benchmark=False):
     see is not a stamp you check. This is that fix.
     """
     print("+" + "-" * 64 + "+")
-    print(f"|  JUDGE (curation):  {judge.MODEL.upper():<42} |")
+    print(f"|  JUDGE (curation):  {JUDGE_MODEL.upper():<42} |")
     if benchmark:
         print(f"|  DOMAIN FILTER:     {'SKIPPED (benchmark mode)':<42} |")
     else:
-        print(f"|  DOMAIN FILTER:     {domain_filter.DOMAIN_FILTER_MODEL.upper():<42} |")
+        print(f"|  DOMAIN FILTER:     {DOMAIN_FILTER_MODEL.upper():<42} |")
     print("+" + "-" * 64 + "+")
 
 
@@ -134,9 +135,9 @@ def _domain_stage(conn, start, end, mode, threshold):
     # Stamp + key the domain run on its prompt too (the title prompt is the one this
     # stage uses), so a domain-prompt change mints a new run instead of silently
     # resuming the old one -- same provenance guarantee as the curation stage.
-    prompt_hash = hashlib.sha256(domain_filter.DOMAIN_FILTER_PROMPT_TITLE.encode("utf-8")).hexdigest()
+    prompt_hash = content_address(domain_filter.DOMAIN_FILTER_PROMPT_TITLE)
     run_id = db_interface.find_or_create_scoring_run(
-        conn, "domain", domain_filter.DOMAIN_FILTER_MODEL, mode,
+        conn, "domain", DOMAIN_FILTER_MODEL, mode,
         judge_prompt_hash=prompt_hash,
         date_start=start, date_end=end, threshold=threshold)
     todo = db_interface.unevaluated_in_run(conn, run_id, [a["pmid"] for a in candidates])
@@ -150,11 +151,10 @@ def _domain_stage(conn, start, end, mode, threshold):
     cost = 0.0
     for batch_pmids in _chunks(todo, domain_filter.BATCH_SIZE_TITLE):
         batch = [by_pmid[p] for p in batch_pmids]
-        results, usage = domain_filter.score_domain_batch(batch, mode="title")
+        results, usage = domain_filter.score_domain_batch(batch)
         in_tok += usage.input_tokens
         out_tok += usage.output_tokens
-        cost += (usage.input_tokens * domain_filter.DOMAIN_FILTER_COST_PER_M_INPUT
-                 + usage.output_tokens * domain_filter.DOMAIN_FILTER_COST_PER_M_OUTPUT) / 1_000_000
+        cost += api_cost_usd(DOMAIN_FILTER_MODEL, usage)
         for art, (score, reasoning) in zip(batch, results):
             db_interface.insert_evaluation(conn, art["pmid"], run_id, score, rationale=reasoning)
     db_interface.complete_scoring_run(conn, run_id, in_tok, out_tok, cost)
@@ -204,7 +204,7 @@ def _judge_stage(conn, survivors, profile_text, profile_id, mode,
     system_prompt = prompt_text if prompt_text is not None else prompt_interface.load_active()
     prompt_id = db_interface.get_or_create_prompt(conn, system_prompt)
     run_id = db_interface.find_or_create_scoring_run(
-        conn, "curation", judge.MODEL, mode, profile_id=profile_id,
+        conn, "curation", JUDGE_MODEL, mode, profile_id=profile_id,
         judge_prompt_hash=prompt_id,
         date_start=start, date_end=end, threshold=threshold)
     todo = db_interface.unevaluated_in_run(conn, run_id, [a["pmid"] for a in survivors])

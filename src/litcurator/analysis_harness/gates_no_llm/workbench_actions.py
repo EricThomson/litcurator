@@ -51,6 +51,7 @@ control in sandbox/workbench_actions_negative_control/, which is what those are 
 import contextlib
 
 from litcurator import config, db_interface as DB, profile_interface, prompt_interface
+from litcurator.content_address import content_address
 
 from .. import machinery as M
 
@@ -283,8 +284,8 @@ def test_incorporate_stamps_the_currently_active_profile():
     the pattern, the flags and the papers that produced it. A NULL stamp, or the scenario's
     original profile, breaks the chain silently and there is no way to repair it later."""
     with _world() as (conn, wb, pids):
-        expected = DB._sha256(ACTIVE_PROFILE)
-        scenario_id = DB._sha256(SCENARIO_PROFILE)
+        expected = content_address(ACTIVE_PROFILE)
+        scenario_id = content_address(SCENARIO_PROFILE)
 
         _click_fate(wb, pids, pids[0], "pat-incorporate")
 
@@ -453,7 +454,7 @@ def test_events_accumulate_and_the_latest_decision_wins():
         ev = _events(conn, pids[0])
         assert [e["event"] for e in ev] == ["created", "held", "held", "incorporated"], ev
         assert _status(conn, pids[0]) == "incorporated"
-        assert ev[-1]["profile_id"] == DB._sha256(ACTIVE_PROFILE)
+        assert ev[-1]["profile_id"] == content_address(ACTIVE_PROFILE)
         print("fate: decisions append and never overwrite; status is the latest one")
 
 
@@ -555,7 +556,7 @@ def test_incorporate_saves_the_draft_before_stamping_it():
 
         assert wb.profile_interface.set_active_calls == [edited],             f"the draft was not saved: {wb.profile_interface.set_active_calls}"
         stamp = _events(conn, pids[0])[-1]["profile_id"]
-        assert stamp == DB._sha256(edited), "stamped a version that predates the edit"
+        assert stamp == content_address(edited), "stamped a version that predates the edit"
         assert DB.get_profile(conn, stamp)["content"] == edited
         print("incorporate: saves the draft, then stamps the version containing it")
 
@@ -582,7 +583,7 @@ def test_incorporate_with_an_unchanged_draft_mints_no_version():
         _click_fate(wb, pids, pids[0], "pat-incorporate", drafts={"profile": ACTIVE_PROFILE})
 
         assert wb.profile_interface.set_active_calls == [], "rewrote an unchanged artifact"
-        assert _events(conn, pids[0])[-1]["profile_id"] == DB._sha256(ACTIVE_PROFILE)
+        assert _events(conn, pids[0])[-1]["profile_id"] == content_address(ACTIVE_PROFILE)
         print("unchanged draft: no write, still stamped the active version")
 
 

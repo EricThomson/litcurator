@@ -39,7 +39,6 @@ MedlineDate freetext). insert_articles normalizes the best available date into a
 sortable pub_date_iso, so a date window selects with a plain BETWEEN.
 """
 
-import hashlib
 import json
 import random
 import re
@@ -47,6 +46,7 @@ import sqlite3
 import uuid
 from datetime import date, datetime, timezone
 
+from litcurator.content_address import content_address
 from litcurator.config import (
     LEVELS_BUCKET_DESCRIPTION,
     LEVELS_BUCKET_NAME,
@@ -567,10 +567,6 @@ def _utcnow():
     return datetime.now(timezone.utc).isoformat()
 
 
-def _sha256(text):
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
 # ---------------------------------------------------------------------------
 # Date normalization
 # ---------------------------------------------------------------------------
@@ -720,7 +716,7 @@ def set_article_pages(conn, pmid, pages):
 def get_or_create_profile(conn, content, parent_id=None, notes=None):
     """Snapshot a profile. id = SHA256(content); identical content returns the
     existing id (no duplicate row). Returns the profile id."""
-    profile_id = _sha256(content)
+    profile_id = content_address(content)
     existing = conn.execute("SELECT id FROM profiles WHERE id = ?", (profile_id,)).fetchone()
     if not existing:
         conn.execute(
@@ -792,7 +788,7 @@ def get_or_create_prompt(conn, content, parent_id=None, notes=None, kind="judge"
     NULL with a loud warning: the new version is always recorded, the break is visible when it
     happens rather than months later, and versions/ still holds what is needed to repair the
     link."""
-    prompt_id = _sha256(content)
+    prompt_id = content_address(content)
     existing = conn.execute("SELECT id FROM prompts WHERE id = ?", (prompt_id,)).fetchone()
     if not existing:
         if parent_id and not conn.execute(

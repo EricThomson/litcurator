@@ -36,7 +36,6 @@ markdown report to ~/.litcurator/suggestions/. See starry-brewing-horizon.md.
 """
 
 import copy
-import os
 import pathlib
 import random
 import re
@@ -48,16 +47,11 @@ from dotenv import load_dotenv
 
 from litcurator import (analysis_prompt_interface, db_interface, pick_prompt_interface,
                         profile_interface, prompt_interface)
-from litcurator.config import BEST_OF_RUNS, DATA_DIR, MAX_ACT_NOW
+from litcurator.content_address import short_id
+from litcurator.config import (BEST_OF_RUNS, CLUSTER_MODEL, CONSOLIDATE_MODEL, DATA_DIR,
+                               MAX_ACT_NOW, api_cost_usd)
 
 load_dotenv()
-
-# Both stages are Sonnet. Recall is Sonnet's strength (crisp, broad generation).
-# Consolidate is structured tagging with NO prose authorship, so Opus's documented
-# prose-padding liability does not apply and Sonnet is ~5x cheaper; keep Opus as a
-# drop-in fallback only if the duplicate rate on real data proves poor.
-DEFAULT_CLUSTER_MODEL = "claude-sonnet-4-6"
-DEFAULT_CONSOLIDATE_MODEL = "claude-sonnet-4-6"
 
 # Re-exported, NOT redefined. db_interface owns the vocabulary; this name stays because it
 # reads better at the clamp below and because callers already import it. Until 2026-08-16 it
@@ -67,27 +61,6 @@ VALID_DIRECTIONS = db_interface.DIRECTIONS
 
 # Rendered once for the status subquery below; db_interface owns the vocabulary.
 _DECISIONS = ", ".join(f"'{e}'" for e in db_interface.DECISION_EVENTS)
-
-# Approximate API prices, ($/M input, $/M output). Update if pricing changes.
-#
-# CORRECTED 2026-08-30: claude-opus-4-8 was listed at (15.0, 75.0), three times its actual
-# price. Nothing used Opus, so the error was invisible -- until the first Opus consolidate run
-# would have reported a cost near triple the truth, on the one number you would use to decide
-# whether the upgrade is affordable. Verified against the Anthropic pricing table.
-# NOT LISTED, DELIBERATELY: claude-fable-5. It refuses biology content -- `refusal` is a real
-# stop reason with a `bio` category -- and every paper this system reads is neuroscience. Working
-# around it means server-side fallbacks, which is machinery added to accommodate a model that
-# should not be in this loop. Opus is the ceiling here.
-MODEL_COSTS = {
-    "claude-opus-5": (5.0, 25.0),
-    "claude-opus-4-8": (5.0, 25.0),
-    "claude-opus-4-7": (5.0, 25.0),
-    "claude-opus-4-6": (5.0, 25.0),
-    "claude-sonnet-5": (2.0, 10.0),
-    "claude-sonnet-4-6": (3.0, 15.0),
-    "claude-haiku-4-5": (1.0, 5.0),
-    "claude-haiku-4-5-20251001": (1.0, 5.0),
-}
 
 SUGGESTIONS_DIR = DATA_DIR / "suggestions"
 
@@ -288,13 +261,6 @@ def _format_existing_patterns(active, closed_patterns, examples=None, held=()):
 # LLM calls
 # ---------------------------------------------------------------------------
 
-def _cost(model, usage):
-    # An unlisted model is priced as Sonnet 4.6, which UNDER-reports every Opus-tier model.
-    # Add the row rather than trusting the fallback when trying a new one.
-    cin, cout = MODEL_COSTS.get(model, (3.0, 15.0))
-    return (usage.input_tokens * cin + usage.output_tokens * cout) / 1_000_000
-
-
 def _echo(text):
     """Print a streamed chunk to the console without ever crashing on a character the
     console encoding cannot represent (Windows cp1252 vs the model's unicode minus /
@@ -325,7 +291,7 @@ def _stream(client, model, system, user_msg, max_tokens, echo=True):
         final = stream.get_final_message()
     if echo:
         print()
-    return "".join(parts), _cost(model, final.usage)
+    return "".join(parts), api_cost_usd(model, final.usage)
 
 
 def _consolidate_tool(has_memory):
@@ -589,7 +555,7 @@ def run_consolidate_step(client, clusters_text, seed_text, existing_block, model
         for m in malformed:
             print(f"  WARNING: consolidate emitted a non-object candidate, dropping it: {m!r}")
         candidates = [c for c in candidates if isinstance(c, dict)]
-    return candidates, _cost(model, resp.usage)
+    return candidates, api_cost_usd(model, resp.usage)
 
 
 # THE SIGN SPLIT: BUILT AND REVERTED, 2026-09-22. Code that split mixed-sign candidates by the
@@ -1064,7 +1030,7 @@ def _summary_line(summary):
 
 
 def suggest_edits(start=None, end=None,
-                  cluster_model=DEFAULT_CLUSTER_MODEL, consolidate_model=DEFAULT_CONSOLIDATE_MODEL,
+                  cluster_model=CLUSTER_MODEL, consolidate_model=CONSOLIDATE_MODEL,
                   persist=True, shuffle_seed=None, include_attached=False,
                   reuse_clusters=None, best_of=None, pick_model=None):
     """Cluster the UNATTACHED (not-yet-patterned) flags in [start, end], consolidate each
@@ -1109,9 +1075,9 @@ def suggest_edits(start=None, end=None,
     # round to artifacts it never ran under. The report is meant to be self-contained; this is
     # the same argument that stopped merge targets being truncated to 12 chars.
     report_stamps = {
-        "analysis prompt": analysis_prompt_interface.content_hash(analysis_prompt),
-        "profile": profile_interface.content_hash(seed_text),
-        "judge prompt": prompt_interface.content_hash(judge_prompt_text),
+        "analysis prompt": short_id(analysis_prompt),
+        "profile": short_id(seed_text),
+        "judge prompt": short_id(judge_prompt_text),
     }
 
     conn = db_interface.get_connection()
@@ -1156,7 +1122,7 @@ def suggest_edits(start=None, end=None,
               f"{len(held_patterns)} held + {len(closed_patterns)} decided")
         print(f"Models: cluster={cluster_model}  consolidate={consolidate_model}\n")
 
-        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        client = anthropic.Anthropic()
         papers_block, ordered_flags = _format_papers(flags)
 
         # ONE DIRECTORY PER INVOCATION, holding every round it ran plus the verdict. Which
@@ -1246,12 +1212,12 @@ def suggest_edits(start=None, end=None,
             print("\nNOT RECORDED: the picker judged every round weak. Read them and, if you "
                   "disagree, record one with `litcurator promote_suggestions`.")
         else:
-            print(f"\n[dry run: nothing recorded]")
+            print("\n[dry run: nothing recorded]")
 
         out = _write_round_verdict(round_dir, rounds, winner, verdict, summary,
                                    round_cost, persist and not blocked, by_label,
                                    stamps=report_stamps,
-                                   pick_stamp=(pick_prompt_interface.content_hash(
+                                   pick_stamp=(short_id(
                                        pick_prompt_interface.load_active())
                                        if by_label else None))
     finally:
@@ -1347,7 +1313,7 @@ def _write_round_verdict(round_dir, rounds, winner, verdict, summary, cost, reco
     Always written, one round or several: the round directory should say what happened without
     anyone reconstructing it from timestamps. It is the outcome record, which is why the run
     reports no longer carry a recording summary in their own headers."""
-    lines = [f"# Round verdict\n", f"{datetime.now():%Y-%m-%d %H:%M:%S}  |  "
+    lines = ["# Round verdict\n", f"{datetime.now():%Y-%m-%d %H:%M:%S}  |  "
              f"{len(rounds)} round(s)  |  total cost: ${cost:.4f}\n"]
     # Every artifact this round read, the PICK prompt included -- it is the only one not known
     # until the rounds are done, which is why it lands here rather than in the run headers.

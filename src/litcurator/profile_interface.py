@@ -14,11 +14,11 @@ Layout under PROFILE_DIR:
     versions/_autosave.md            the workbench crash-safety draft
 """
 
-import hashlib
 from datetime import datetime
 from pathlib import Path
 
 from litcurator.config import PROFILE_DIR, USER_PROFILE_PATH
+from litcurator.content_address import content_address, short_id
 
 VERSIONS_DIR = PROFILE_DIR / "versions"
 AUTOSAVE_PATH = VERSIONS_DIR / "_autosave.md"
@@ -82,7 +82,7 @@ def set_active(text):
     parent_id = None
     if USER_PROFILE_PATH.exists():
         current = USER_PROFILE_PATH.read_text(encoding="utf-8", errors="replace")
-        parent_id = hashlib.sha256(current.encode("utf-8")).hexdigest()
+        parent_id = content_address(current)
         VERSIONS_DIR.mkdir(parents=True, exist_ok=True)
         backup = VERSIONS_DIR / f"_pre_active_{_ts()}.md"
         backup.write_text(current, encoding="utf-8")
@@ -154,16 +154,8 @@ def load_autosave():
 # Version identity (for stamping judgments)
 # ---------------------------------------------------------------------------
 
-def content_hash(text):
-    """Short display id for a profile's content: the 12-char prefix of its SHA256,
-    so it lines up with the DB content-address (profiles.id = SHA256(content)). Used
-    in the workbench / CLI / reports; the load-bearing provenance is the full sha256
-    profiles.id stamped on each scoring_run, not this short form."""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
-
-
 def active_version_id():
-    """content_hash of the active profile, or None if there is none."""
+    """short_id of the active profile, or None if there is none."""
     if not USER_PROFILE_PATH.exists():
         return None
-    return content_hash(read_active_or_empty())
+    return short_id(read_active_or_empty())

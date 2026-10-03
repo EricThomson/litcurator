@@ -267,7 +267,7 @@ def retrieve_range(date_start, date_end, db_path=None, output_path=None, journal
         pmids = search_pubmed(query)
 
         if not pmids:
-            print(f"  No results.")
+            print("  No results.")
             continue
 
         articles = fetch_articles(pmids)

@@ -28,22 +28,16 @@ Run:
     litcurator judge_harness --quick         # free: re-grade the last saved run's scores
 """
 
-import hashlib
 import json
 import re
 
 from litcurator import config, db_interface, judge, profile_interface, prompt_interface
+from litcurator.content_address import short_id
 
 
 def _ascii(text):
     """Console-safe: the corpus is full of non-cp1252 glyphs (Greek, em-dashes)."""
     return (text or "").encode("ascii", "replace").decode()
-
-
-def _fp(text):
-    # 12-char prefix of SHA256, matching the DB content-address (profiles.id /
-    # prompts.id = SHA256(content)); display only, for the harness report header.
-    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:12]
 
 
 def _chunks(seq, n):
@@ -127,7 +121,7 @@ def run_tests(prompt_text=None, profile_text=None, cases=None, conn=None, progre
                             "rationale": j.get("curation_rationale"),
                             "possible_mismatch": j.get("possible_mismatch"),
                             "error": None})
-        return results, _fp(prompt_text), _fp(profile_text)
+        return results, short_id(prompt_text), short_id(profile_text)
     finally:
         if close:
             conn.close()
@@ -346,8 +340,8 @@ def quick(cases=None, runs_dir=None):
     prompt_fp, profile_fp, scores = read_report(path.read_text(encoding="utf-8"))
     results = regrade(cases if cases is not None else load_cases(), scores)
     warnings = []
-    active_prompt = _fp(prompt_interface.read_active_or_empty())
-    active_profile = _fp(profile_interface.read_active_or_empty())
+    active_prompt = short_id(prompt_interface.read_active_or_empty())
+    active_profile = short_id(profile_interface.read_active_or_empty())
     if prompt_fp != active_prompt:
         warnings.append(f"your active judge prompt ({active_prompt}) is not the one these scores "
                         f"came from ({prompt_fp}), so they say nothing about it")

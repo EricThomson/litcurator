@@ -244,7 +244,6 @@ def check_terminal(expect, pp, patterns, first_surfaced, history,
     dominant_by_pattern = {pid: dominant_intended(c) for pid, c in pp.items()}
     purity_by_pattern = {pid: purity_of(c) for pid, c in pp.items()}
     by_id = {p["id"]: p for p in patterns}
-    direction_of = {p["id"]: p["direction"] for p in patterns}
 
     def patterns_for(label):
         return [pid for pid, d in dominant_by_pattern.items() if d == label]
