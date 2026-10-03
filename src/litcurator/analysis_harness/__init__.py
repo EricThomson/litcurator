@@ -62,7 +62,7 @@ from litcurator import analysis_prompt_interface, error_analysis as PA
 from .gates_llm import COLD_CACHE_GATES, PAID_GATES
 from .gates_no_llm import FREE_GATES, run_free_gate
 from .machinery import GateContext
-from .report import fingerprint, format_report, format_transcripts, write_report
+from .report import fingerprint, format_report, format_transcripts, verdict_line, write_report
 
 # Every gate in the order it should run: free first, then by layer. A red free gate stops the
 # run before anything is spent, which is the advice the docs already give by hand.

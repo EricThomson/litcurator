@@ -135,6 +135,26 @@ def _band(c):
     return f"{c['low']:.2f}-{c['high']:.2f}"
 
 
+def verdict_line(results):
+    """The one line that answers "did everything pass?". It heads the report and the CLI prints
+    it again as the very last line, so the answer never needs scrolling for. Keeps the one split
+    that matters: a failing GUARD means an edit broke something; a failing REGRESSION case is a
+    known problem whose fix has not landed yet."""
+    scored = [r for r in results if r["error"] is None]
+    n_passed = sum(1 for r in scored if r["passed"])
+    broke = sum(1 for r in scored if not r["passed"] and r["kind"] == "guard")
+    known = sum(1 for r in scored if not r["passed"] and r["kind"] == "regression")
+    unscored = len(results) - len(scored)
+    notes = []
+    if broke:
+        notes.append(f"{broke} that should pass failed (something broke)")
+    if known:
+        notes.append(f"{known} known problem{'' if known == 1 else 's'} still unfixed, as expected")
+    if unscored:
+        notes.append(f"{unscored} could not be scored")
+    return f"{n_passed}/{len(results)} TESTS PASSED" + (" -- " + "; ".join(notes) if notes else "")
+
+
 def format_report(results, prompt_fp="", profile_fp=""):
     """Compact plain-text report: failures first, guard/regression split, coverage by
     tag. The judge's reasoning is NOT here -- see format_rationales (appended to the
@@ -147,8 +167,7 @@ def format_report(results, prompt_fp="", profile_fp=""):
     passed = [r for r in scored if r["passed"]]
 
     lines = [f"JUDGE HARNESS -- prompt {prompt_fp} | profile {profile_fp}",
-             f"{len(scored)} scored | {len(passed)} pass, {len(fails)} fail"
-             + (f" | {len(errs)} unresolved" if errs else "")]
+             verdict_line(results)]
 
     def row(r):
         mark = "PASS" if r["passed"] else "FAIL"

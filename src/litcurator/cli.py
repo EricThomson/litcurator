@@ -461,6 +461,7 @@ def _cmd_judge_harness(args):
     print(report)
     path = judge_harness.write_report(report + "\n" + judge_harness.format_rationales(results))
     print(f"\nsaved to {path}")
+    print("\n" + judge_harness.verdict_line(results))   # last, so the answer needs no scrolling
 
 
 def _cmd_analysis_harness(args):
@@ -492,12 +493,11 @@ def _cmd_analysis_harness(args):
 
     report = AH.format_report(results, cluster_fp, consolidate_fp, drafts=drafts)
     print("\n" + report)
-    if len(results) < len(gates):
-        print(f"\nnot spending: {len(gates) - len(results)} paid gates skipped, "
-              f"fix the free gates first")
     path = AH.write_report(report + "\n" + AH.format_transcripts(results),
                            selector=args.gate)
     print(f"\nsaved to {path}")
+    # Last, so the answer needs no scrolling. It also says when paid groups were skipped.
+    print("\n" + AH.verdict_line(results, n_skipped_groups=len(gates) - len(results)))
     raise SystemExit(AH.exit_code(results, gates))
 
 

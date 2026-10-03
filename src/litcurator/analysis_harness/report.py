@@ -31,10 +31,24 @@ def _counts(results):
     return len(checks), sum(1 for ok, _, _ in checks if ok)
 
 
+def verdict_line(results, n_skipped_groups=0):
+    """The one line that answers "did everything pass?". It heads the report and the CLI prints
+    it again as the very last line, so the answer never needs scrolling for. On screen a check is
+    a TEST and a gate is a GROUP of tests -- the user's wording (2026-10-03); "gate" stays the
+    word in the code."""
+    total, passed = _counts(results)
+    line = f"{passed}/{total} TESTS PASSED"
+    failed = [r["name"] + (" (could not run)" if r["error"] else "")
+              for r in results if not r["passed"] or r["error"]]
+    if failed:
+        line += " -- failures in " + ", ".join(failed)
+    if n_skipped_groups:
+        line += f" | {n_skipped_groups} paid groups skipped: fix the failing free tests first"
+    return line
+
+
 def format_report(results, cluster_fp, consolidate_fp, drafts=(), cached=None):
     """The console report. `drafts` names any draft prompt files under test."""
-    total, passed = _counts(results)
-    gates_ok = [r for r in results if r["passed"] and not r["error"]]
     cost = sum(r["cost"] for r in results)
     seconds = sum(r["seconds"] for r in results)
 
@@ -42,8 +56,8 @@ def format_report(results, cluster_fp, consolidate_fp, drafts=(), cached=None):
     if drafts:
         head += "  (DRAFT: " + ", ".join(drafts) + ")"
     out = [head,
-           f"{len(gates_ok)}/{len(results)} gates | {passed}/{total} checks"
-           f" | ${cost:.4f} | {int(seconds // 60)}m{int(seconds % 60):02d}s"]
+           verdict_line(results)
+           + f" | ${cost:.4f} | {int(seconds // 60)}m{int(seconds % 60):02d}s"]
     if cached is not None:
         out.append(f"cluster calls served from cache: {cached}")
 
@@ -57,7 +71,7 @@ def format_report(results, cluster_fp, consolidate_fp, drafts=(), cached=None):
                 continue
             bad = [c for c in r["checks"] if not c[0]]
             out.append(f"\n  [FAIL] {r['name']} (layer {r['layer']}) -- "
-                       f"{sum(1 for c in r['checks'] if c[0])}/{len(r['checks'])} checks")
+                       f"{sum(1 for c in r['checks'] if c[0])}/{len(r['checks'])} tests")
             for _ok, label, detail in bad:
                 out.append(f"    [FAIL] {_ascii(label)}"
                            + (f"  ({_ascii(detail)})" if detail else ""))
