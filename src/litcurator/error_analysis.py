@@ -43,15 +43,12 @@ import sys
 from datetime import datetime
 
 import anthropic
-from dotenv import load_dotenv
 
 from litcurator import (analysis_prompt_interface, db_interface, pick_prompt_interface,
                         profile_interface, prompt_interface)
 from litcurator.content_address import short_id
 from litcurator.config import (BEST_OF_RUNS, CLUSTER_MODEL, CONSOLIDATE_MODEL, DATA_DIR,
                                MAX_ACT_NOW, api_cost_usd)
-
-load_dotenv()
 
 # Re-exported, NOT redefined. db_interface owns the vocabulary; this name stays because it
 # reads better at the clamp below and because callers already import it. Until 2026-08-16 it

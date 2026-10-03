@@ -10,11 +10,8 @@ pipeline.py runs the batches and records the scores.
 import json
 
 import anthropic
-from dotenv import load_dotenv
 
 from litcurator.config import DOMAIN_FILTER_MODEL, DOMAIN_FILTER_PROMPT_TITLE
-
-load_dotenv()
 
 client = anthropic.Anthropic()
 

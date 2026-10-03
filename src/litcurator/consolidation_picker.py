@@ -19,14 +19,11 @@ import random
 from datetime import datetime
 
 import anthropic
-from dotenv import load_dotenv
 
 from litcurator import (analysis_prompt_interface, db_interface, pick_prompt_interface,
                         error_analysis as PA, profile_interface)
 from litcurator.config import PICKER_MODEL, api_cost_usd
 from litcurator.content_address import short_id
-
-load_dotenv()
 
 LABELS = "ABCDEFGH"
 

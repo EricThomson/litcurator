@@ -38,15 +38,12 @@ import dash_bootstrap_components as dbc
 from dash import (ALL, Dash, Input, Output, State, callback, ctx, dcc, html,
                   no_update)
 from dash_resizable_panels import Panel, PanelGroup, PanelResizeHandle
-from dotenv import load_dotenv
 
 from litcurator import db_interface, profile_interface, prompt_interface
 from litcurator.apps import artifact_editor
 from litcurator.apps.artifact_editor import aid
 from litcurator.config import (LEVELS_BUCKET_DESCRIPTION, WORKBENCH_PROFILE_CHAT_MODEL,
                                WORKBENCH_PROMPT_CRITIC_MODEL)
-
-load_dotenv()
 
 # The chat is the one place the two artifacts genuinely differ, so it is the one place
 # with an explicit branch. Editing taste prose and critiquing a scoring procedure are

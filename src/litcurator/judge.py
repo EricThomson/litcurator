@@ -9,12 +9,9 @@ import json
 import time
 
 import anthropic
-from dotenv import load_dotenv
 
 from litcurator.config import JUDGE_MODEL, api_cost_usd
 from litcurator.content_address import short_id
-
-load_dotenv()
 
 
 VALID_SURFACE_DECISION = {"surface", "maybe", "do_not_surface"}

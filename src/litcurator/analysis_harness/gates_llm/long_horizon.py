@@ -17,7 +17,6 @@ Scenarios are registered by name in fixtures/behaviors.py.
 import random
 from collections import Counter, defaultdict
 
-from dotenv import load_dotenv
 
 from litcurator import db_interface as DB
 
@@ -26,8 +25,6 @@ from ..machinery import (scratch_db_path, build_db, add_round_flags, run_round,
                          apply_actions, pattern_intended, patterns_by_flag,
                          dominant_intended, purity_of)
 from ..grading import check_round, check_terminal
-
-load_dotenv()
 
 ENGINE_DB = scratch_db_path("long_horizon")
 

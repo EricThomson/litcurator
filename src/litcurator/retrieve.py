@@ -17,12 +17,9 @@ import xml.etree.ElementTree as ET
 from datetime import date
 
 import requests
-from dotenv import load_dotenv
 
 from litcurator import db_interface
 from litcurator.config import JOURNALS
-
-load_dotenv()
 
 NCBI_API_KEY = os.getenv("NCBI_API_KEY")
 
