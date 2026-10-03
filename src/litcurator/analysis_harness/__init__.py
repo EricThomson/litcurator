@@ -62,26 +62,32 @@ from litcurator import analysis_prompt_interface, error_analysis as PA
 from .gates_llm import COLD_CACHE_GATES, PAID_GATES
 from .gates_no_llm import FREE_GATES, run_free_gate
 from .machinery import GateContext
-from .report import fingerprint, format_report, format_transcripts, verdict_line, write_report
+from .report import (fingerprint, format_all_checks, format_report, format_transcripts, quick,
+                     verdict_line, write_report)
 
 # Every gate in the order it should run: free first, then by layer. A red free gate stops the
 # run before anything is spent, which is the advice the docs already give by hand.
 GATE_ORDER = list(FREE_GATES) + sorted(PAID_GATES, key=lambda n: (PAID_GATES[n][0], n))
 
 
-def select_gates(name=None):
-    """Resolve a gate selector into an ordered list of gate names.
+def select_gates(name=None, free_only=False):
+    """Resolve what was asked for into an ordered list of gate names.
 
-      None    every gate -- about five minutes on a warm cluster cache
-      "quick" the free gates only, a second, spends nothing
-      a name  that one gate
+      free_only  the free gates only (--free), about twenty seconds, spends nothing
+      a name     that one gate
+      neither    every gate -- about five minutes on a warm cluster cache
     """
+    if free_only:
+        return list(FREE_GATES)
     if name is None:
         return list(GATE_ORDER)
     if name == "quick":
-        return list(FREE_GATES)
+        # A positional word until 2026-10-03. Its job (run the free gates) is now --free, and
+        # --quick re-shows the last saved run instantly, exactly like judge_harness --quick.
+        raise KeyError("'quick' has moved: --free runs the free tests, --quick instantly "
+                       "re-shows the last saved run")
     if name not in GATE_ORDER:
-        raise KeyError(f"unknown gate {name!r}. Known: quick, {', '.join(GATE_ORDER)}")
+        raise KeyError(f"unknown gate {name!r}. Known: {', '.join(GATE_ORDER)}")
     return [name]
 
 
@@ -274,5 +280,5 @@ def dry_run(gates=None, cluster_prompt=None, consolidate_prompt=None):
                    f"about a minute each; on a COLD cache (any edit to the cluster prompt OR "
                    f"to the papers-block renderer invalidates every key) it is several "
                    f"minutes each.")
-    out.append("        `litcurator analysis_harness quick` runs the free gates only, 0 calls")
+    out.append("        `litcurator analysis_harness --free` runs the free gates only, 0 calls")
     return "\n".join(out), all(ok for ok, _, _ in checks)

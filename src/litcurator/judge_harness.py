@@ -25,10 +25,12 @@ Run:
     litcurator judge_harness                 # active prompt + active profile
     litcurator judge_harness --prompt draft.md
     litcurator judge_harness --dry-run       # verify the fixture resolves, no scoring
+    litcurator judge_harness --quick         # free: re-grade the last saved run's scores
 """
 
 import hashlib
 import json
+import re
 
 from litcurator import config, db_interface, judge, profile_interface, prompt_interface
 
@@ -48,6 +50,10 @@ def _chunks(seq, n):
     """Yield successive n-sized chunks of seq (mirrors pipeline._chunks)."""
     for i in range(0, len(seq), n):
         yield seq[i:i + n]
+
+
+def _in_band(case, score):
+    return case["low"] <= score <= case["high"]
 
 
 def load_cases(path=None):
@@ -117,7 +123,7 @@ def run_tests(prompt_text=None, profile_text=None, cases=None, conn=None, progre
             j = judged[c["pmid"]]
             score = j["estimated_score"]
             results.append({**c, "title": art["title"], "journal": art["journal"],
-                            "score": score, "passed": c["low"] <= score <= c["high"],
+                            "score": score, "passed": _in_band(c, score),
                             "rationale": j.get("curation_rationale"),
                             "possible_mismatch": j.get("possible_mismatch"),
                             "error": None})
@@ -248,3 +254,104 @@ def dry_run(cases=None, conn=None):
     finally:
         if close:
             conn.close()
+
+
+# ---------------------------------------------------------------------------
+# --quick: re-grade the newest saved report, for free
+# ---------------------------------------------------------------------------
+# Every case here is the judge scoring a paper, so unlike the analysis harness there is no
+# free half to split off. What IS free is re-grading scores already on disk: each saved report
+# carries every paper's score and reasoning, so a changed range in the fixture, or just another
+# look at the output, costs nothing. It cannot tell you anything about an edit to the prompt or
+# the profile, because nothing is re-scored, and it says so at the top.
+
+_HEADER = re.compile(r"^JUDGE HARNESS -- prompt (\S+) \| profile (\S+)", re.M)
+_CASE = re.compile(r"^\[(?:PASS|FAIL)\] (\d+\.\d+)\s+(\S+)\s+(.*)$")
+
+
+def latest_report(runs_dir=None):
+    """The newest saved judge harness report, or None if there is none."""
+    runs_dir = runs_dir or config.JUDGE_HARNESS_RUNS_DIR
+    reports = sorted(runs_dir.glob("judge_harness_*.md")) if runs_dir.exists() else []
+    return reports[-1] if reports else None
+
+
+def read_report(text):
+    """(prompt_fp, profile_fp, {pmid: {score, rationale, possible_mismatch}}) from a saved
+    report. Reads the RATIONALES section that format_rationales writes. Scores come back at the
+    two decimals the report prints them with. A paper that could not be scored in that run is
+    absent from the dict."""
+    header = _HEADER.search(text)
+    if header is None or "RATIONALES" not in text:
+        raise ValueError("not a judge harness report (no header or no RATIONALES section)")
+    scores, current = {}, None
+    for line in text.split("RATIONALES", 1)[1].splitlines():
+        case = _CASE.match(line)
+        if case:
+            current = {"score": float(case.group(1)), "rationale": None,
+                       "possible_mismatch": None}
+            scores[case.group(2)] = current
+        elif current and line.startswith("  rationale: "):
+            current["rationale"] = line[len("  rationale: "):]
+        elif current and line.startswith("  mismatch : "):
+            current["possible_mismatch"] = line[len("  mismatch : "):]
+    return header.group(1), header.group(2), scores
+
+
+def regrade(cases, scores):
+    """Results shaped exactly like run_tests', from saved scores and TODAY's ranges."""
+    results = []
+    for c in cases:
+        saved = scores.get(c["pmid"])
+        if saved is None:
+            results.append({**c, "journal": None, "score": None, "passed": None,
+                            "rationale": None, "possible_mismatch": None,
+                            "error": "not scored in that run"})
+            continue
+        results.append({**c, "journal": None, "score": saved["score"],
+                        "passed": _in_band(c, saved["score"]),
+                        "rationale": saved["rationale"],
+                        "possible_mismatch": saved["possible_mismatch"], "error": None})
+    return results
+
+
+def _reader_matches_writer():
+    """Writes a small report with today's formatter and reads it back, so a change to the
+    report's layout breaks --quick loudly instead of making it misread scores."""
+    cases = [{"pmid": "P1", "low": 0.0, "high": 0.25, "kind": "guard", "tests": ["t"],
+              "title": "one"},
+             {"pmid": "P2", "low": 0.75, "high": 1.0, "kind": "regression", "tests": ["t"],
+              "title": "two"},
+             {"pmid": "P3", "low": 0.0, "high": 0.25, "kind": "guard", "tests": ["t"],
+              "title": "three"}]
+    written = regrade(cases, {"P1": {"score": 0.12, "rationale": "r1", "possible_mismatch": "m1"},
+                              "P2": {"score": 0.62, "rationale": "r2", "possible_mismatch": "m2"}})
+    text = format_report(written, "PROMPTFP", "PROFILEFP") + "\n" + format_rationales(written)
+    prompt_fp, profile_fp, scores = read_report(text)
+    expected = {"P1": {"score": 0.12, "rationale": "r1", "possible_mismatch": "m1"},
+                "P2": {"score": 0.62, "rationale": "r2", "possible_mismatch": "m2"}}
+    if (prompt_fp, profile_fp, scores) != ("PROMPTFP", "PROFILEFP", expected):
+        raise RuntimeError("judge_harness.read_report no longer matches the report format, so "
+                           "--quick would misread scores. Fix read_report to match "
+                           "format_report / format_rationales.")
+
+
+def quick(cases=None, runs_dir=None):
+    """Re-grade the newest saved report against the current fixture. Returns
+    (results, prompt_fp, profile_fp, report_path, warnings). Nothing is scored or saved."""
+    _reader_matches_writer()
+    path = latest_report(runs_dir)
+    if path is None:
+        raise FileNotFoundError("no saved judge harness report yet -- run the real one once")
+    prompt_fp, profile_fp, scores = read_report(path.read_text(encoding="utf-8"))
+    results = regrade(cases if cases is not None else load_cases(), scores)
+    warnings = []
+    active_prompt = _fp(prompt_interface.read_active_or_empty())
+    active_profile = _fp(profile_interface.read_active_or_empty())
+    if prompt_fp != active_prompt:
+        warnings.append(f"your active judge prompt ({active_prompt}) is not the one these scores "
+                        f"came from ({prompt_fp}), so they say nothing about it")
+    if profile_fp != active_profile:
+        warnings.append(f"your active profile ({active_profile}) is not the one these scores came "
+                        f"from ({profile_fp}), so they say nothing about it")
+    return results, prompt_fp, profile_fp, path, warnings

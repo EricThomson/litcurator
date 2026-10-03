@@ -449,6 +449,18 @@ def _cmd_judge_harness(args):
     if args.dry_run:
         print(judge_harness.dry_run())
         return
+    if args.quick:
+        if args.prompt or args.profile:
+            raise SystemExit("--quick re-grades saved scores, so --prompt / --profile would do "
+                             "nothing. Drop them, or run without --quick to score a draft.")
+        results, prompt_fp, profile_fp, source, warnings = judge_harness.quick()
+        print(f"QUICK: re-graded {source.name} against today's fixture. Nothing was re-scored "
+              f"and nothing was saved.")
+        for w in warnings:
+            print(f"WARNING: {w}")
+        print("\n" + judge_harness.format_report(results, prompt_fp, profile_fp))
+        print("\n" + judge_harness.verdict_line(results))
+        return
     # The harness scores under whatever judge.MODEL is -- say so before spending.
     pipeline.print_model_banner(benchmark=True)
     prompt_text = Path(args.prompt).read_text(encoding="utf-8") if args.prompt else None
@@ -467,10 +479,27 @@ def _cmd_judge_harness(args):
 def _cmd_analysis_harness(args):
     from pathlib import Path
     from litcurator import analysis_harness as AH
+    if args.quick:
+        if args.gate or args.free or args.dry_run or args.cluster_prompt or args.consolidate_prompt:
+            raise SystemExit("--quick re-shows the last saved run, so it takes no other options.")
+        path, text, rebuilt = AH.quick()
+        if rebuilt is None:
+            print(f"QUICK: {path.name} was saved before reports kept every check, so here it is "
+                  f"exactly as saved. Your next real run will save the full record.\n")
+            print(text.split("\n" + "=" * 70 + "\nTRANSCRIPTS")[0])
+            return
+        cluster_fp, consolidate_fp, drafts, results = rebuilt
+        print(f"QUICK: re-showing {path.name}. Nothing was run and nothing was saved.")
+        print("\n" + AH.format_report(results, cluster_fp, consolidate_fp, drafts=drafts))
+        print("\n" + AH.verdict_line(results))
+        return
+    if args.free and args.gate:
+        raise SystemExit("--free runs every free test, so a test name as well makes no sense. "
+                         "Use one or the other.")
     try:
-        gates = AH.select_gates(args.gate)
+        gates = AH.select_gates(args.gate, free_only=args.free)
     except KeyError as e:
-        print(e)
+        print(e.args[0])   # str(KeyError) wraps the message in quotes
         raise SystemExit(2)
 
     read = lambda p: Path(p).read_text(encoding="utf-8") if p else None
@@ -493,8 +522,9 @@ def _cmd_analysis_harness(args):
 
     report = AH.format_report(results, cluster_fp, consolidate_fp, drafts=drafts)
     print("\n" + report)
-    path = AH.write_report(report + "\n" + AH.format_transcripts(results),
-                           selector=args.gate)
+    path = AH.write_report(report + "\n" + AH.format_transcripts(results)
+                           + "\n" + AH.format_all_checks(results),
+                           selector="free" if args.free else args.gate)
     print(f"\nsaved to {path}")
     # Last, so the answer needs no scrolling. It also says when paid groups were skipped.
     print("\n" + AH.verdict_line(results, n_skipped_groups=len(gates) - len(results)))
@@ -715,6 +745,9 @@ def main():
                       help="path to a draft prompt to test (default: active prompt on disk)")
     jh_p.add_argument("--profile", default=None,
                       help="path to a draft profile to test (default: active profile on disk)")
+    jh_p.add_argument("--quick", action="store_true",
+                      help="free: re-grade the newest saved report's scores against today's "
+                           "fixture; nothing is re-scored or saved")
     jh_p.add_argument("--dry-run", action="store_true",
                       help="verify the fixture pmids resolve and list cases, without scoring")
     jh_p.set_defaults(func=_cmd_judge_harness)
@@ -722,8 +755,12 @@ def main():
     ah_p = sub.add_parser("analysis_harness",
                            help="run the error-analysis gates (free ones first, then the paid ones)")
     ah_p.add_argument("gate", nargs="?", default=None,
-                      help="'quick' for the free gates only, or one gate by name "
-                           "(default: every gate)")
+                      help="one gate by name (default: every gate)")
+    ah_p.add_argument("--free", action="store_true",
+                      help="run the free tests only: about twenty seconds, spends nothing")
+    ah_p.add_argument("--quick", action="store_true",
+                      help="instant: re-show the last saved run, rebuilt from its record; "
+                           "runs nothing and saves nothing")
     ah_p.add_argument("--cluster-prompt", default=None, metavar="FILE",
                       help="path to a draft cluster prompt to test (default: the live one)")
     ah_p.add_argument("--consolidate-prompt", default=None, metavar="FILE",
