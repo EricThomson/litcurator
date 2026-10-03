@@ -41,12 +41,12 @@ def verdict_line(results, n_skipped_groups=0):
     return line
 
 
-def format_report(results, cluster_fp, consolidate_fp, drafts=(), cached=None):
+def format_report(results, cluster_short_id, consolidate_short_id, drafts=(), cached=None):
     """The console report. `drafts` names any draft prompt files under test."""
     cost = sum(r["cost"] for r in results)
     seconds = sum(r["seconds"] for r in results)
 
-    head = f"ANALYSIS HARNESS -- cluster {cluster_fp} | consolidate {consolidate_fp}"
+    head = f"ANALYSIS HARNESS -- cluster {cluster_short_id} | consolidate {consolidate_short_id}"
     if drafts:
         head += "  (DRAFT: " + ", ".join(drafts) + ")"
     out = [head,
@@ -182,7 +182,7 @@ def format_all_checks(results):
 
 
 def read_report(text):
-    """(cluster_fp, consolidate_fp, drafts, results) rebuilt from a saved report's ALL CHECKS
+    """(cluster_short_id, consolidate_short_id, drafts, results) rebuilt from a saved report's ALL CHECKS
     section, the results shaped like run_gates' minus the transcripts. Raises
     ReportPredatesAllChecks for a report saved before the section existed."""
     header = _HEADER.search(text)
@@ -232,8 +232,8 @@ def _reader_matches_writer():
     text = (format_report(written, "CLUSTERFP", "CONSOLIDATEFP", drafts=("d.md",))
             + "\n" + format_all_checks(written))
     keys = ("name", "layer", "passed", "cost", "seconds", "error", "when_red", "checks")
-    cluster_fp, consolidate_fp, drafts, read = read_report(text)
-    if ((cluster_fp, consolidate_fp, drafts) != ("CLUSTERFP", "CONSOLIDATEFP", ("d.md",))
+    cluster_short_id, consolidate_short_id, drafts, read = read_report(text)
+    if ((cluster_short_id, consolidate_short_id, drafts) != ("CLUSTERFP", "CONSOLIDATEFP", ("d.md",))
             or [{k: r[k] for k in keys} for r in read] != [{k: w[k] for k in keys} for w in written]):
         raise RuntimeError("analysis_harness read_report no longer matches the report format, so "
                            "--quick would misread results. Fix read_report to match "
@@ -250,7 +250,7 @@ def latest_report(runs_dir=None):
 
 def quick(runs_dir=None):
     """(path, text, rebuilt) for the newest saved report. `rebuilt` is read_report's
-    (cluster_fp, consolidate_fp, drafts, results), or None for a report saved before ALL CHECKS
+    (cluster_short_id, consolidate_short_id, drafts, results), or None for a report saved before ALL CHECKS
     existed, which can only be shown as saved. Nothing is run and nothing is saved."""
     _reader_matches_writer()
     path = latest_report(runs_dir)

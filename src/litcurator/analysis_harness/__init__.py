@@ -102,7 +102,7 @@ def resolve_prompts(cluster_prompt=None, consolidate_prompt=None):
     in the process and cannot be nested -- the judge never worked that way (judge_articles_batch
     has always taken system_prompt=), and now neither does this.
 
-    Separate from run_gates because the dry run needs the fingerprints WITHOUT running anything.
+    Separate from run_gates because the dry run needs the short ids WITHOUT running anything.
     It used to get them by calling run_gates([]) purely for the side effect, which spent the
     entire budget: `gates or select_gates()` treats an empty list as "not specified", so the dry
     run silently executed every gate and then printed that nothing had been spent."""
@@ -160,7 +160,7 @@ def _blank(name, layer, **kw):
 
 def run_gates(gates=None, cluster_prompt=None, consolidate_prompt=None,
               cluster_model=None, consolidate_model=None, use_cache=True, progress=None):
-    """Run the selected gates and return (results, cluster_fp, consolidate_fp).
+    """Run the selected gates and return (results, cluster_short_id, consolidate_short_id).
 
     Computes and returns data; prints nothing. A draft prompt is applied in memory for this
     process only -- the draft file and error_analysis.py are both left alone.
@@ -175,7 +175,7 @@ def run_gates(gates=None, cluster_prompt=None, consolidate_prompt=None,
     if gates is None:
         gates = select_gates()
     cluster_text, consolidate_text = resolve_prompts(cluster_prompt, consolidate_prompt)
-    cluster_fp, consolidate_fp = short_id(cluster_text), short_id(consolidate_text)
+    cluster_short_id, consolidate_short_id = short_id(cluster_text), short_id(consolidate_text)
 
     ctx = None
     results = []
@@ -224,7 +224,7 @@ def run_gates(gates=None, cluster_prompt=None, consolidate_prompt=None,
             results.append(_blank(name, layer, error=f"{type(e).__name__}: {e}",
                                   transcript=traceback.format_exc(),
                                   when_red=when_red, seconds=time.time() - started))
-    return results, cluster_fp, consolidate_fp
+    return results, cluster_short_id, consolidate_short_id
 
 
 def exit_code(results, selected=None):
@@ -244,7 +244,7 @@ def exit_code(results, selected=None):
 def dry_run(gates=None, cluster_prompt=None, consolidate_prompt=None):
     """What WOULD run, and whether it could. Returns (text, ok). Spends nothing.
 
-    Takes the draft prompts so the fingerprints answer "did I paste the right path", without
+    Takes the draft prompts so the short ids answer "did I paste the right path", without
     running or mutating anything."""
     from litcurator import config
 
@@ -276,7 +276,7 @@ def dry_run(gates=None, cluster_prompt=None, consolidate_prompt=None):
         # The key is sha256(cluster prompt, papers block, profile, model), so ANY change to
         # how _format_papers renders invalidates it too -- not just a prompt edit. That is
         # easy to forget, because a renderer change is not a prompt change and leaves no
-        # fingerprint in the report.
+        # short id in the report.
         out.append(f"        {', '.join(multi)} run many sessions in sequence. Warm that is "
                    f"about a minute each; on a COLD cache (any edit to the cluster prompt OR "
                    f"to the papers-block renderer invalidates every key) it is several "

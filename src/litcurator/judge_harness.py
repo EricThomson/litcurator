@@ -155,7 +155,7 @@ def verdict_line(results):
     return f"{n_passed}/{len(results)} TESTS PASSED" + (" -- " + "; ".join(notes) if notes else "")
 
 
-def format_report(results, prompt_fp="", profile_fp=""):
+def format_report(results, prompt_short_id="", profile_short_id=""):
     """Compact plain-text report: failures first, guard/regression split, coverage by
     tag. The judge's reasoning is NOT here -- see format_rationales (appended to the
     saved file)."""
@@ -166,7 +166,7 @@ def format_report(results, prompt_fp="", profile_fp=""):
     regr_fails = [r for r in fails if r["kind"] == "regression"]
     passed = [r for r in scored if r["passed"]]
 
-    lines = [f"JUDGE HARNESS -- prompt {prompt_fp} | profile {profile_fp}",
+    lines = [f"JUDGE HARNESS -- prompt {prompt_short_id} | profile {profile_short_id}",
              verdict_line(results)]
 
     def row(r):
@@ -271,7 +271,7 @@ def latest_report(runs_dir=None):
 
 
 def read_report(text):
-    """(prompt_fp, profile_fp, {pmid: {score, rationale, possible_mismatch}}) from a saved
+    """(prompt_short_id, profile_short_id, {pmid: {score, rationale, possible_mismatch}}) from a saved
     report. Reads the RATIONALES section that format_rationales writes. Scores come back at the
     two decimals the report prints them with. A paper that could not be scored in that run is
     absent from the dict."""
@@ -321,10 +321,10 @@ def _reader_matches_writer():
     written = regrade(cases, {"P1": {"score": 0.12, "rationale": "r1", "possible_mismatch": "m1"},
                               "P2": {"score": 0.62, "rationale": "r2", "possible_mismatch": "m2"}})
     text = format_report(written, "PROMPTFP", "PROFILEFP") + "\n" + format_rationales(written)
-    prompt_fp, profile_fp, scores = read_report(text)
+    prompt_short_id, profile_short_id, scores = read_report(text)
     expected = {"P1": {"score": 0.12, "rationale": "r1", "possible_mismatch": "m1"},
                 "P2": {"score": 0.62, "rationale": "r2", "possible_mismatch": "m2"}}
-    if (prompt_fp, profile_fp, scores) != ("PROMPTFP", "PROFILEFP", expected):
+    if (prompt_short_id, profile_short_id, scores) != ("PROMPTFP", "PROFILEFP", expected):
         raise RuntimeError("judge_harness.read_report no longer matches the report format, so "
                            "--quick would misread scores. Fix read_report to match "
                            "format_report / format_rationales.")
@@ -332,20 +332,20 @@ def _reader_matches_writer():
 
 def quick(cases=None, runs_dir=None):
     """Re-grade the newest saved report against the current fixture. Returns
-    (results, prompt_fp, profile_fp, report_path, warnings). Nothing is scored or saved."""
+    (results, prompt_short_id, profile_short_id, report_path, warnings). Nothing is scored or saved."""
     _reader_matches_writer()
     path = latest_report(runs_dir)
     if path is None:
         raise FileNotFoundError("no saved judge harness report yet -- run the real one once")
-    prompt_fp, profile_fp, scores = read_report(path.read_text(encoding="utf-8"))
+    prompt_short_id, profile_short_id, scores = read_report(path.read_text(encoding="utf-8"))
     results = regrade(cases if cases is not None else load_cases(), scores)
     warnings = []
     active_prompt = short_id(prompt_interface.read_active_or_empty())
     active_profile = short_id(profile_interface.read_active_or_empty())
-    if prompt_fp != active_prompt:
+    if prompt_short_id != active_prompt:
         warnings.append(f"your active judge prompt ({active_prompt}) is not the one these scores "
-                        f"came from ({prompt_fp}), so they say nothing about it")
-    if profile_fp != active_profile:
+                        f"came from ({prompt_short_id}), so they say nothing about it")
+    if profile_short_id != active_profile:
         warnings.append(f"your active profile ({active_profile}) is not the one these scores came "
-                        f"from ({profile_fp}), so they say nothing about it")
-    return results, prompt_fp, profile_fp, path, warnings
+                        f"from ({profile_short_id}), so they say nothing about it")
+    return results, prompt_short_id, profile_short_id, path, warnings

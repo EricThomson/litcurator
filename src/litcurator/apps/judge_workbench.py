@@ -615,8 +615,8 @@ def cb_run_tests(_n, draft):
     gate. Carried over from prompt_workbench; it is the one control that belongs to exactly one
     artifact, so it has a fixed id and reads the prompt pane's textarea directly."""
     from litcurator import judge_harness
-    results, prompt_fp, profile_fp = judge_harness.run_tests(prompt_text=draft or "")
-    report = judge_harness.format_report(results, prompt_fp, profile_fp)
+    results, prompt_short_id, profile_short_id = judge_harness.run_tests(prompt_text=draft or "")
+    report = judge_harness.format_report(results, prompt_short_id, profile_short_id)
     path = judge_harness.write_report(
         report + "\n" + judge_harness.format_rationales(results))
     return f"{report}\n\nsaved to {path}"

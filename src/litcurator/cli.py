@@ -454,23 +454,23 @@ def _cmd_judge_harness(args):
         if args.prompt or args.profile:
             raise SystemExit("--quick re-grades saved scores, so --prompt / --profile would do "
                              "nothing. Drop them, or run without --quick to score a draft.")
-        results, prompt_fp, profile_fp, source, warnings = judge_harness.quick()
+        results, prompt_short_id, profile_short_id, source, warnings = judge_harness.quick()
         print(f"QUICK: re-graded {source.name} against today's fixture. Nothing was re-scored "
               f"and nothing was saved.")
         for w in warnings:
             print(f"WARNING: {w}")
-        print("\n" + judge_harness.format_report(results, prompt_fp, profile_fp))
+        print("\n" + judge_harness.format_report(results, prompt_short_id, profile_short_id))
         print("\n" + judge_harness.verdict_line(results))
         return
     # The harness scores under whatever JUDGE_MODEL is -- say so before spending.
     pipeline.print_model_banner(benchmark=True)
     prompt_text = Path(args.prompt).read_text(encoding="utf-8") if args.prompt else None
     profile_text = Path(args.profile).read_text(encoding="utf-8") if args.profile else None
-    results, prompt_fp, profile_fp = judge_harness.run_tests(
+    results, prompt_short_id, profile_short_id = judge_harness.run_tests(
         prompt_text=prompt_text,
         profile_text=profile_text,
         progress=lambda done, total: print(f"  scored {done}/{total}", flush=True))
-    report = judge_harness.format_report(results, prompt_fp, profile_fp)
+    report = judge_harness.format_report(results, prompt_short_id, profile_short_id)
     print(report)
     path = judge_harness.write_report(report + "\n" + judge_harness.format_rationales(results))
     print(f"\nsaved to {path}")
@@ -489,9 +489,9 @@ def _cmd_analysis_harness(args):
                   f"exactly as saved. Your next real run will save the full record.\n")
             print(text.split("\n" + "=" * 70 + "\nTRANSCRIPTS")[0])
             return
-        cluster_fp, consolidate_fp, drafts, results = rebuilt
+        cluster_short_id, consolidate_short_id, drafts, results = rebuilt
         print(f"QUICK: re-showing {path.name}. Nothing was run and nothing was saved.")
-        print("\n" + AH.format_report(results, cluster_fp, consolidate_fp, drafts=drafts))
+        print("\n" + AH.format_report(results, cluster_short_id, consolidate_short_id, drafts=drafts))
         print("\n" + AH.verdict_line(results))
         return
     if args.free and args.gate:
@@ -508,7 +508,7 @@ def _cmd_analysis_harness(args):
     drafts = [Path(p).name for p in (args.cluster_prompt, args.consolidate_prompt) if p]
 
     if args.dry_run:
-        # A draft still gets applied first, so the dry run's fingerprint answers "did I paste
+        # A draft still gets applied first, so the dry run's short id answers "did I paste
         # the right path". Applying it must not RUN anything -- see apply_draft_prompts.
         text, ok = AH.dry_run(gates, cluster_prompt, consolidate_prompt)
         print(text)
@@ -517,11 +517,11 @@ def _cmd_analysis_harness(args):
     if any(g not in AH.FREE_GATES for g in gates):
         print(f"models: cluster={CLUSTER_MODEL}  consolidate={CONSOLIDATE_MODEL}",
               flush=True)
-    results, cluster_fp, consolidate_fp = AH.run_gates(
+    results, cluster_short_id, consolidate_short_id = AH.run_gates(
         gates, cluster_prompt=cluster_prompt, consolidate_prompt=consolidate_prompt,
         progress=lambda gate, done, total: print(f"  [{done}/{total}] {gate}", flush=True))
 
-    report = AH.format_report(results, cluster_fp, consolidate_fp, drafts=drafts)
+    report = AH.format_report(results, cluster_short_id, consolidate_short_id, drafts=drafts)
     print("\n" + report)
     path = AH.write_report(report + "\n" + AH.format_transcripts(results)
                            + "\n" + AH.format_all_checks(results),
