@@ -62,10 +62,9 @@ from .. import machinery as M
 SCENARIO_PROFILE = "I follow systems neuroscience: circuits, computation, and behavior."
 ACTIVE_PROFILE = SCENARIO_PROFILE + "\n\nInvertebrate neuroethology counts as systems work."
 
-# The "active" judge prompt during a check. Needs its '## Output' section, because
-# prompt_interface.validate refuses a prompt without one and the shim calls that same rule.
-ACTIVE_PROMPT = ("Score the paper's expected interest for this user.\n\n"
-                 "## Output\n\nReturn JSON with four keys.")
+# The "active" judge prompt during a check. Any non-empty text passes prompt_interface.validate,
+# the same rule the shim calls.
+ACTIVE_PROMPT = "Score the paper's expected interest for this user."
 
 _ORDER = ("pat-hold", "pat-incorporate", "pat-reject", "pat-promote")
 
@@ -185,8 +184,8 @@ def _world(n_patterns=1, papers_each=2):
         saved_ctx = wb.ctx
         wb.profile_interface = _ProfileShim(ACTIVE_PROFILE, profile_interface)
         # BOTH artifacts, because the callback routes on a pattern's blame and an unshimmed one
-        # is a live file. ACTIVE_PROMPT carries the '## Output' section prompt_interface.validate
-        # requires, so a check can exercise a legitimate prompt write.
+        # is a live file. ACTIVE_PROMPT passes prompt_interface.validate, so a check can exercise
+        # a legitimate prompt write.
         wb.prompt_interface = _ProfileShim(ACTIVE_PROMPT, prompt_interface)
         # EVERY artifact the callbacks can route to must be a stand-in before any check runs.
         # This is the guard for the 2026-09-22 incident: the gate shimmed one of two, a check
@@ -595,7 +594,7 @@ def test_prompt_blamed_incorporate_never_writes_the_profile():
     with _world() as (conn, wb, pids):
         DB.update_pattern_content(conn, pids[0], blame="prompt")
         drafts = {"profile": "PROFILE PROSE THAT MUST NOT BE WRITTEN TO THE PROMPT",
-                  "prompt": "a judge prompt draft\n\n## Output\n\nJSON please."}
+                  "prompt": "a judge prompt draft"}
         _click_fate(wb, pids, pids[0], "pat-incorporate", drafts=drafts)
 
         assert wb.profile_interface.set_active_calls == [],             "a prompt-blamed decision wrote the PROFILE"

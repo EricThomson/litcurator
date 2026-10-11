@@ -1,8 +1,14 @@
 """
 judge.py -- stage 2, the curation judge.
 
-The judge reads a paper's title, abstract, journal and page range, with the active profile and
-the active judge prompt, and estimates the user's interest in it.
+The judge reads papers (title, abstract, journal, page range) with the active profile and the
+active judge prompt, and estimates the user's interest in each. There is ONE path: a single
+paper is a batch of one, so the pipeline, the judge harness and a spot check all send the same
+prompt in the same layout.
+
+The judge prompt is sent exactly as authored. It says what the four fields MEAN; the SHAPE of
+the reply is JUDGMENT_SCHEMA below, enforced by the API (structured outputs). So the prompt
+holds no JSON syntax and this module holds no instructions, only labels.
 """
 
 import json
@@ -23,73 +29,40 @@ VALID_SURFACE_DECISION = {"surface", "maybe", "do_not_surface"}
 _MAX_JUDGE_ATTEMPTS = 5
 _TRANSIENT_API_ERRORS = (anthropic.APIStatusError, anthropic.APIConnectionError)
 
-
-# ---------------------------------------------------------------------------
-# Primary prompts -- article (title + abstract) mode, profile-only
-# ---------------------------------------------------------------------------
-# litcurator ships NO judge prompt. The active one lives at prompt/judge_prompt.md in your data
-# directory, is loaded there by the pipeline, and is passed in to every call here. There is no
-# default to fall back on -- see PROMPT_NOT_AUTHORED below.
-
-# litcurator ships NO prompt content. The judge runs prompt/judge_prompt.md from your data
-# directory; authoring it is your job, exactly like the profile. There is no default here on
-# purpose -- a half-reasonable default is worse than none, because it looks authoritative,
-# quietly shapes every score, and nobody remembers it is there. Writing a genuinely good
-# starting prompt is a real task and is on the long-term list, not a thing to fake in passing.
-#
-# This sentinel exists so the failure is LOUD and says what to do, instead of an empty string
-# reaching the API and producing confident nonsense.
-PROMPT_NOT_AUTHORED = "<no judge prompt authored>"
-
-# Backward-compat alias. There is no shipped prompt any more, so this is the sentinel: a
-# caller that relied on the module-level default now gets a clear error instead of silent
-# behavior from text it never chose.
-SYSTEM_PROMPT = PROMPT_NOT_AUTHORED
-
-# The editable prompt is a SINGLE-paper prompt; the batch (multi-paper) variant is
-# derived from it -- everything up to the '## Output' marker, then this JSON-array
-# contract. So there is ONE authored artifact, and '## Output' is a structural
-# marker the prompt must keep.
-#
-# IMPORTED, NOT REDEFINED (2026-09-22). This module SPLITS on the marker and
-# prompt_interface.set_active VALIDATES against it; when each owned a copy, one contract lived
-# in two places that had to agree or the judge would silently lose its output spec.
-from litcurator.prompt_interface import OUTPUT_MARKER as _OUTPUT_MARKER
-
-_BATCH_OUTPUT = """## Output
-
-You are judging MULTIPLE papers in one call. Return ONLY a JSON array -- one object per paper, \
-in the same order they appear in the user message. Each object must have EXACTLY these four keys:
-
-[
-  {
-    "estimated_score": number 0.0-1.0,
-    "surface_decision": "surface" | "maybe" | "do_not_surface",
-    "curation_rationale": "...",
-    "possible_mismatch": "..."
-  },
-  ...
-]
-
-Apply the same scoring rules as described above. surface_decision must agree with estimated_score. \
-curation_rationale is 1-3 sentences in terms of the person's taste. possible_mismatch is the \
-strongest counter-case or "none".
-
-ASCII only. Return ONLY the JSON array starting with [ and ending with ]. No preamble, no code fences.
-""".strip()
-
-
-def _batch_prompt(system_prompt):
-    """Derive the batch system prompt from a single-paper prompt: head (up to
-    '## Output') + the JSON-array output contract."""
-    return system_prompt.split(_OUTPUT_MARKER, 1)[0] + _BATCH_OUTPUT
+# The shape of one reply: a judgment per paper, each carrying the number of the paper it is
+# for, so results are matched to papers by number instead of by trusting their order. The API
+# cannot enforce the score's 0-1 range or the number of judgments, so the code checks both.
+JUDGMENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "judgments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "paper_number": {"type": "integer"},
+                    "estimated_score": {"type": "number"},
+                    "surface_decision": {"type": "string",
+                                         "enum": sorted(VALID_SURFACE_DECISION)},
+                    "curation_rationale": {"type": "string"},
+                    "possible_mismatch": {"type": "string"},
+                },
+                "required": ["paper_number", "estimated_score", "surface_decision",
+                             "curation_rationale", "possible_mismatch"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["judgments"],
+    "additionalProperties": False,
+}
 
 
 def _require_prompt(system_prompt):
-    """Resolve the judge prompt, or fail loudly. Callers in the package always pass one (the
-    pipeline loads the active prompt from disk and hands it down); this catches a direct or
-    standalone caller that assumed a default exists."""
-    if system_prompt and system_prompt != PROMPT_NOT_AUTHORED:
+    """The judge prompt, or a loud failure. litcurator ships no judge prompt on purpose: a
+    half-reasonable default looks authoritative and quietly shapes every score. The pipeline
+    loads the active one from disk and passes it in; this catches a caller that did not."""
+    if system_prompt and system_prompt.strip():
         return system_prompt
     raise ValueError(
         "No judge prompt. litcurator ships no default -- author one and set it active "
@@ -114,20 +87,6 @@ def _article_to_text(title, abstract, journal, pages=None):
     return "\n".join(lines)
 
 
-def _decode_json(raw, opener):
-    """Decode the first JSON value starting at the first `opener` ("{" or "[") in
-    raw, tolerating any prose/preamble or code fences the model emits around it
-    (raw_decode stops at the end of the value and ignores trailing text). Raises
-    ValueError if no opener is present -- an empty or prose-only response, which
-    the caller retries. This is what keeps a stray sentence of reasoning from
-    silently dropping a paper."""
-    start = raw.find(opener)
-    if start == -1:
-        raise ValueError(f"no JSON {opener!r} found in response")
-    value, _end = json.JSONDecoder().raw_decode(raw, start)
-    return value
-
-
 def _judge_call(system_prompt, user_message, max_tokens, parse):
     """Make one judge API call and parse it, resilient to the transient empty
     completions and overload errors the endpoint occasionally returns. Retries up
@@ -148,6 +107,7 @@ def _judge_call(system_prompt, user_message, max_tokens, parse):
                 max_tokens=max_tokens,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_message}],
+                output_config={"format": {"type": "json_schema", "schema": JUDGMENT_SCHEMA}},
             )
         except _TRANSIENT_API_ERRORS as e:
             last_error = e
@@ -155,7 +115,7 @@ def _judge_call(system_prompt, user_message, max_tokens, parse):
         if response is not None:
             usage = response.usage
             total_cost += api_cost_usd(JUDGE_MODEL, usage)
-            raw = response.content[0].text.strip() if response.content else ""
+            raw = next((b.text for b in response.content if b.type == "text"), "").strip()
             if not raw:
                 last_error = ValueError("empty response from judge")
             else:
@@ -171,70 +131,41 @@ def _judge_call(system_prompt, user_message, max_tokens, parse):
                      f"Last error: {last_error}")
 
 
-def judge_article(title, abstract, journal, profile_text, pages=None, system_prompt=None):
-    """Judge a paper from title + abstract + journal (+ optional page range) against
-    the user profile. system_prompt is the active judge prompt (from disk); falls
-    raises if none was given -- there is no shipped default to fall back to.
-
-    Returns (judgment dict, usage, cost). Retries once on a malformed response.
-    """
-    system_prompt = _require_prompt(system_prompt)
-    article_text = _article_to_text(title, abstract, journal, pages)
-    user_message = (
-        f"# User profile (this user's interests)\n\n{profile_text}\n\n"
-        f"# Paper\n\n{article_text}\n\n"
-        f"Judge this paper for this user."
-    )
-
-    def parse(raw):
-        judgment = _decode_json(raw, "{")
-        _validate(judgment)
-        return judgment
-
-    judgment, usage, cost = _judge_call(system_prompt, user_message, 700, parse)
-    judgment["judge_prompt_version"] = short_id(system_prompt)
-    judgment["judge_model"] = JUDGE_MODEL
-    return judgment, usage, cost
-
-
 def judge_articles_batch(items, profile_text, system_prompt=None):
-    """Judge a batch of articles in a single API call. system_prompt is the active
-    judge prompt (from disk); the batch variant is derived from it. Falls back to
-    the active prompt; raises if none is supplied.
+    """Judge one or more papers in a single API call. A single paper is a batch of one: the
+    prompt and the layout are the same whatever the count.
 
-    items: list of dicts with keys title, abstract, journal (all optional str).
-    Returns (list of judgment dicts, total_cost). Retries once on a malformed response.
+    items: list of dicts with keys title, abstract, journal, pages (all optional str).
+    system_prompt: the judge prompt, sent exactly as authored; raises if none is given.
+    Returns (list of judgment dicts in the order of items, total_cost).
     """
     system_prompt = _require_prompt(system_prompt)
-    batch_prompt = _batch_prompt(system_prompt)
-    article_blocks = []
-    for i, item in enumerate(items, 1):
-        article_text = _article_to_text(
-            item.get("title"), item.get("abstract"), item.get("journal"), item.get("pages")
-        )
-        article_blocks.append(f"## Paper {i}\n\n{article_text}")
-
+    paper_blocks = [
+        f"## Paper {number}\n\n" + _article_to_text(
+            item.get("title"), item.get("abstract"), item.get("journal"), item.get("pages"))
+        for number, item in enumerate(items, 1)
+    ]
     user_message = (
         f"# User profile (this user's interests)\n\n{profile_text}\n\n"
         f"# Papers to judge ({len(items)} total)\n\n"
-        + "\n\n---\n\n".join(article_blocks)
-        + f"\n\nJudge all {len(items)} papers for this user. "
-        f"Return a JSON array with exactly {len(items)} objects, in order."
+        + "\n\n---\n\n".join(paper_blocks)
     )
+    expected_numbers = list(range(1, len(items) + 1))
 
     def parse(raw):
-        judgments = _decode_json(raw, "[")
-        if not isinstance(judgments, list):
-            raise ValueError(f"Expected JSON array, got {type(judgments).__name__}")
-        if len(judgments) != len(items):
-            raise ValueError(f"Expected {len(items)} judgments, got {len(judgments)}")
+        by_number = {j.pop("paper_number"): j for j in json.loads(raw)["judgments"]}
+        if sorted(by_number) != expected_numbers:
+            raise ValueError(f"expected one judgment for each of papers 1-{len(items)}, "
+                             f"got paper numbers {sorted(by_number)}")
+        judgments = [by_number[number] for number in expected_numbers]
         for j in judgments:
             _validate(j)
             j["judge_prompt_version"] = short_id(system_prompt)
             j["judge_model"] = JUDGE_MODEL
         return judgments
 
-    judgments, _usage, total_cost = _judge_call(batch_prompt, user_message, len(items) * 700, parse)
+    judgments, _usage, total_cost = _judge_call(system_prompt, user_message,
+                                                len(items) * 700, parse)
     return judgments, total_cost
 
 

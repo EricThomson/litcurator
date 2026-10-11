@@ -28,16 +28,6 @@ from litcurator.content_address import content_address, short_id
 VERSIONS_DIR = PROMPT_DIR / "versions"
 AUTOSAVE_PATH = VERSIONS_DIR / "_autosave.md"
 
-# The structural contract between the authored prompt and the batch judge: everything above
-# this marker is the shared preamble, and judge._batch_prompt swaps what follows for the
-# JSON-array contract. So a prompt without it silently loses its output spec.
-#
-# DEFINED HERE, ONCE (2026-09-22). It used to exist twice -- `judge._OUTPUT_MARKER` to SPLIT on
-# and the prompt workbench's own copy to VALIDATE against -- two copies of one contract in
-# modules that must agree or the judge breaks silently. This module is the gatekeeper for this
-# artifact, so the constant belongs with it and both callers import it.
-OUTPUT_MARKER = "## Output"
-
 
 def _ts():
     return datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -81,11 +71,6 @@ def validate(text):
     if not (text or "").strip():
         raise ValueError("Refused: an empty judge prompt would leave the judge with no scoring "
                          "procedure. Nothing was written.")
-    if OUTPUT_MARKER not in text:
-        raise ValueError(
-            f"Refused: the judge prompt must contain a '{OUTPUT_MARKER}' section -- the batch "
-            f"judge derives its output contract from it, so a prompt without one silently "
-            f"loses its output spec. Nothing was written.")
 
 
 def set_active(text, notes=None):

@@ -501,11 +501,7 @@ def run_consolidate_step(client, clusters_text, seed_text, existing_block, model
     are synthetic and have no meaningful judge prompt, and its profile is deliberately silent
     on every planted gap.
 
-    NB the FULL authored file is sent, including the tail below `## Output` that
-    judge._batch_prompt drops before the judge ever sees it (1198 of 7757 chars today). That
-    is the right choice here -- the file is the artifact the user edits, so "is this written
-    down" means written down in it -- but it is a live discrepancy worth closing at the judge
-    end rather than papering over at this one."""
+    The full authored file is sent, exactly as the judge receives it."""
     prompt = _require_prompt(prompt, "consolidate")
     memory = f"{existing_block}\n\n---\n\n" if existing_block else ""
     tool = _consolidate_tool(has_memory=bool(memory))
