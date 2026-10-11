@@ -147,17 +147,14 @@ def _domain_stage(conn, start, end, mode, threshold):
         return
     by_pmid = {a["pmid"]: a for a in candidates}
     print(f"[domain] scoring {len(todo)} titles...")
-    in_tok = out_tok = 0
     cost = 0.0
     for batch_pmids in _chunks(todo, domain_filter.BATCH_SIZE_TITLE):
         batch = [by_pmid[p] for p in batch_pmids]
         results, usage = domain_filter.score_domain_batch(batch)
-        in_tok += usage.input_tokens
-        out_tok += usage.output_tokens
         cost += api_cost_usd(DOMAIN_FILTER_MODEL, usage)
         for art, (score, reasoning) in zip(batch, results):
             db_interface.insert_evaluation(conn, art["pmid"], run_id, score, rationale=reasoning)
-    db_interface.complete_scoring_run(conn, run_id, in_tok, out_tok, cost)
+    db_interface.complete_scoring_run(conn, run_id, cost_usd=cost)
 
 
 def backfill_pages(conn, articles):
@@ -221,9 +218,9 @@ def _judge_stage(conn, survivors, profile_text, profile_id, mode,
         items = [{"title": a["title"], "abstract": a["abstract"], "journal": a["journal"],
                   "pages": a.get("pages")}
                  for a in batch]
-        judgments, batch_cost = judge.judge_articles_batch(
+        judgments, usage = judge.judge_articles_batch(
             items, profile_text, system_prompt=system_prompt)
-        cost += batch_cost
+        cost += api_cost_usd(JUDGE_MODEL, usage)
         for art, j in zip(batch, judgments):
             db_interface.insert_evaluation(
                 conn, art["pmid"], run_id, j["estimated_score"],

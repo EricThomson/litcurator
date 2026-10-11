@@ -89,7 +89,7 @@ def run_tests(prompt_text=None, profile_text=None, cases=None, conn=None, progre
                       "journal": articles[c["pmid"]].get("journal"),
                       "pages": articles[c["pmid"]].get("pages")} for c in chunk]
             try:
-                judgments, _cost = judge.judge_articles_batch(items, profile_text, system_prompt=prompt_text)
+                judgments, _usage = judge.judge_articles_batch(items, profile_text, system_prompt=prompt_text)
                 for c, j in zip(chunk, judgments):
                     judged[c["pmid"]] = j
             except Exception as e:

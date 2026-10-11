@@ -15,8 +15,9 @@ import json
 import time
 
 import anthropic
+from anthropic.types import Usage
 
-from litcurator.config import JUDGE_MODEL, api_cost_usd
+from litcurator.config import JUDGE_MODEL
 from litcurator.content_address import short_id
 
 
@@ -99,11 +100,10 @@ def _judge_call(system_prompt, user_message, max_tokens, parse):
     response is treated as a retryable failure -- letting an empty completion
     silently drop a paper is the exact failure mode we must avoid. parse(raw_text)
     decodes and validates a non-empty response, raising ValueError/KeyError on a
-    malformed one (also retried). Returns (parsed_result, usage, cumulative_cost);
-    raises after the last attempt if every attempt fails."""
+    malformed one (also retried). Returns (parsed_result, Usage summed over every attempt,
+    since every attempt is billed); raises after the last attempt if every attempt fails."""
     last_error = None
-    total_cost = 0.0
-    usage = None
+    input_tokens = output_tokens = 0
     for attempt in range(_MAX_JUDGE_ATTEMPTS):
         response = None
         try:
@@ -118,14 +118,15 @@ def _judge_call(system_prompt, user_message, max_tokens, parse):
             last_error = e
 
         if response is not None:
-            usage = response.usage
-            total_cost += api_cost_usd(JUDGE_MODEL, usage)
+            input_tokens += response.usage.input_tokens
+            output_tokens += response.usage.output_tokens
             raw = next((b.text for b in response.content if b.type == "text"), "").strip()
             if not raw:
                 last_error = ValueError("empty response from judge")
             else:
                 try:
-                    return parse(raw), usage, total_cost
+                    return parse(raw), Usage(input_tokens=input_tokens,
+                                             output_tokens=output_tokens)
                 except (ValueError, KeyError) as e:
                     last_error = e
 
@@ -146,7 +147,7 @@ def judge_articles_batch(items, profile_text, system_prompt=None):
 
     items: list of dicts with keys title, abstract, journal, pages (all optional str).
     system_prompt: the judge prompt, sent exactly as authored; raises if none is given.
-    Returns (list of judgment dicts in the order of items, total_cost).
+    Returns (list of judgment dicts in the order of items, token Usage summed over retries).
     """
     system_prompt = _require_prompt(system_prompt)
     paper_blocks = [
@@ -173,9 +174,7 @@ def judge_articles_batch(items, profile_text, system_prompt=None):
             j["judge_model"] = JUDGE_MODEL
         return judgments
 
-    judgments, _usage, total_cost = _judge_call(system_prompt, user_message,
-                                                len(items) * 700, parse)
-    return judgments, total_cost
+    return _judge_call(system_prompt, user_message, len(items) * 700, parse)
 
 
 def _validate(j):

@@ -160,8 +160,6 @@ CREATE TABLE IF NOT EXISTS scoring_runs (
     date_start TEXT,
     date_end TEXT,
     threshold REAL DEFAULT 0.5,
-    input_tokens INTEGER,
-    output_tokens INTEGER,
     cost_usd REAL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     completed_at DATETIME,               -- NULL = in flight, set = done
@@ -492,7 +490,9 @@ def _drop_dead_columns(conn):
       retirement the pattern memory replaced. A flag is now "handled" by being attached
       to a pattern (pattern_flags), so these are vestigial. Indexes are dropped FIRST
       because DROP COLUMN fails while a column is used by an index (the partial
-      idx_flags_uningested references ingested_to_profile_id)."""
+      idx_flags_uningested references ingested_to_profile_id).
+    - scoring_runs.input_tokens / output_tokens: written by one stage, read by nothing, never
+      looked at. The run's cost_usd is what gets used (removed 2026-10-11)."""
     acols = [r[1] for r in conn.execute("PRAGMA table_info(articles)").fetchall()]
     if "summary" in acols:
         conn.execute("ALTER TABLE articles DROP COLUMN summary")
@@ -509,6 +509,11 @@ def _drop_dead_columns(conn):
         # is the user's (pairs with judge_score). SQLite updates the column's CHECK
         # constraint automatically on rename.
         conn.execute("ALTER TABLE flags RENAME COLUMN your_score TO user_score")
+
+    rcols = [r[1] for r in conn.execute("PRAGMA table_info(scoring_runs)").fetchall()]
+    for dead in ("input_tokens", "output_tokens"):
+        if dead in rcols:
+            conn.execute(f"ALTER TABLE scoring_runs DROP COLUMN {dead}")
     conn.commit()
 
 
@@ -874,17 +879,15 @@ def find_or_create_scoring_run(conn, stage, model, mode, profile_id=None,
     return run_id
 
 
-def complete_scoring_run(conn, run_id, input_tokens=None, output_tokens=None, cost_usd=None):
-    """Mark a run done (completed_at) and record its cost. Adds to any existing
-    token/cost totals so a resumed run accumulates rather than overwrites."""
+def complete_scoring_run(conn, run_id, cost_usd=None):
+    """Mark a run done (completed_at) and record its cost. Adds to any existing cost so a
+    resumed run accumulates rather than overwrites."""
     conn.execute("""
         UPDATE scoring_runs
         SET completed_at = ?,
-            input_tokens = COALESCE(input_tokens, 0) + COALESCE(?, 0),
-            output_tokens = COALESCE(output_tokens, 0) + COALESCE(?, 0),
             cost_usd = COALESCE(cost_usd, 0) + COALESCE(?, 0)
         WHERE id = ?
-    """, (_utcnow(), input_tokens, output_tokens, cost_usd, run_id))
+    """, (_utcnow(), cost_usd, run_id))
     conn.commit()
 
 
