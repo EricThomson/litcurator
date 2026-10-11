@@ -57,6 +57,11 @@ JUDGMENT_SCHEMA = {
     "additionalProperties": False,
 }
 
+# The fields a stored judgment carries: the schema's, minus paper_number, which only matches a
+# judgment to its paper and is stripped by the parser.
+JUDGMENT_FIELDS = [field for field in JUDGMENT_SCHEMA["properties"]["judgments"]["items"]["required"]
+                   if field != "paper_number"]
+
 
 def _require_prompt(system_prompt):
     """The judge prompt, or a loud failure. litcurator ships no judge prompt on purpose: a
@@ -124,6 +129,10 @@ def _judge_call(system_prompt, user_message, max_tokens, parse):
                 except (ValueError, KeyError) as e:
                     last_error = e
 
+        # Every failed attempt is reported, so a format failure that a retry quietly fixed is
+        # still visible and countable.
+        print(f"  [judge] attempt {attempt + 1}/{_MAX_JUDGE_ATTEMPTS} failed: "
+              f"{type(last_error).__name__}: {str(last_error)[:200]}", flush=True)
         if attempt < _MAX_JUDGE_ATTEMPTS - 1:
             time.sleep(0.5 * 2 ** attempt)
 
@@ -170,9 +179,7 @@ def judge_articles_batch(items, profile_text, system_prompt=None):
 
 
 def _validate(j):
-    required = {"estimated_score", "surface_decision",
-                "curation_rationale", "possible_mismatch"}
-    missing = required - set(j.keys())
+    missing = set(JUDGMENT_FIELDS) - set(j.keys())
     if missing:
         raise ValueError(f"Judgment missing fields: {missing}")
 
