@@ -259,10 +259,13 @@ def _render_card(item, rank, total):
                    color="secondary", outline=True, size="sm", className="me-2",
                    style=out_style),
     ]
-    # debounce=True on both boxes: their value reaches Dash when you leave the box or press
-    # Enter, not on every keystroke. Measured (sandbox/review_typing_profiler): ANY callback
-    # costs about 1.8 ms per card on the page, so on a 93-card feed a per-keystroke callback
-    # made each letter take about 170 ms to appear.
+    # The FIRST keystroke of an edit reaches Dash; the rest wait until you leave the box. While
+    # the card reads Saved its boxes report every keystroke (debounce off), so the first one can
+    # flip the button to Save; that same callback then switches them to report on leaving the
+    # box or Enter (debounce on), and a save switches them back (SAVE_BUTTON_LOOK_JS). Measured
+    # (sandbox/review_typing_profiler): every callback costs time for every card on the page,
+    # so a callback on every keystroke made typing sticky; this way an edit costs one.
+    report_keystrokes = flagged
     flag_panel = dbc.Collapse(
         dbc.Card(dbc.CardBody([
             html.Div("Your estimated interest (0.0 = no interest, 1.0 = must read)",
@@ -272,12 +275,14 @@ def _render_card(item, rank, total):
                     id={"type": "flag-score", "pmid": pmid},
                     type="text",
                     value=pre.get("user_score", None),
-                    placeholder="0.0 - 1.0", size="sm", debounce=True), width=3),
+                    placeholder="0.0 - 1.0", size="sm",
+                    debounce=not report_keystrokes), width=3),
             ], className="g-2 align-items-center mb-2"),
             dbc.Label("Note", className="small mb-1"),
             dbc.Input(id={"type": "flag-note", "pmid": pmid}, type="text",
                       value=pre.get("note") or prior_note,
-                      placeholder="e.g. ECoG, not single-unit", size="sm", debounce=True),
+                      placeholder="e.g. ECoG, not single-unit", size="sm",
+                      debounce=not report_keystrokes),
             *([html.Small("prefilled from your note before the last reset",
                           className="text-muted")] if prior_note else []),
             # Save goes right under the note, where the hand goes after writing it.
@@ -580,18 +585,24 @@ def cb_flag_panel_buttons(save_clicks, add_clicks, out_clicks, scores, notes,
 
 
 # The Save button's look, for ONE card (MATCH), in the browser: Saved while the score and note
-# boxes match the card's stored-flag store, Save otherwise. It runs when you leave a box or press
-# Enter in it (the boxes are debounced, see the panel), and after a save updates the store. This
-# is the button's only writer after the card is drawn; the card is drawn with the right look, so
+# boxes match the card's stored-flag store, Save otherwise. The same call sets how the boxes
+# report: every keystroke while the card is saved (so the first keystroke of an edit lands here),
+# only on leaving the box once it is not (so the rest of the edit costs nothing). It runs on that
+# first keystroke, on leaving a box, and after a save updates the store. It is the only writer of
+# these four props after the card is drawn, and the card is drawn with the right values, so
 # there is no call on load.
 SAVE_BUTTON_LOOK_JS = """
 function(score, note, stored) {
     const looks = %s;
-    if (!stored) { return looks.unsaved; }
-    const typed = parseFloat(score);
-    const sameScore = !isNaN(typed) && Math.abs(typed - stored.user_score) < 1e-9;
-    const sameNote = (note || "") === (stored.note || "");
-    return (sameScore && sameNote) ? looks.saved : looks.unsaved;
+    let saved = false;
+    if (stored) {
+        const typed = parseFloat(score);
+        const sameScore = !isNaN(typed) && Math.abs(typed - stored.user_score) < 1e-9;
+        const sameNote = (note || "") === (stored.note || "");
+        saved = sameScore && sameNote;
+    }
+    const look = saved ? looks.saved : looks.unsaved;
+    return [look[0], look[1], !saved, !saved];
 }
 """ % json.dumps({"saved": list(_save_btn_look(saved=True)),
                   "unsaved": list(_save_btn_look(saved=False))})
@@ -600,6 +611,8 @@ app.clientside_callback(
     SAVE_BUTTON_LOOK_JS,
     Output({"type": "flag-save", "pmid": MATCH}, "children"),
     Output({"type": "flag-save", "pmid": MATCH}, "color"),
+    Output({"type": "flag-score", "pmid": MATCH}, "debounce"),
+    Output({"type": "flag-note", "pmid": MATCH}, "debounce"),
     Input({"type": "flag-score", "pmid": MATCH}, "value"),
     Input({"type": "flag-note", "pmid": MATCH}, "value"),
     Input({"type": "stored-flag", "pmid": MATCH}, "data"),
