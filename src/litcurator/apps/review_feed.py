@@ -3,7 +3,7 @@ review_feed.py -- review the judge's output and flag papers.
 
 Reads the most-recent curation evaluation per paper (db_interface.latest_curation),
 shows one score-sorted card each, and lets you enter user_score (your own estimated
-interest) plus an optional private note. Saving appends a flag via
+interest) plus a note, which error_analysis reads (the judge never does). Saving appends a flag via
 db_interface.insert_flag, keyed to the evaluation it corrects.
 
 Flags are append-only: re-saving a paper appends a new flag and the latest wins,
@@ -214,23 +214,25 @@ def _render_card(item, rank, total):
     # normal flag, and once one exists its note wins.
     prior_note = "" if flag else _archived_notes().get(pmid, "")
     remove_btn = dbc.Button("Remove flag", id={"type": "flag-delete", "pmid": pmid},
-                            color="danger", outline=True, size="sm", className="mt-2",
+                            color="danger", outline=True, size="sm",
                             style=_remove_btn_style(flagged, in_bucket))
-    # The Levels Bucket buttons. Add saves the score and note STRAIGHT into the bucket, no
-    # Save first, so the paper never passes through error_analysis's pool. Take out is the
-    # undo, for mis-clicks and regrets. Exactly one shows at a time.
+    # The Levels Bucket buttons. Add saves the panel's score and note STRAIGHT into the bucket,
+    # no Save first, so the paper never passes through error_analysis's pool. Take out is the
+    # undo, for mis-clicks and regrets. Exactly one shows at a time. They sit up beside the Flag
+    # button, away from Save: bucketing is its own decision, and a bucket button right under the
+    # note got clicked when Save was meant.
     add_style, out_style = _bucket_btn_styles(in_bucket)
-    bucket_btns = html.Div([
+    bucket_btns = [
         dbc.Button(f"Add to {LEVELS_BUCKET_NAME}",
                    id={"type": "bucket-add", "pmid": pmid, "eid": item["evaluation_id"]},
                    title=LEVELS_BUCKET_DESCRIPTION, color="dark", outline=True, size="sm",
-                   className="mt-2 me-2", style=add_style),
+                   className="me-2", style=add_style),
         dbc.Button(f"Take out of {LEVELS_BUCKET_NAME}",
                    id={"type": "bucket-out", "pmid": pmid},
                    title="Your score and note stay, as an ordinary flag for error_analysis.",
-                   color="secondary", outline=True, size="sm", className="mt-2 me-2",
+                   color="secondary", outline=True, size="sm", className="me-2",
                    style=out_style),
-    ], className="d-flex align-items-center")
+    ]
     flag_panel = dbc.Collapse(
         dbc.Card(dbc.CardBody([
             html.Div("Your estimated interest (0.0 = no interest, 1.0 = must read)",
@@ -241,20 +243,20 @@ def _render_card(item, rank, total):
                     type="text",
                     value=pre.get("user_score", None),
                     placeholder="0.0 - 1.0", size="sm"), width=3),
-                dbc.Col(dbc.Button("Save", id={"type": "flag-save", "pmid": pmid,
-                                               "eid": item["evaluation_id"]},
-                                   color="primary", size="sm"), width="auto"),
             ], className="g-2 align-items-center mb-2"),
-            html.Div(id={"type": "flag-error", "pmid": pmid},
-                     className="text-danger fw-bold mb-2"),
-            dbc.Label("Note (optional, private)", className="small mb-1"),
+            dbc.Label("Note", className="small mb-1"),
             dbc.Input(id={"type": "flag-note", "pmid": pmid}, type="text",
                       value=pre.get("note") or prior_note,
                       placeholder="e.g. ECoG, not single-unit", size="sm"),
             *([html.Small("prefilled from your note before the last reset",
                           className="text-muted")] if prior_note else []),
-            remove_btn,
-            bucket_btns,
+            # Save goes right under the note, where the hand goes after writing it.
+            html.Div([
+                dbc.Button("Save", id={"type": "flag-save", "pmid": pmid,
+                                       "eid": item["evaluation_id"]},
+                           color="primary", size="sm", className="me-2"),
+                remove_btn,
+            ], className="d-flex align-items-center mt-2"),
         ]), color="light", className="mt-2"),
         id={"type": "flag-collapse", "pmid": pmid},
         is_open=flagged)
@@ -278,10 +280,15 @@ def _render_card(item, rank, total):
         html.Div([html.Span("Possible Mismatch: ", className="text-muted small fw-bold"),
                   html.Span(item.get("possible_mismatch") or "", className="small")],
                  className="mb-1"),
-        html.Div(dbc.Button("Flag / edit score",
-                            id={"type": "flag-toggle", "pmid": pmid},
-                            color="secondary", outline=True, size="sm"),
-                 className="mt-2"),
+        html.Div([dbc.Button("Flag / edit score",
+                             id={"type": "flag-toggle", "pmid": pmid},
+                             color="secondary", outline=True, size="sm", className="me-2"),
+                  *bucket_btns],
+                 className="d-flex align-items-center mt-2"),
+        # Outside the panel, so a bucket click's "enter a score" message shows even when the
+        # panel is closed.
+        html.Div(id={"type": "flag-error", "pmid": pmid},
+                 className="text-danger fw-bold mt-1"),
         flag_panel,
     ]), className="mb-3",
         style={"backgroundColor": "#f3f0fa", "border": "1px solid #e3dcf2"})
