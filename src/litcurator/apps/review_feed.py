@@ -17,13 +17,16 @@ Launch:  litcurator review        (or)  python -m litcurator.apps.review_feed
 
 import argparse
 import json
+import math
 import sqlite3
 
 import dash_bootstrap_components as dbc
-from dash import ALL, Dash, Input, Output, State, callback, ctx, dcc, html, no_update
+from dash import ALL, MATCH, Dash, Input, Output, State, callback, ctx, dcc, html, no_update
 
 from litcurator import db_interface
-from litcurator.config import ARCHIVED_NOTES_FILE, LEVELS_BUCKET_DESCRIPTION, LEVELS_BUCKET_NAME
+from litcurator.config import (ARCHIVED_NOTES_FILE, LEVELS_BUCKET_DESCRIPTION,
+                               LEVELS_BUCKET_NAME, REVIEW_CARDS_PER_PAGE,
+                               REVIEW_CARDS_PER_PAGE_CHOICES)
 
 # Optional CLI dates pre-fill the in-app date picker. parse_known_args so Dash's
 # own flags do not choke. Blank = show all.
@@ -140,6 +143,28 @@ def _remove_btn_style(flagged, in_bucket=False):
     return {} if flagged and not in_bucket else {"display": "none"}
 
 
+def _save_btn_look(saved):
+    """(label, color) of the Save button: "Saved" while the panel matches what is stored,
+    "Save" once there is something to save."""
+    return ("Saved", "success") if saved else ("Save", "primary")
+
+
+def _stored_flag(flag):
+    """The score and note as last saved, for the card's stored-flag store; None if unflagged.
+    The Save button compares the boxes against this to show Saved or Save."""
+    return {"user_score": flag["user_score"], "note": flag["note"]} if flag else None
+
+
+def _per_card(slots, pmid, value):
+    """For an ALL output: set value on one card's slot and leave every other card alone."""
+    return [value if s["id"]["pmid"] == pmid else no_update for s in slots]
+
+
+def _hold(slots):
+    """For an ALL output: leave every card alone."""
+    return [no_update] * len(slots)
+
+
 def _bucket_btn_styles(in_bucket):
     """(Add, Take out) button styles: exactly one shows. Both stay mounted and swap
     via display, for the same reason as _remove_btn_style."""
@@ -222,9 +247,10 @@ def _render_card(item, rank, total):
     # button, away from Save: bucketing is its own decision, and a bucket button right under the
     # note got clicked when Save was meant.
     add_style, out_style = _bucket_btn_styles(in_bucket)
+    save_label, save_color = _save_btn_look(saved=flagged)
     bucket_btns = [
         dbc.Button(f"Add to {LEVELS_BUCKET_NAME}",
-                   id={"type": "bucket-add", "pmid": pmid, "eid": item["evaluation_id"]},
+                   id={"type": "bucket-add", "pmid": pmid},
                    title=LEVELS_BUCKET_DESCRIPTION, color="dark", outline=True, size="sm",
                    className="me-2", style=add_style),
         dbc.Button(f"Take out of {LEVELS_BUCKET_NAME}",
@@ -233,6 +259,10 @@ def _render_card(item, rank, total):
                    color="secondary", outline=True, size="sm", className="me-2",
                    style=out_style),
     ]
+    # debounce=True on both boxes: their value reaches Dash when you leave the box or press
+    # Enter, not on every keystroke. Measured (sandbox/review_typing_profiler): ANY callback
+    # costs about 1.8 ms per card on the page, so on a 93-card feed a per-keystroke callback
+    # made each letter take about 170 ms to appear.
     flag_panel = dbc.Collapse(
         dbc.Card(dbc.CardBody([
             html.Div("Your estimated interest (0.0 = no interest, 1.0 = must read)",
@@ -242,19 +272,18 @@ def _render_card(item, rank, total):
                     id={"type": "flag-score", "pmid": pmid},
                     type="text",
                     value=pre.get("user_score", None),
-                    placeholder="0.0 - 1.0", size="sm"), width=3),
+                    placeholder="0.0 - 1.0", size="sm", debounce=True), width=3),
             ], className="g-2 align-items-center mb-2"),
             dbc.Label("Note", className="small mb-1"),
             dbc.Input(id={"type": "flag-note", "pmid": pmid}, type="text",
                       value=pre.get("note") or prior_note,
-                      placeholder="e.g. ECoG, not single-unit", size="sm"),
+                      placeholder="e.g. ECoG, not single-unit", size="sm", debounce=True),
             *([html.Small("prefilled from your note before the last reset",
                           className="text-muted")] if prior_note else []),
             # Save goes right under the note, where the hand goes after writing it.
             html.Div([
-                dbc.Button("Save", id={"type": "flag-save", "pmid": pmid,
-                                       "eid": item["evaluation_id"]},
-                           color="primary", size="sm", className="me-2"),
+                dbc.Button(save_label, id={"type": "flag-save", "pmid": pmid},
+                           color=save_color, size="sm", className="me-2"),
                 remove_btn,
             ], className="d-flex align-items-center mt-2"),
         ]), color="light", className="mt-2"),
@@ -289,6 +318,11 @@ def _render_card(item, rank, total):
         # panel is closed.
         html.Div(id={"type": "flag-error", "pmid": pmid},
                  className="text-danger fw-bold mt-1"),
+        # Every part of a card has an id of the same shape (type, pmid), so a callback can wire
+        # one card to itself (MATCH). What a card needs beyond its components lives here: the
+        # evaluation a flag is keyed to, and the score and note as last saved.
+        dcc.Store(id={"type": "evaluation-id", "pmid": pmid}, data=item["evaluation_id"]),
+        dcc.Store(id={"type": "stored-flag", "pmid": pmid}, data=_stored_flag(flag)),
         flag_panel,
     ]), className="mb-3",
         style={"backgroundColor": "#f3f0fa", "border": "1px solid #e3dcf2"})
@@ -301,6 +335,17 @@ def _render_card(item, rank, total):
 app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP],
            suppress_callback_exceptions=True)
 app.title = "litcurator review"
+
+def _page_size(selected):
+    """Cards per page from the selector's value (a string; the default before any choice)."""
+    return int(selected or REVIEW_CARDS_PER_PAGE)
+
+
+def _pager(pager_id):
+    return dbc.Pagination(id=pager_id, max_value=1, active_page=1, first_last=True,
+                          previous_next=True, fully_expanded=False, size="sm",
+                          className="my-2")
+
 
 def _build_layout(start_date=None, end_date=None):
     return dbc.Container([
@@ -322,9 +367,26 @@ def _build_layout(start_date=None, end_date=None):
                           value=0, debounce=True, size="sm",
                           style={"width": "90px", "display": "inline-block"}),
             ], width="auto", align="end"),
+            dbc.Col([
+                html.Small("Cards per page:", className="text-muted me-2",
+                           title="More cards per page means every click waits longer: each "
+                                 "callback costs time for every card on the page."),
+                dbc.Select(id="page-size", size="sm", value=str(REVIEW_CARDS_PER_PAGE),
+                           options=[{"label": str(n), "value": str(n)}
+                                    for n in REVIEW_CARDS_PER_PAGE_CHOICES],
+                           style={"width": "80px", "display": "inline-block"}),
+            ], width="auto", align="end"),
         ], className="mb-2 align-items-end"),
+        # The rank of the first card on screen, so changing the page size keeps your place.
+        dcc.Store(id="feed-first-rank", data=1),
         dbc.Alert(id="flag-alert", is_open=False, duration=3000, color="success"),
+        # The feed is paged (REVIEW_CARDS_PER_PAGE): every callback costs time in proportion to
+        # the components on the page. Two pagers, kept in step: one to jump, one at the bottom
+        # where you finish a page.
+        _pager("feed-pager-top"),
         html.Div(id="feed-container"),
+        _pager("feed-pager-bottom"),
+        dcc.Store(id="scroll-sink"),
     ], fluid=True)
 
 
@@ -334,38 +396,82 @@ app.layout = _build_layout(CLI_START, CLI_END)
 @callback(
     Output("feed-container", "children"),
     Output("feed-summary", "children"),
+    Output("feed-pager-top", "max_value"),
+    Output("feed-pager-top", "active_page"),
+    Output("feed-pager-bottom", "max_value"),
+    Output("feed-pager-bottom", "active_page"),
+    Output("feed-first-rank", "data"),
     Input("reload-feed", "data"),
     Input("date-filter", "start_date"),
     Input("date-filter", "end_date"),
     Input("min-score", "value"),
+    Input("feed-pager-top", "active_page"),
+    Input("feed-pager-bottom", "active_page"),
+    Input("page-size", "value"),
+    State("feed-first-rank", "data"),
 )
-def cb_render_feed(_n, start, end, min_score):
+def cb_render_feed(_n, start, end, min_score, top_page, bottom_page, page_size, first_rank):
+    """Render ONE page of the score-sorted feed. A pager click shows that page and moves the
+    other pager to match; a reload (after removing a flag) stays on the page; a new page size
+    shows the page holding the card that was first on screen; new filters go back to page 1.
+    A pager is only written when its page actually changes, since writing it also scrolls to
+    the top."""
+    per_page = _page_size(page_size)
+    trigger = ctx.triggered_id
+    if trigger == "feed-pager-top":
+        wanted = top_page
+    elif trigger == "feed-pager-bottom":
+        wanted = bottom_page
+    elif trigger == "reload-feed":
+        wanted = top_page
+    elif trigger == "page-size":
+        wanted = ((first_rank or 1) - 1) // per_page + 1
+    else:
+        wanted = 1   # first load, or the dates or min score changed
+
     items = _load_feed(start, end)
+    shown, floor = _apply_floor(items, min_score) if items else ([], 0.0)
+    n_pages = max(1, math.ceil(len(shown) / per_page))
+    page = min(max(1, wanted or 1), n_pages)
+    top_out = page if page != top_page else no_update
+    bottom_out = page if page != bottom_page else no_update
+    first = (page - 1) * per_page
+
     if not items:
-        return (html.Div("No judged papers in this range. Run `litcurator run`, or widen the dates.",
-                         className="text-muted"), "")
-    shown, floor = _apply_floor(items, min_score)
+        message = html.Div("No judged papers in this range. Run `litcurator run`, or widen the dates.",
+                           className="text-muted")
+        return message, "", n_pages, top_out, n_pages, bottom_out, 1
+    summary = _summary_text(items, shown, start, end, floor)
     if not shown:
-        return (html.Div(f"All {len(items)} papers scored below {floor:g}. Lower the min score to see them.",
-                         className="text-muted"),
-                _summary_text(items, shown, start, end, floor))
-    total = len(shown)
-    cards = [_render_card(it, rank, total) for rank, it in enumerate(shown, 1)]
-    return cards, _summary_text(items, shown, start, end, floor)
+        message = html.Div(f"All {len(items)} papers scored below {floor:g}. Lower the min score "
+                           f"to see them.", className="text-muted")
+        return message, summary, n_pages, top_out, n_pages, bottom_out, 1
+
+    on_this_page = shown[first:first + per_page]
+    cards = [_render_card(it, rank, len(shown)) for rank, it in enumerate(on_this_page, first + 1)]
+    return cards, summary, n_pages, top_out, n_pages, bottom_out, first + 1
 
 
-@callback(
-    Output({"type": "flag-collapse", "pmid": ALL}, "is_open"),
-    Input({"type": "flag-toggle", "pmid": ALL}, "n_clicks"),
-    State({"type": "flag-collapse", "pmid": ALL}, "is_open"),
+# A new page starts at the top of the page.
+app.clientside_callback(
+    """function(top, bottom) { window.scrollTo(0, 0); return window.dash_clientside.no_update; }""",
+    Output("scroll-sink", "data"),
+    Input("feed-pager-top", "active_page"),
+    Input("feed-pager-bottom", "active_page"),
     prevent_initial_call=True,
 )
-def cb_toggle_flag(_n, is_open_list):
-    triggered = ctx.triggered_id
-    if not triggered:
-        return [no_update] * len(is_open_list)
-    return [(not is_open) if sid["id"]["pmid"] == triggered["pmid"] else is_open
-            for sid, is_open in zip(ctx.states_list[0], is_open_list)]
+
+
+# Flag / edit score opens and closes its own card's panel, in the browser: one card (MATCH),
+# no server round trip. Measured on 93 cards: 490 ms as an all-cards server callback, 312 ms
+# like this, with the rest being the page-size cost that paging removes.
+app.clientside_callback(
+    """function(_n_clicks, is_open) { return !is_open; }""",
+    Output({"type": "flag-collapse", "pmid": MATCH}, "is_open"),
+    Input({"type": "flag-toggle", "pmid": MATCH}, "n_clicks"),
+    State({"type": "flag-collapse", "pmid": MATCH}, "is_open"),
+    prevent_initial_call=True,
+)
 
 
 def _parse_score(raw, doing):
@@ -387,20 +493,22 @@ def _parse_score(raw, doing):
     Output({"type": "flag-badge", "pmid": ALL}, "children"),
     Output({"type": "flag-delete", "pmid": ALL}, "style"),
     Output({"type": "flag-error", "pmid": ALL}, "children"),
-    Output({"type": "bucket-add", "pmid": ALL, "eid": ALL}, "style"),
+    Output({"type": "bucket-add", "pmid": ALL}, "style"),
     Output({"type": "bucket-out", "pmid": ALL}, "style"),
-    Input({"type": "flag-save", "pmid": ALL, "eid": ALL}, "n_clicks"),
-    Input({"type": "bucket-add", "pmid": ALL, "eid": ALL}, "n_clicks"),
+    Output({"type": "stored-flag", "pmid": ALL}, "data"),
+    Input({"type": "flag-save", "pmid": ALL}, "n_clicks"),
+    Input({"type": "bucket-add", "pmid": ALL}, "n_clicks"),
     Input({"type": "bucket-out", "pmid": ALL}, "n_clicks"),
     State({"type": "flag-score", "pmid": ALL}, "value"),
     State({"type": "flag-note", "pmid": ALL}, "value"),
+    State({"type": "evaluation-id", "pmid": ALL}, "data"),
     State("date-filter", "start_date"),
     State("date-filter", "end_date"),
     State("min-score", "value"),
     prevent_initial_call=True,
 )
 def cb_flag_panel_buttons(save_clicks, add_clicks, out_clicks, scores, notes,
-                          start, end, min_score):
+                          evaluation_ids, start, end, min_score):
     """The flag panel's three writing buttons. Save records an ordinary flag for
     error_analysis (or, for a paper already in the Levels Bucket, a newer version in the
     bucket). Add to Levels Bucket puts the score and note straight into the bucket. Take out
@@ -410,20 +518,16 @@ def cb_flag_panel_buttons(save_clicks, add_clicks, out_clicks, scores, notes,
     # every other card is left untouched. This is exactly why litcurator is on Dash and not
     # Streamlit; do NOT regress to bumping a reload counter that re-renders the whole feed.
     # Output order, for ctx.outputs_list: 0 summary, then the per-card ALL outputs
-    # 1 flag-badge, 2 flag-delete, 3 flag-error, 4 bucket-add, 5 bucket-out.
-    badge_slots, remove_slots, error_slots, add_slots, out_slots = ctx.outputs_list[1:]
-    card_slots = (badge_slots, remove_slots, error_slots, add_slots, out_slots)
-
-    def per_card(slots, pmid, value):
-        """Set value on the triggered card's slot, hold the rest."""
-        return [value if s["id"]["pmid"] == pmid else no_update for s in slots]
-
-    def hold(slots):
-        return [no_update] * len(slots)
+    # 1 flag-badge, 2 flag-delete, 3 flag-error, 4 bucket-add, 5 bucket-out, 6 stored-flag.
+    # The Save button's look is not set here: it follows the stored-flag store (see
+    # SAVE_BUTTON_LOOK_JS).
+    (badge_slots, remove_slots, error_slots, add_slots, out_slots,
+     stored_slots) = ctx.outputs_list[1:]
+    card_slots = (badge_slots, remove_slots, error_slots, add_slots, out_slots, stored_slots)
 
     triggered = ctx.triggered_id
     if not triggered or not any(n for n in save_clicks + add_clicks + out_clicks if n):
-        return (no_update, *(hold(s) for s in card_slots))
+        return (no_update, *(_hold(s) for s in card_slots))
     pmid, action = triggered["pmid"], triggered["type"]
 
     if action == "bucket-out":
@@ -443,17 +547,20 @@ def cb_flag_panel_buttons(save_clicks, add_clicks, out_clicks, scores, notes,
         user_score, error = _parse_score(raw_score, doing)
         if error:
             # Validation error: loud, persistent, inline on the triggered card only.
-            return (no_update, hold(badge_slots), hold(remove_slots),
-                    per_card(error_slots, pmid, error), hold(add_slots), hold(out_slots))
+            return (no_update, _hold(badge_slots), _hold(remove_slots),
+                    _per_card(error_slots, pmid, error), _hold(add_slots), _hold(out_slots),
+                    _hold(stored_slots))
+        evaluation_id = next(e for sid, e in zip(ctx.states_list[2], evaluation_ids)
+                             if sid["id"]["pmid"] == pmid)
         conn = db_interface.get_connection()
         try:
             if action == "bucket-add":
                 flag_id, _count = db_interface.add_to_levels_bucket(
-                    conn, triggered["eid"], user_score, note or None)
+                    conn, evaluation_id, user_score, note or None)
                 in_bucket = True
             else:
                 flag_id, in_bucket = db_interface.save_flag(
-                    conn, triggered["eid"], user_score, note or None)
+                    conn, evaluation_id, user_score, note or None)
             flag = db_interface.get_flag(conn, flag_id)
         finally:
             conn.close()
@@ -463,12 +570,41 @@ def cb_flag_panel_buttons(save_clicks, add_clicks, out_clicks, scores, notes,
     add_style, out_style = _bucket_btn_styles(in_bucket)
     return (
         _summary_text(items, shown, start, end, floor),
-        per_card(badge_slots, pmid, _flag_badge(flag, in_bucket)),
-        per_card(remove_slots, pmid, _remove_btn_style(flag is not None, in_bucket)),
-        per_card(error_slots, pmid, ""),   # clear this card's error on success
-        per_card(add_slots, pmid, add_style),
-        per_card(out_slots, pmid, out_style),
+        _per_card(badge_slots, pmid, _flag_badge(flag, in_bucket)),
+        _per_card(remove_slots, pmid, _remove_btn_style(flag is not None, in_bucket)),
+        _per_card(error_slots, pmid, ""),   # clear this card's error on success
+        _per_card(add_slots, pmid, add_style),
+        _per_card(out_slots, pmid, out_style),
+        _per_card(stored_slots, pmid, _stored_flag(flag)),
     )
+
+
+# The Save button's look, for ONE card (MATCH), in the browser: Saved while the score and note
+# boxes match the card's stored-flag store, Save otherwise. It runs when you leave a box or press
+# Enter in it (the boxes are debounced, see the panel), and after a save updates the store. This
+# is the button's only writer after the card is drawn; the card is drawn with the right look, so
+# there is no call on load.
+SAVE_BUTTON_LOOK_JS = """
+function(score, note, stored) {
+    const looks = %s;
+    if (!stored) { return looks.unsaved; }
+    const typed = parseFloat(score);
+    const sameScore = !isNaN(typed) && Math.abs(typed - stored.user_score) < 1e-9;
+    const sameNote = (note || "") === (stored.note || "");
+    return (sameScore && sameNote) ? looks.saved : looks.unsaved;
+}
+""" % json.dumps({"saved": list(_save_btn_look(saved=True)),
+                  "unsaved": list(_save_btn_look(saved=False))})
+
+app.clientside_callback(
+    SAVE_BUTTON_LOOK_JS,
+    Output({"type": "flag-save", "pmid": MATCH}, "children"),
+    Output({"type": "flag-save", "pmid": MATCH}, "color"),
+    Input({"type": "flag-score", "pmid": MATCH}, "value"),
+    Input({"type": "flag-note", "pmid": MATCH}, "value"),
+    Input({"type": "stored-flag", "pmid": MATCH}, "data"),
+    prevent_initial_call=True,
+)
 
 
 @callback(

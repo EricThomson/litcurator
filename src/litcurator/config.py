@@ -54,6 +54,17 @@ DOMAIN_THRESHOLD = 0.5          # stage 1: domain-filter score at-or-above this 
 SCORE_THRESHOLD = 0.5           # stage 2: judge score at-or-above this surfaces in the reading list
 
 # ---------------------------------------------------------------------------
+# Review app
+# ---------------------------------------------------------------------------
+# Cards per page in `litcurator review`. Every Dash callback costs time proportional to the
+# number of components on the page (measured: about 1.8 ms per card per round trip, so a
+# 93-card page took 760 ms to Save), so the feed is paged. See sandbox/docs/review_typing_profiler.md.
+# The default is the page size the app opens with; the choices are offered in a selector at the
+# top of the page (more per page is handy near the end of a batch).
+REVIEW_CARDS_PER_PAGE = 15
+REVIEW_CARDS_PER_PAGE_CHOICES = (15, 30)
+
+# ---------------------------------------------------------------------------
 # Models and prices
 # ---------------------------------------------------------------------------
 # Every model litcurator calls is chosen here. Runs are stamped with their model, so changing
