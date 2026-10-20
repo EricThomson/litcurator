@@ -258,6 +258,27 @@ def _format_existing_patterns(active, closed_patterns, examples=None, held=()):
 # LLM calls
 # ---------------------------------------------------------------------------
 
+# The most a cluster or consolidate reply may run to. A reply that reaches it is CUT OFF, and a
+# cut-off reply must never be read as an answer: on 2026-10-20 consolidate hit the old 4000
+# cap in round 2 of January's first error_analysis, the half-written candidate list was read
+# as "no candidates", and the round silently reported 0 patterns. Round 1 had used about 3,100
+# of the 4,000. A cap costs nothing unless it is used.
+REPLY_TOKEN_CAP = 16000
+
+
+class ReplyCutOff(RuntimeError):
+    """A model reply reached REPLY_TOKEN_CAP, so it is incomplete and cannot be trusted."""
+
+
+def _refuse_cut_off(step, stop_reason):
+    if stop_reason == "max_tokens":
+        raise ReplyCutOff(
+            f"{step}'s reply hit the {REPLY_TOKEN_CAP}-token cap and was cut off, so this round's "
+            f"output cannot be trusted and nothing from it was used. Rounds that finished are "
+            f"saved in this round's suggestions folder. Raise REPLY_TOKEN_CAP in "
+            f"error_analysis.py and re-run.")
+
+
 def _echo(text):
     """Print a streamed chunk to the console without ever crashing on a character the
     console encoding cannot represent (Windows cp1252 vs the model's unicode minus /
@@ -288,6 +309,7 @@ def _stream(client, model, system, user_msg, max_tokens, echo=True):
         final = stream.get_final_message()
     if echo:
         print()
+    _refuse_cut_off("cluster", final.stop_reason)
     return "".join(parts), api_cost_usd(model, final.usage)
 
 
@@ -384,7 +406,7 @@ def run_cluster_step(client, papers_block, n_flags, seed_text, model, prompt=Non
         f"## Flagged papers ({n_flags} total, strongest disagreement first)\n\n{papers_block}"
     )
     # Recall scales with flag count; give it room so it is never truncated mid-pattern.
-    return _stream(client, model, prompt, user_msg, max_tokens=6000, echo=echo)
+    return _stream(client, model, prompt, user_msg, max_tokens=REPLY_TOKEN_CAP, echo=echo)
 
 
 # ---------------------------------------------------------------------------
@@ -524,12 +546,13 @@ def run_consolidate_step(client, clusters_text, seed_text, existing_block, model
     )
     resp = client.messages.create(
         model=model,
-        max_tokens=4000,
+        max_tokens=REPLY_TOKEN_CAP,
         system=prompt,
         messages=[{"role": "user", "content": user_msg}],
         tools=[tool],
         tool_choice={"type": "tool", "name": "record_consolidation"},
     )
+    _refuse_cut_off("consolidate", resp.stop_reason)
     candidates = []
     for block in resp.content:
         if block.type == "tool_use":
