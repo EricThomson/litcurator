@@ -70,10 +70,11 @@ REVIEW_CARDS_PER_PAGE_CHOICES = (15, 30)
 # Every model litcurator calls is chosen here. Runs are stamped with their model, so changing
 # one mints new runs beside the old ones instead of overwriting them.
 #
-# NOT YET, by decision (2026-10-03): the newest models (Fable, Opus 5.5, Sonnet 5.5) run refusal
-# classifiers with a `bio` category, and every paper here is biology. False refusals have been
-# common; wait for that to settle before trying one. Fable is also twice Opus's price, with no
-# clear gain over Opus seen yet.
+# FABLE IS NOT USED, by decision (2026-10-03): its refusal filters flag biology, and every paper
+# here is biology; it is also twice Opus's price, with no clear gain over Opus seen yet. No
+# other model is ruled out. A technical limit, not a decision: Sonnet 5.5 (tested 2026-10-20)
+# and Opus 5.5 reject the forced tool call that error_analysis's consolidate step makes, so
+# neither can run consolidate without a code change; Sonnet 5 accepts it.
 
 DOMAIN_FILTER_MODEL = "claude-haiku-4-5-20251001"   # stage 1: cheap, reads every retrieved title
 JUDGE_MODEL = "claude-sonnet-4-6"                    # stage 2: scores against profile + judge prompt

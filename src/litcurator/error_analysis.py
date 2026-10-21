@@ -907,6 +907,21 @@ def _apply_queue_cap(candidates):
                           + f" [demoted: over the {MAX_ACT_NOW}-pattern queue cap]").strip()
 
 
+def _decision_counts(candidates):
+    """What consolidate decided for a round, after the queue cap: '8 queued, 3 held, 3 discarded',
+    plus merged once there are patterns to merge into. Queued and held are new patterns, on and
+    off the workbench queue; a discarded candidate is not a real pattern and records nothing."""
+    new = [c for c in candidates if c.get("choice") == "new"]
+    queued = sum(1 for c in new if c.get("priority") != "hold")
+    merged = sum(1 for c in candidates if str(c.get("choice", "")).startswith("merge"))
+    discarded = sum(1 for c in candidates if c.get("choice") == "discard")
+    parts = [f"{queued} queued", f"{len(new) - queued} held"]
+    if merged:
+        parts.append(f"{merged} merged")
+    parts.append(f"{discarded} discarded")
+    return ", ".join(parts)
+
+
 _HEAD = re.compile(
     r"^- \*\*(?P<choice>\w+)\*\*"
     r"(?: -- (?P<name>.*?))?"
@@ -1168,12 +1183,11 @@ def suggest_edits(start=None, end=None,
             candidates, cost2 = run_consolidate_step(
                 client, shown, seed_text, existing_block, consolidate_model,
                 prompt=consolidate_prompt, judge_prompt_text=judge_prompt_text)
-            if best_of > 1:
-                print(f" {len(candidates)} patterns  ${cost2:.4f}")
-
-            # BEFORE anything is written, so every report previews the real outcome. Recording
-            # calls it again; it is idempotent.
+            # BEFORE anything is written or printed, so every report and count previews the real
+            # outcome. Recording calls it again; it is idempotent.
             _apply_queue_cap(candidates)
+            if best_of > 1:
+                print(f" {_decision_counts(candidates)}  ${cost2:.4f}")
             total = cost1 + cost2
             round_cost += total
 
@@ -1415,6 +1429,8 @@ def _save_report(out_path, n, rng, total, clusters, candidates,
         f"# Pattern suggestions\n\n"
         f"Unattached flags: {n}  |  range: {rng}  |  cluster: {cluster_model}  "
         f"consolidate: {consolidate_model}  |  cost: ${total:.4f}  |  {tail}\n\n"
+        f"Candidates: {len(_CANDIDATE_START.findall(clusters))}  ->  "
+        f"{_decision_counts(candidates)}\n\n"
         + _format_artifact_stamps(stamps)
         + (f"CANDIDATES SHUFFLED (seed {shuffle_seed}). The clusters below are in the order "
            f"consolidate SAW them; their original positions in cluster's own output were "
