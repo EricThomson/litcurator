@@ -99,8 +99,8 @@ def _pattern_card(conn, p, held=False, prelude=None):
             dbc.Badge(p["status"], color="light", text_color="dark", className="ms-2",
                       style={"flex": "0 0 auto"}),
             *([dbc.Badge("PROMPT JOB", color="warning", text_color="dark", className="ms-2",
-                         title="the profile already states this and the judge scored against "
-                               "it anyway -- more profile prose will not help",
+                         title="the fix belongs in the judge prompt (how every paper is "
+                               "scored), not the profile; the fix: dropdown below changes it",
                          style={"flex": "0 0 auto"})]
               if p.get("blame") == "prompt" else []),
         ], className="d-flex align-items-center mb-2"),
@@ -119,10 +119,10 @@ def _pattern_card(conn, p, held=False, prelude=None):
         html.Small("description", className="text-muted"),
         dbc.Textarea(id={"type": "pat-desc", "pid": pid}, value=p.get("description") or "",
                      style={"height": "3rem", "fontSize": "0.8rem"}, className="mb-2"),
-        html.Small("suggested edit -- what to change in the JUDGE PROMPT (scoring "
-                   "procedure); profile prose will not fix this one"
+        html.Small("suggested edit -- a change to the JUDGE PROMPT (how every paper is "
+                   "scored); your working draft"
                    if p.get("blame") == "prompt" else
-                   "suggested edit (your working draft -- you author the profile prose)",
+                   "suggested edit -- a change to the PROFILE (what you want); your working draft",
                    className="text-muted"),
         dbc.Textarea(id={"type": "pat-sugg", "pid": pid}, value=p.get("suggested_edit") or "",
                      style={"height": "4rem", "fontSize": "0.8rem"}, className="mb-2"),

@@ -11,6 +11,12 @@ match its own session count.
                        absorbing flags rather than being recognised once and ignored
   dual_nature       -- one paper instantiating TWO tastes lands in a pattern for each
   named_disinterest -- a gap the profile already states is recorded, not dropped as covered
+  note_carry        -- the user's own words survive from the note into the pattern
+  blame_routing     -- a fix is routed to the document that can absorb it: a wrong rule in the
+                       judge prompt goes to the prompt, a topic neither document mentions goes
+                       to the profile
+  note_decides_blame -- when the note names the document, that wins, even against a scoring
+                       rule found in the other one
 
 Every case here should be an EASY call. These are unit tests: a borderline fixture produces a
 coin flip rather than a verdict, and a gate that flickers gets ignored. When one goes red, the
@@ -266,15 +272,21 @@ _DISINTEREST_LINE = (
 def named_disinterest():
     """A gap the profile ALREADY states must still be RECORDED, not silently dropped.
 
-    One session of clinical-EEG flags (intended pattern A, over-scored) against a profile that names that
-    disinterest outright. The judge scoring them high anyway is a PROMPT problem, not a hole in
-    the profile -- so the right outcome is a recorded pattern at all, and the wrong outcome is
-    consolidate reasoning "the profile already covers this" and letting the flags fall on the
-    floor. It used to expect direction `judge-not-applying`; with that value gone the check is
-    simply that the gap was RECORDED, which was always the property under test.
+    One session of clinical-EEG flags (intended pattern A, over-scored) against a profile that
+    names that disinterest outright. The wrong outcome is consolidate reasoning "the profile
+    already covers this" and letting the flags fall on the floor; the right outcome is a
+    recorded pattern, whichever document it is blamed on.
 
-    This is the one property the old test_suggest_patterns.py checked that nothing else did. It
-    cannot run on the plain fixture profile, which is why it carries its own."""
+    NO BLAME CHECK, since 2026-10-23. From its first version this scenario asserted the answer
+    "prompt" (first as the direction `judge-not-applying`, then as `blame`), on the argument that
+    a taste the profile already states cannot be fixed with more profile prose. That argument is
+    where the live consolidate step got its habit of blaming the prompt for half of every round,
+    and the case is genuinely arguable: "say it more strongly in the profile" is the fix that
+    has actually been shown to work. A test whose right answer needs an argument is a coin flip
+    wearing a verdict, so the check is gone; the unarguable blame cases live in blame_routing
+    and note_decides_blame.
+
+    It cannot run on the plain fixture profile, which is why it carries its own."""
     return GEN.ScenarioSpec(
         name="named_disinterest(profile says it, judge ignores it)",
         n_sessions=1,
@@ -288,14 +300,6 @@ def named_disinterest():
             # Compatible with the check above rather than a duplicate of it: that one requires
             # a specific allowed set, this one only forbids the inversion. Both must hold.
             "direction_not_inverted": [{"label": "A", "taste": "over"}],
-            # RESTORED 2026-09-19. This scenario's docstring has always said the judge scoring
-            # these high anyway "is a PROMPT problem, not a hole in the profile" -- but when
-            # judge-not-applying was deleted the check collapsed to "was it recorded at all",
-            # and the property the scenario is named for went ungraded for three weeks. `blame`
-            # states it again. Decidable from the profile alone, so unlike the blame_routing
-            # gate this one does not test the judge-prompt wiring; it is free coverage of the
-            # same field on an already-calibrated fixture.
-            "blame_routing": [{"label": "A", "blame": "prompt"}],
         },
     )
 
@@ -354,6 +358,68 @@ def blame_routing():
     )
 
 
+# The one rule note_decides_blame adds to its own copy of the fixture judge prompt. The same
+# shape as the review cap the shared prompt carries: a number the judge obeys, so the rule is
+# unarguably what produced the scores. It lives here and not in scenarios.JUDGE_PROMPT because
+# pool TOOLS is drawn by pool-calibration too, and there it must read as a plain gap.
+_METHODS_CAP = """
+## Methods papers
+
+A paper whose primary contribution is a new tool, instrument or recording technique, rather than
+a finding about the brain, is capped below 0.55 whatever the topic.
+""".strip()
+
+
+def note_decides_blame():
+    """When the user's note says which document to edit, that is the answer.
+
+    ONE session, TWO pools, one answer each, opposite directions, graded together so a constant
+    answer fails:
+
+      TOOLS   recording and imaging instruments, UNDER-scored. This scenario's judge prompt caps
+              methods papers below 0.55 and the judge obeys it, so the written rule plainly
+              produced the scores and the documents alone would send the fix to the PROMPT. The
+              notes say PROFILE, four ways -> blame 'profile'. This is the override under test.
+      PLANTS  plant physiology in neuroscience vocabulary, OVER-scored by word matching. Neither
+              document mentions plants, and the notes say JUDGE PROMPT, four ways -> blame
+              'prompt'. Here the note and the principle agree (the fix is topic-agnostic
+              reasoning), so this pool is the discrimination partner, not a second override.
+
+    WHY THIS IS THE RIGHT TEST. The live failure (2026-10-20) was consolidate finding a rule in
+    the judge prompt and preferring it to the user's words: six runs out of six blamed the prompt
+    for a pattern whose note said "we absolutely have to in profile". The user's decision is
+    that an explicit note wins, even when it names the document that does not hold the rule,
+    because overruling his note is the machine being clever. Both pools are easy calls under
+    that rule; nothing here asks the model to weigh degrees.
+
+    THE CONTROL (sandbox/blame_fixture/note_decides_blame_control.py) runs the same session with
+    the document clause stripped from every note. TOOLS should then flip to 'prompt', because the
+    cap is the only evidence left, and PLANTS should stay 'prompt'. That is what shows the TOOLS
+    check is reading the note and not something else about the papers."""
+    return GEN.ScenarioSpec(
+        name="note_decides_blame(the note names the document, against a rule in the other one)",
+        n_sessions=1,
+        profile=SC.PROFILE,
+        judge_prompt=SC.JUDGE_PROMPT + "\n\n" + _METHODS_CAP,
+        pools_by_intended_pattern={
+            "TOOLS": paper_pools.POOLS_BY_INTENDED_PATTERN["TOOLS"],
+            "PLANTS": paper_pools.POOLS_BY_INTENDED_PATTERN["PLANTS"],
+        },
+        streams=[GEN.Stream("TOOLS", [0], count_per_session=4),
+                 GEN.Stream("PLANTS", [0], count_per_session=4)],
+        terminal_expect={
+            "blame_routing": [{"label": "TOOLS", "blame": "profile"},
+                              {"label": "PLANTS", "blame": "prompt"}],
+            # As in blame_routing: a blame check on a missing or fused pattern reads as a
+            # routing failure when it is really a recall failure, so recall is graded first.
+            "intended_patterns_surface": ["TOOLS", "PLANTS"],
+            "stay_separate": [("TOOLS", "PLANTS")],
+            "direction_not_inverted": [{"label": "TOOLS", "taste": "under"},
+                                       {"label": "PLANTS", "taste": "over"}],
+        },
+    )
+
+
 # The CONSTRUCTORS, not built specs. A spec carries expectations computed from its own
 # session count (accumulation's deadline is n_sessions - 4), so a built spec cannot be
 # resized after the fact -- the old registry stored instances and callers mutated
@@ -367,4 +433,5 @@ SCENARIOS = {
     "named_disinterest": named_disinterest,
     "note_carry": note_carry,
     "blame_routing": blame_routing,
+    "note_decides_blame": note_decides_blame,
 }

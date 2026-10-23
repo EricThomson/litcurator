@@ -1,12 +1,12 @@
 """
 blame_stage.py -- unit tests for the blame field (free, no model).
 
-blame answers one question per pattern: is this taste already written in the profile? If it is
-and the judge scored against it anyway, more profile prose provably does not help -- measured
-2026-09-07, where 0 of 4 such patterns moved after being incorporated, while 3 of 3 patterns
-adding a NEW disinterest line landed cleanly.
+blame answers one question per pattern: which document does the user open to make the fix, the
+profile (what he wants) or the judge prompt (how every paper is scored)? The model proposes it
+from the note and the two documents, by the rule in the consolidate section, and the user flips
+it with one click in the workbench. Nothing here tests the decision; the paid gates do.
 
-The consequence that has to hold, and the only one worth a gate: a prompt-blamed pattern's
+The consequence that has to hold, and the only one worth a free gate: a prompt-blamed pattern's
 'incorporated' event stamps the JUDGE PROMPT, not a profile version that will never contain the
 fix. That untruth is already in the live log (the Annual Review pattern, 2026-09-01), and it is
 what makes "which version absorbed this pattern" unanswerable for exactly the patterns whose
@@ -121,9 +121,9 @@ def test_blame_survives_the_report_round_trip():
 
 
 def test_run_names_the_judge_prompt_it_read():
-    """blame is a claim ABOUT a judge prompt version ('it already says this and the judge
-    ignored it'), so a run that does not name the version it read has made a claim nobody can
-    check later."""
+    """blame is decided against a particular judge prompt version (does it hold the rule, does
+    it contradict the profile), so a run that does not name the version it read has made a
+    claim nobody can check later."""
     with _world() as (conn, profile_id, ordered):
         judge_id = DB.get_or_create_prompt(conn, "a judge prompt", kind="judge")
         pick_id = DB.get_or_create_prompt(conn, "a pick prompt", kind="pick")

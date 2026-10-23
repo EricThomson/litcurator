@@ -127,9 +127,9 @@ def test_named_disinterest_not_dropped():
     assert _one(spec, {"pA": Counter(A=5)}, [_pat("pA", "over")], {"A": 0}) is True
     # FAIL: dropped entirely as "the profile already covers this"
     assert _one(spec, {"pB": Counter(B=3)}, [_pat("pB")], {"B": 0}) is False
-    # FAIL: recorded, but as a profile GAP -- the wrong diagnosis, it points at the prompt
+    # FAIL: recorded, but with the direction inverted (the flags say over)
     assert _one(spec, {"pA": Counter(A=5)}, [_pat("pA", "under")], {"A": 0}) is False
-    print("named_disinterest_not_dropped: JNA/over passes; dropped or mis-directed fails")
+    print("named_disinterest_not_dropped: over passes; dropped or inverted fails")
 
 
 def test_blame_routing():

@@ -133,6 +133,130 @@ _REVIEW_STUBS = [
 POOLS_BY_INTENDED_PATTERN["E"] = GEN.IntendedPatternPool(
     "E", "under", (0.30, 0.45), papers=_REVIEW_STUBS)
 
+# TOOLS and PLANTS -- the two pools of the note_decides_blame scenario, where every note SAYS
+# which document the fix belongs in. They are the only pools whose notes do that, by design: in
+# every other pool the note is silent on the matter so that blame has to be reached from the
+# documents, and here the note is the whole point.
+#
+# TOOLS: new recording and imaging instruments, UNDER-scored. The scenario's own judge prompt
+# caps methods papers below 0.55 (behaviors._METHODS_CAP), the judge obeys it, and the user
+# wants them high -- the same shape as pool E, so the written rule would send this to the
+# prompt. The notes say PROFILE, in four different ways. That is the override the scenario
+# exists to test: on 2026-10-20 the live consolidate step blamed the prompt six times out of six
+# for a pattern whose note said "we absolutely have to in profile", because it had found a
+# judge-prompt rule it preferred to the user's words.
+#
+# The rationales describe the paper's NATURE ("a tool, not a finding"), never the cap, exactly
+# as pool E's describe "a summary of others' results" without naming its cap. Pool-calibration
+# puts TOOLS and E in one session, and two under-scored pools whose rationales both said
+# "capped by a rule" would be one fusion away from a fixture red.
+_TOOL_STUBS = [
+    GEN.SyntheticPaper(
+        "A wireless 1024-channel recording system for freely moving rats",
+        "A head-mounted system digitises and transmits 1024 channels of extracellular signal for "
+        "eight hours on one battery, validated by recording hippocampal units during open-field "
+        "foraging; no new biological finding is claimed.",
+        "Nature Methods",
+        "The primary contribution is a recording system, not a finding about the brain.",
+        "I follow new recording tools closely; they decide what experiments are possible next. "
+        "This is a taste of mine and it belongs in my profile."),
+    GEN.SyntheticPaper(
+        "A head-mounted two-photon microscope for imaging during unrestrained behavior",
+        "A 2.4 g miniaturised two-photon microscope images several hundred neurons at cellular "
+        "resolution while mice run, groom and rear, with motion artefact corrected online; the "
+        "paper characterises the instrument rather than reporting a result about the circuit.",
+        "Nature Neuroscience",
+        "The paper characterises an instrument rather than reporting a result about any circuit.",
+        "Imaging during free behavior is exactly the kind of method I want to hear about the day "
+        "it comes out. Add it to my profile, under what I follow."),
+    GEN.SyntheticPaper(
+        "Flexible high-density probes record the same neurons for over a year",
+        "Polymer probes with 512 sites per shank track single units across fourteen months of "
+        "chronic implantation in mice, with yield and stability quantified against rigid silicon "
+        "probes.",
+        "Neuron",
+        "A new recording technology; no biological question is answered.",
+        "Recording the same cells for a year changes what questions can be asked. This goes in "
+        "my profile, not into a scoring rule."),
+    GEN.SyntheticPaper(
+        "Sub-millisecond closed-loop optogenetic control from spike detection to light delivery",
+        "A field-programmable hardware pipeline detects spikes and triggers patterned "
+        "illumination within 0.4 ms, benchmarked on cerebellar recordings; the work is an "
+        "engineering specification with no new circuit finding.",
+        "Journal of Neural Engineering",
+        "An engineering specification with no new circuit finding.",
+        "Closed-loop tools are something I want to see every time one appears. Profile, please: "
+        "this is about what I like, not about how to score."),
+]
+
+# Same band as pool E, for the same reason: `_scores` places an `under` judge in [0.25, 0.55],
+# so every judge score sits at or below the 0.55 cap and "the judge obeyed the rule" is true by
+# construction.
+POOLS_BY_INTENDED_PATTERN["TOOLS"] = GEN.IntendedPatternPool(
+    "TOOLS", "under", (0.30, 0.45), papers=_TOOL_STUBS)
+
+# PLANTS: plant physiology with borrowed neuroscience vocabulary (electrical signalling, sensory
+# cues, movement), OVER-scored because the judge matched the words. Neither document mentions
+# plants, so the written rule would call this a profile gap; the notes say JUDGE PROMPT, in four
+# different ways, and they say WHY in the user's own terms: he will not add "no plants" to his
+# profile, the judge should check for a nervous system before matching. Here the note and the
+# principle agree (the fix is topic-agnostic reasoning), so this pool is the discrimination
+# partner that stops "always say profile" from passing, not a second override; the control
+# script in sandbox/blame_fixture/ makes that explicit.
+#
+# Laughably off-scope on purpose (rule 1, easy cases): no neurons, no animal, nothing a
+# neuroscience profile could be read as wanting. Far from CANCER as well, whose notes say the
+# opposite thing ("disinterest list" = profile).
+_PLANT_STUBS = [
+    GEN.SyntheticPaper(
+        "Electrical signalling coordinates rapid leaf folding in Mimosa pudica",
+        "Surface recordings show action-potential-like depolarisations propagating along the "
+        "petiole ahead of leaf folding; blocking ion channels pharmacologically abolishes the "
+        "movement, establishing the signal as necessary.",
+        "Current Biology",
+        "A sensory stimulus drives a rapid movement through a propagating electrical signal that "
+        "is shown to be necessary: a causal sensory-to-behavior pathway, which the profile asks for.",
+        "Plants have no neurons. The judge saw 'sensory', 'electrical signalling' and 'movement' "
+        "and matched on the words. That is a reasoning failure; fix it in the judge prompt. I am "
+        "not adding 'no plants' to my profile."),
+    GEN.SyntheticPaper(
+        "Calcium waves encode wound location in Arabidopsis leaves",
+        "Genetically encoded indicators reveal calcium waves that travel from a wound site to "
+        "distant leaves within minutes and scale with damage; glutamate-receptor-like channel "
+        "mutants lack the wave.",
+        "Science",
+        "A spatially coded signal propagating from a sensory event, with a channel knockout as "
+        "the causal test, in a leading journal.",
+        "This is plant physiology. Nothing here is a nervous system, however neuroscience-flavoured "
+        "the vocabulary is. The judge prompt needs to say that borrowed words are not a topic "
+        "match; that is where this fix goes."),
+    GEN.SyntheticPaper(
+        "Root tips integrate gravity and moisture cues to steer growth direction",
+        "Time-lapse imaging and microfluidic gradients show roots weighting two directional cues, "
+        "with auxin transport mutants failing to integrate them.",
+        "Nature Plants",
+        "Multisensory integration steering a directed movement, tested with mutants: it reads as "
+        "sensory decision-making.",
+        "Roots growing toward water is not behavior in my sense of the word. The judge reasoned by "
+        "analogy from the profile instead of asking whether there is a nervous system at all. A "
+        "judge-prompt problem, not a gap in my profile."),
+    GEN.SyntheticPaper(
+        "Venus flytrap counts touches to trigger digestion",
+        "Mechanical stimulation of trigger hairs elicits action potentials; two within thirty "
+        "seconds close the trap and five induce digestive enzymes, with hormone signalling "
+        "measured at each count.",
+        "Current Biology",
+        "Mechanosensory stimuli produce counted electrical events that gate a motor response, a "
+        "clean stimulus-to-response mechanism.",
+        "Charming, and not neuroscience: there is no neuron anywhere in it. Make the judge check "
+        "for a nervous system before it matches my interests. That belongs in the judge prompt."),
+]
+
+# Over-scored by 0.25-0.40: `_scores` puts the judge in [0.50, 0.85], above the surfacing line,
+# and the user well below it.
+POOLS_BY_INTENDED_PATTERN["PLANTS"] = GEN.IntendedPatternPool(
+    "PLANTS", "over", (0.25, 0.40), papers=_PLANT_STUBS)
+
 # W -- the weak-signal PROBE: structural connectomics / wiring diagrams with no functional or
 # behavioral readout. Under-scored (the profile wants circuit->behavior function, which these
 # lack) but only MILDLY preferred by the user -> a small delta, the knob the accumulation sweep

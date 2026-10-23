@@ -231,23 +231,25 @@ def _format_existing_patterns(active, closed_patterns, examples=None, held=()):
     # `#` not `##`: one level ABOVE the headings inside the profile and the judge prompt, which
     # are embedded whole in the same message. At the same level their "## Output" and
     # "## Topic interests" read as siblings of the message's own sections.
-    lines = ["# Existing pattern memory (match candidates against these by MEANING, using the id)"]
+    # LABELS, NOT INSTRUCTIONS (2026-10-23): each header says what the list is and which
+    # choice value merges into it, since that mapping is the tool's mechanics (held patterns
+    # have no value of their own). HOW to match was here too ("by MEANING") and is the authored
+    # consolidate section's job.
+    lines = ["# Existing pattern memory"]
     if active:
-        lines.append("\nOPEN patterns (still awaiting a decision) -- a candidate that is the same "
-                     "gap is merge_into_open with that id:")
+        lines.append("\nOPEN patterns (awaiting the user's decision; merge with merge_into_open):")
         for p in active:
             lines += rows(p, p["direction"])
     if held:
         # Between open and closed, which is where they sit: undecided, but not yet shown. The
         # model needs them for the same reason it needs the open ones -- so a returning gap is
         # recognised rather than minted again -- and merging into one is what promotes it.
-        lines.append("\nHELD patterns (recorded from earlier flags, NOT yet shown to the user) -- "
-                     "a candidate that is the same gap is merge_into_open with that id:")
+        lines.append("\nHELD patterns (recorded, not yet shown to the user; merge with "
+                     "merge_into_open):")
         for p in held:
             lines += rows(p, p["direction"])
     if closed_patterns:
-        lines.append("\nCLOSED patterns (already INCORPORATED or REJECTED) -- a candidate that matches "
-                     "is merge_into_closed with that id (logs the recurrence, does NOT reopen):")
+        lines.append("\nCLOSED patterns (incorporated or rejected; merge with merge_into_closed):")
         for p in closed_patterns:
             why = p["status"] + (f": {p['status_note']}" if p.get("status_note") else "")
             lines += rows(p, f"{p['direction']} | {why}")
@@ -415,7 +417,11 @@ def run_cluster_step(client, papers_block, n_flags, seed_text, model, prompt=Non
 
 _CONSOLIDATE_TOOL = {
     "name": "record_consolidation",
-    "description": "Record a choice for every REAL pattern (new / merge / recurs / discard).",
+    # LABELS ONLY, in this whole schema (2026-10-23). Every description says what a field IS
+    # or what a value DOES, never how to decide it: that belongs in the authored consolidate
+    # section. The blame description once carried a rule of its own and steered half of every
+    # round; the rest carried smaller copies of the prompt's own guidance.
+    "description": "Record the consolidation choices.",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -427,46 +433,35 @@ _CONSOLIDATE_TOOL = {
                         "choice": {"type": "string",
                             "enum": ["new", "merge_into_open", "merge_into_closed", "discard"]},
                         "existing_pattern_id": {"type": "string",
-                            "description": "id of the open pattern (merge_into_open) or closed pattern "
-                                           "(merge_into_closed) this matches; omit for new / hold"},
-                        "name": {"type": "string", "description": "short label, 3-6 words (for new)"},
+                            "description": "id of the pattern merged into (merge_into_open or "
+                                           "merge_into_closed only)"},
+                        "name": {"type": "string", "description": "the pattern's name (for new)"},
                         # From db_interface.DIRECTIONS, so the set the model is offered
                         # cannot drift from the set the database accepts.
                         "direction": {"type": "string", "enum": list(VALID_DIRECTIONS)},
-                        "description": {"type": "string", "description": "one sentence (for new)"},
+                        "description": {"type": "string",
+                            "description": "what the pattern is (for new)"},
                         "suggested_edit": {"type": "string",
-                            "description": "the directive as the researcher would author it (for new)"},
+                            "description": "the suggested edit (for new)"},
                         # SURFACING, not urgency (2026-08-26). This is the only field that
                         # decides whether the user is SHOWN a pattern; everything real is
                         # recorded either way. It replaced an act_now/defer pair where both
                         # values produced an identical screen -- nothing in the workbench read
                         # the field at all, so it was a label with no consumer.
-                        # WHICH ARTIFACT TO FIX. Decidable from what this step already
-                        # holds -- the profile is in its context and the note usually says
-                        # it outright -- so it is a lookup, not an etiology judgment, and
-                        # the user overrides it in the workbench with a click.
+                        # WHICH DOCUMENT TO FIX. Until 2026-10-23 this description carried a
+                        # rule of its own ("'my profile literally says X' means prompt"),
+                        # which is where half of every round's prompt blame came from, and
+                        # no edit to the authored prompt could reach it. The user flips the
+                        # answer in the workbench with a click.
                         "blame": {"type": "string", "enum": list(db_interface.BLAMES),
-                            "description": "'profile' if the profile does not state this "
-                                           "taste or states it too vaguely -- the fix is "
-                                           "profile prose. 'prompt' if the profile ALREADY "
-                                           "states it clearly and the judge scored against "
-                                           "it anyway -- then more profile prose will not "
-                                           "help and the scoring procedure is at fault. The "
-                                           "user's note is the best evidence: 'my profile "
-                                           "literally says X' means prompt; 'I wasn't clear "
-                                           "in my profile' means profile"},
-                        "rank": {"type": "integer",
-                            "description": "1 = the pattern whose fix would improve the judge "
-                                           "most. Rank ALL candidates against each other, no "
-                                           "ties; only the top few are shown to the user"},
+                            "description": "which document the fix belongs in"},
+                        "rank": {"type": "integer", "description": "1 = first"},
                         "priority": {"type": "string", "enum": ["act_now", "hold"],
-                            "description": "act_now shows it in the user's queue this round; "
-                                           "hold records it and keeps it out until later "
-                                           "evidence makes it actionable"},
+                            "description": "act_now: on the user's queue this round; hold: "
+                                           "recorded, off the queue"},
                         "paper_numbers": {"type": "array", "items": {"type": "integer"},
-                            "description": "supporting [N] paper numbers from the clusters"},
-                        "rationale": {"type": "string",
-                            "description": "one line: why this choice/priority"},
+                            "description": "the [N] paper numbers behind this pattern"},
+                        "rationale": {"type": "string", "description": "why this choice"},
                     },
                     # rank is REQUIRED. Left optional it would be silently omissible, and the cap
                     # would quietly degrade from "cut by the model's judgment" to "cut in
@@ -510,18 +505,15 @@ def run_consolidate_step(client, clusters_text, seed_text, existing_block, model
     from disk, the harness passes a draft. See run_cluster_step.
 
     BOTH JUDGE ARTIFACTS, added 2026-09-18, because `blame` cannot be answered from one.
-    The field asks whether a taste is already written down, and four of the five rule families
-    (journal tier, article type, level of organization, score bands) live in the judge prompt
-    as well as the profile -- some, like the tier table, ONLY there. Shown the profile alone,
-    this step cannot tell "stated nowhere" (a real profile gap) from "stated in the prompt and
-    ignored" (a prompt job), which is precisely the distinction blame exists to draw. The
-    Annual Review pattern is the worked example: its rule lives in the judge prompt, the user
-    fixed it in the judge prompt, and a consolidate step that had never read that file would
-    have found no journal rules in the profile and called it a profile gap.
+    Deciding which document a fix belongs in means knowing what each already says: whether a
+    scoring rule in the judge prompt produced the scores (the Annual Review pattern: its
+    journal tier lived only there, and a consolidate step that had never read that file called
+    it a profile gap), and whether the two documents contradict each other, which the user
+    wants named. The rule for deciding is in the authored consolidate section, not here.
 
-    `judge_prompt_text=None` omits the block, which is what the harness wants -- its scenarios
-    are synthetic and have no meaningful judge prompt, and its profile is deliberately silent
-    on every planted gap.
+    `judge_prompt_text=None` omits the block. The harness passed None until 2026-09-19, when
+    its blame checks could not be answered; its scenarios now carry a synthetic judge prompt,
+    and the blame-routing control in sandbox/blame_fixture/ withholds it on purpose.
 
     The full authored file is sent, exactly as the judge receives it."""
     prompt = _require_prompt(prompt, "consolidate")
@@ -534,7 +526,6 @@ def run_consolidate_step(client, clusters_text, seed_text, existing_block, model
     # belongs in the authored consolidate prompt, not here.
     judge_block = (
         f"# THE JUDGE PROMPT (the scoring procedure the judge follows)\n\n"
-        f"This is what is currently written, not a claim that it is right.\n\n"
         f"{judge_prompt_text}\n\n---\n\n"
     ) if judge_prompt_text else ""
     user_msg = (

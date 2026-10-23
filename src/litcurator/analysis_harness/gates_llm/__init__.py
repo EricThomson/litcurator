@@ -25,6 +25,7 @@ _SCENARIOS = {
     "accumulation": ("accumulation", 1, 1.0),
     "note-carry": ("note_carry", 1, 1.0),
     "blame-routing": ("blame_routing", 1, 1.0),
+    "note-decides-blame": ("note_decides_blame", 1, 1.0),
 }
 
 
@@ -103,6 +104,17 @@ PAID_GATES = {
         "in sandbox/blame_fixture/ is written to catch. If both are red, look at the two "
         "companion checks first: a pattern that never surfaced or that fused with its partner "
         "makes this read as a routing failure when it is a recall failure.",
+        2),
+    "note-decides-blame": (
+        4, _scenario_runner(*_SCENARIOS["note-decides-blame"]),
+        "a note that named the document was overruled. Read WHICH label went red. TOOLS red "
+        "(the user wrote 'this belongs in my profile' and the pattern was blamed on the prompt) "
+        "means consolidate reasoned from the methods cap it found in the judge prompt instead "
+        "of from the note; the BLAME rule in the consolidate section says the note wins, so "
+        "check that wording first, then the control script in sandbox/blame_fixture/. PLANTS "
+        "red (plant papers the user said to fix in the judge prompt, blamed on the profile) "
+        "means the note is not being read at all, since there the note and the default agree. "
+        "As with blame-routing, look at the surfaced and separate checks before either.",
         2),
 }
 

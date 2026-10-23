@@ -365,12 +365,11 @@ def check_terminal(expect, pp, patterns, first_surfaced, history,
             f"{' -> '.join(str(n) for n in tail)} = {grew:+d}")
 
     # --- a gap the profile ALREADY states must be RECORDED, not dropped as "covered" --------
-    # When the profile says something plainly and the judge ignores it anyway, that is a PROMPT
-    # problem rather than a hole in the profile. The machinery's job is still to surface it --
-    # and the failure being guarded is consolidate deciding the profile already covers this and
-    # letting the flags fall on the floor. The default used to allow judge-not-applying; with
-    # that value gone the fixture states which direction it expects, defaulting to every legal
-    # one (i.e. recording it AT ALL is the check).
+    # When the profile says something plainly and the judge scores against it anyway, the
+    # machinery's job is still to surface it, whichever document the fix is then blamed on. The
+    # failure being guarded is consolidate deciding the profile already covers this and letting
+    # the flags fall on the floor. The fixture states which direction it expects, defaulting to
+    # every legal one (i.e. recording it AT ALL is the check).
     for spec in expect.get("named_disinterest_not_dropped", []):
         L = spec["label"]
         allowed = tuple(spec.get("directions", DB.DIRECTIONS))
@@ -390,12 +389,16 @@ def check_terminal(expect, pp, patterns, first_surfaced, history,
     #
     # THIS IS THE SHAPE `direction` DIED FOR, so note what makes blame different. Direction asked
     # the model to infer an etiology its inputs could not support, which is why the grader had to
-    # retreat to checking the PROPOSAL. Blame asks whether a rule is stated in one of two
-    # documents -- and in this fixture we wrote both documents, so ground truth is discrete and
-    # needs no paraphrase judgment anywhere.
+    # retreat to checking the PROPOSAL. Blame is graded only where the answer is unarguable: the
+    # note names the document (note_decides_blame), a rule with a number in the judge prompt
+    # produced the scores (pool E), or neither document mentions the topic (pool D). The
+    # arguable middle -- a taste the profile states and the judge weighed too lightly -- is
+    # deliberately not graded: the consolidate section routes it to the profile, and the user
+    # flips it with a click. In this fixture we wrote both documents and every note, so ground
+    # truth is discrete and needs no paraphrase judgment anywhere.
     #
     # WHAT MAKES THE 'prompt' CASE A REAL TEST OF THE WIRING: pool E's notes never say where the
-    # rule lives, only that the paper is a commentary. Reaching 'prompt' therefore requires
+    # rule lives, only that the paper is a review. Reaching 'prompt' therefore requires
     # having read scenarios.JUDGE_PROMPT, so this check goes red if the judge prompt stops being
     # passed to consolidate -- which is precisely the configuration every paid gate ran in until
     # 2026-09-19.

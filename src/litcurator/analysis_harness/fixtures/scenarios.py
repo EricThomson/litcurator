@@ -136,12 +136,16 @@ mechanistic studies over purely descriptive ones.
 # ambiguous and every existing scenario would start grading something other than what it was
 # calibrated for. So it stays clear of: non-invasive human work (A), computational and formal
 # theory (B), invertebrate neuroethology (C), translational disease models (D), structural
-# connectomics (W), and VENUE, which unicorn U2 owns.
+# connectomics (W), recording instruments (TOOLS), plants (PLANTS), and VENUE, which unicorn
+# U2 owns.
 #
 # What it does carry is one rule with a NUMBER in it, on an axis nothing else here touches:
-# article FORMAT. A stated threshold plus a score is arithmetic, which is the only subclass of
-# blame that is decidable rather than a matter of degree -- see CLAUDE.md on what killed
-# judge-not-applying. Pool E violates that rule and nothing else does.
+# article FORMAT. A stated cap the judge obeyed is unarguable evidence that the rule, not the
+# profile, produced the score; a rule "applied too weakly" would be a matter of degree, and a
+# test whose answer needs an argument is a coin flip. Pool E violates that rule and nothing else
+# does. The note_decides_blame scenario adds a second such cap (methods papers) to its OWN copy
+# of this prompt, in behaviors._METHODS_CAP; it must not move here, or pool TOOLS would stop
+# being an override of anything in every other scenario that sees it.
 JUDGE_PROMPT = """
 You score how much this user would want to read a paper. Return a number from 0 to 1.
 

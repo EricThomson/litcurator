@@ -27,12 +27,14 @@ from litcurator.content_address import short_id
 
 LABELS = "ABCDEFGH"
 
+# LABELS ONLY (2026-10-23): each description says what a field holds, never how to judge.
+# The judging belongs in pick_prompt.md, which the user authors.
 _VERDICT_SCHEMA = {
     "type": "object",
     "properties": {
         "ranking": {
             "type": "array", "items": {"type": "string"},
-            "description": "the round labels, BEST FIRST. Every label exactly once."},
+            "description": "the round labels, best first"},
         "assessments": {
             "type": "array",
             "items": {
@@ -41,20 +43,18 @@ _VERDICT_SCHEMA = {
                     "run": {"type": "string", "description": "the round label"},
                     "worst_problem": {
                         "type": "string",
-                        "description": "the single worst thing in this round, one or two "
-                                       "sentences, naming the pattern or paper numbers "
-                                       "involved so the claim can be checked"},
+                        "description": "the worst problem in this round"},
                 },
                 "required": ["run", "worst_problem"],
                 "additionalProperties": False,
             },
-            "description": "one entry per round, the winner included"},
+            "description": "one entry per round"},
         "none_are_good": {
             "type": "boolean",
-            "description": "true if you would not want ANY of these recorded"},
+            "description": "true if no round should be recorded"},
         "why_the_winner": {
             "type": "string",
-            "description": "one short paragraph: what the top-ranked round does better"},
+            "description": "why the top-ranked round won"},
     },
     "required": ["ranking", "assessments", "none_are_good", "why_the_winner"],
     "additionalProperties": False,
@@ -136,8 +136,7 @@ def _build_message(profile_text, papers_block, memory_block, rounds, consolidate
         + consolidate_prompt,
         "# The user's current profile\n\n" + profile_text,
         f"# The flagged papers all {len(rounds)} rounds were built from\n\n"
-        f"The [N] numbers are the ones each round cites. The consolidate step never saw "
-        f"these; you do.\n\n" + papers_block,
+        f"The [N] numbers are the ones each round cites.\n\n" + papers_block,
     ]
     if memory_block:
         parts.append("# The pattern memory every round was shown\n\n" + memory_block)
