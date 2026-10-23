@@ -20,12 +20,13 @@ editor shared with the analysis workbench (artifact_editor.py). Never overwritte
 outgoing active, writes the new one and registers it in the DB (parent_id = outgoing). The
 judge prompt tab also runs the judge harness on the draft.
 
-Bottom: chat. A Sonnet partner for the profile, a bounded Opus critic for the judge prompt;
-the committed text and the live draft are both loaded as context.
-
 The human authors every word of the profile; the machinery only surfaces and
-remembers. Typical flow: Discuss / edit a pattern -> author the profile edit on the
+remembers. Typical flow: edit a pattern -> author the profile edit on the
 right -> Set as active -> Incorporate the pattern (it stamps that version).
+
+There was a chat panel at the bottom (a Sonnet partner for the profile, an Opus critic for the
+prompt). Removed 2026-10-23: unused, and its two system prompts were instructions living in
+code. A conversation about an edit happens with Claude Code, which can see the flags too.
 
 Run:
     litcurator judge_workbench
@@ -33,7 +34,6 @@ Run:
 """
 
 
-import anthropic
 import dash_bootstrap_components as dbc
 from dash import (ALL, Dash, Input, Output, State, callback, ctx, dcc, html,
                   no_update)
@@ -42,17 +42,7 @@ from dash_resizable_panels import Panel, PanelGroup, PanelResizeHandle
 from litcurator import db_interface, profile_interface, prompt_interface
 from litcurator.apps import artifact_editor
 from litcurator.apps.artifact_editor import aid
-from litcurator.config import (LEVELS_BUCKET_DESCRIPTION, WORKBENCH_PROFILE_CHAT_MODEL,
-                               WORKBENCH_PROMPT_CRITIC_MODEL)
-
-# The chat is the one place the two artifacts genuinely differ, so it is the one place
-# with an explicit branch. Editing taste prose and critiquing a scoring procedure are
-# different jobs with different models -- a doctrine split predating the merge, carried
-# across unchanged rather than harmonised into a single bland assistant.
-_CHAT_CONFIG = {
-    "profile": {"model": WORKBENCH_PROFILE_CHAT_MODEL, "max_tokens": 1200},
-    "prompt": {"model": WORKBENCH_PROMPT_CRITIC_MODEL, "max_tokens": 1500},
-}
+from litcurator.config import LEVELS_BUCKET_DESCRIPTION
 
 DIRECTIONS = list(db_interface.DIRECTIONS)
 # Badge colours, UI only. Asserted so a new direction cannot render as an unexplained grey.
@@ -134,8 +124,6 @@ def _pattern_card(conn, p, held=False, prelude=None):
                   placeholder="reason (recorded on Reject)", className="mb-2"),
         html.Div([
             dbc.Button("Save edits", id={"type": "pat-save", "pid": pid},
-                       color="primary", outline=True, size="sm", className="me-1"),
-            dbc.Button("Discuss", id={"type": "pat-discuss", "pid": pid},
                        color="primary", outline=True, size="sm", className="me-1"),
             *([dbc.Button("Promote", id={"type": "pat-promote", "pid": pid},
                           color="success", size="sm", className="me-1")]
@@ -269,92 +257,6 @@ def _state_value(states, pid):
 
 
 # ---------------------------------------------------------------------------
-# Chat
-# ---------------------------------------------------------------------------
-
-def _prompt_critic_system(committed, draft):
-    return (
-        "You are a sharp prompt-engineering critic helping a researcher refine the JUDGE PROMPT "
-        "for a personal paper-curation system. The judge prompt is the scoring PROCEDURE -- how an "
-        "LLM judge scores a paper's expected interest for this user, given the user's SEPARATE "
-        "profile. It also holds STABLE user calibrations (e.g. journal venue weighting) that "
-        "deliberately do NOT live in the evolving profile.\n\n"
-        "You are given TWO versions so you can reason about the DELTA:\n"
-        "- COMMITTED PROMPT: the stable, on-disk judge prompt (the 'before').\n"
-        "- CURRENT DRAFT: what the researcher is editing right now (the 'after'). It may differ "
-        "from the committed prompt, or be identical -- they are mid-edit, so do not assume a draft "
-        "line is settled just because it is there.\n\n"
-        "Help them THINK and CRITIQUE; do NOT write the prompt for them. Be honest and specific, "
-        "and push back hard when an edit risks:\n"
-        "- BLOAT / vocabulary drift: this system's original failure was an LLM endlessly elaborating "
-        "prose. Fewer, sharper instructions beat more. If a line restates something already present, "
-        "say so and quote it.\n"
-        "- OVER-CORRECTION: a fix for one failure slice (e.g. the judge over-scoring molecular-"
-        "systems borderline papers) that would suppress things the user actually wants (synaptic "
-        "plasticity, molecular sensors/tools for systems work). Name the collateral.\n"
-        "- PROFILE-vs-PROMPT confusion: the prompt is HOW to score + stable calibrations; the "
-        "evolving WHAT (topic taste) belongs in the profile. Flag anything that should live in the "
-        "profile instead.\n"
-        "- STRUCTURAL breakage: the prompt must keep saying what the judge reports for each paper "
-        "(estimated_score, surface_decision, curation_rationale, possible_mismatch). The JSON "
-        "format itself is enforced in code, so the prompt needs no JSON syntax.\n\n"
-        "Only draft prompt prose if explicitly asked, and keep it surgical and in their voice. Keep "
-        "answers short unless asked to expand. ASCII only.\n\n"
-        "----- COMMITTED PROMPT (before) -----\n"
-        f"{committed}\n"
-        "----- END COMMITTED PROMPT -----\n\n"
-        "----- CURRENT DRAFT (after, what they are editing) -----\n"
-        f"{draft}\n"
-        "----- END CURRENT DRAFT -----"
-    )
-
-
-def _chat_system(committed, draft):
-    return (
-        "You are a sharp, concise thinking partner helping a researcher refine their ACTIVE PROFILE "
-        "for a personal paper-curation system. The profile is a prose statement of the researcher's "
-        "reading taste; an LLM judge scores papers against it.\n\n"
-        "You are given TWO versions so you can reason about the DELTA between them:\n"
-        "- COMMITTED PROFILE: the stable, on-disk profile (the 'before').\n"
-        "- CURRENT DRAFT: what the researcher is editing right now (the 'after'). It may differ from "
-        "the committed profile, or be identical.\n\n"
-        "This matters: when the researcher asks 'is this already covered?' or 'what do you think of "
-        "adding X', do NOT assume X is handled just because it appears in the DRAFT -- they are "
-        "mid-edit and may have just typed it. Compare the draft against the committed profile and tell "
-        "them whether the change is genuinely NEW, REDUNDANT with existing committed language (quote "
-        "it), or IN TENSION with something already there.\n\n"
-        "Your job is to help them THINK, not to write the profile for them. Be honest and specific. "
-        "Push back hard when a proposed edit would bloat the profile or merely restate something "
-        "already present -- this profile has a history of vocabulary drift from over-editing; fewer, "
-        "sharper words beat more. Only draft profile prose if explicitly asked, and keep it in their "
-        "voice. Keep answers short unless asked to expand. ASCII only.\n\n"
-        "----- COMMITTED PROFILE (before) -----\n"
-        f"{committed}\n"
-        "----- END COMMITTED PROFILE -----\n\n"
-        "----- CURRENT DRAFT (after, what they are editing) -----\n"
-        f"{draft}\n"
-        "----- END CURRENT DRAFT -----"
-    )
-
-
-def _render_thread(history):
-    out = []
-    for m in history:
-        if m["role"] == "user":
-            out.append(html.Div(
-                dbc.Card(dbc.CardBody(dcc.Markdown(m["content"]), className="py-2 px-3"),
-                         color="light", className="mb-2"),
-                style={"marginLeft": "12%"}))
-        else:
-            out.append(html.Div(
-                dbc.Card(dbc.CardBody(dcc.Markdown(m["content"]), className="py-2 px-3"),
-                         className="mb-2",
-                         style={"backgroundColor": "#f3f0fa", "border": "1px solid #e3dcf2"}),
-                style={"marginRight": "12%"}))
-    return out
-
-
-# ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
 
@@ -397,7 +299,6 @@ app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP],
 app.title = "Judge Workbench"
 
 app.layout = dbc.Container([
-    dcc.Store(id="chat-history", data=[], storage_type="session"),
     dbc.Row([
         dbc.Col(html.H4("Judge Workbench", className="mb-0"), width="auto"),
         dbc.Col(dbc.Button("Refresh patterns", id="refresh-patterns-btn",
@@ -434,26 +335,6 @@ app.layout = dbc.Container([
               for a in ARTIFACTS],
         ]),
     ]),
-
-    html.Hr(className="my-2"),
-
-    html.Div([
-        html.Div([
-            html.Span("Chat", className="fw-semibold me-2"),
-            html.Small(id="chat-context-note", className="text-muted"),
-            dbc.Button("Clear", id="chat-clear-btn", color="secondary",
-                       outline=True, size="sm", className="float-end"),
-        ], className="mb-2"),
-        dcc.Loading(html.Div(id="chat-thread",
-                             style={"height": "20vh", "overflowY": "auto",
-                                    "padding": "4px 8px"})),
-        dbc.InputGroup([
-            dbc.Textarea(id="chat-input",
-                         placeholder='Paste a suggestion and ask, e.g. "isn\'t this already in my profile?"',
-                         style={"minHeight": "60px"}),
-            dbc.Button("Send", id="chat-send-btn", color="primary"),
-        ], className="mt-1"),
-    ], style={"padding": "0 14px"}),
 ], fluid=True)
 
 
@@ -621,95 +502,6 @@ def cb_run_tests(_n, draft):
     path = judge_harness.write_report(
         report + "\n" + judge_harness.format_rationales(results))
     return f"{report}\n\nsaved to {path}"
-
-
-# ---------------------------------------------------------------------------
-# Callbacks: chat
-# ---------------------------------------------------------------------------
-
-@callback(
-    Output("chat-input", "value", allow_duplicate=True),
-    Input({"type": "pat-discuss", "pid": ALL}, "n_clicks"),
-    State({"type": "pat-sugg", "pid": ALL}, "value"),
-    State({"type": "pat-name", "pid": ALL}, "value"),
-    prevent_initial_call=True,
-)
-def cb_discuss(clicks, _suggs, _names):
-    trig = ctx.triggered_id
-    if not trig or not any(c for c in (clicks or []) if c):
-        return no_update
-    pid = trig["pid"]
-    name = _state_value(ctx.states_list[1], pid) or ""
-    sugg = _state_value(ctx.states_list[0], pid) or ""
-    return (
-        "Is this suggestion already covered by my current profile, or is it a genuine gap? "
-        "Quote the overlapping profile text if it is redundant.\n\n"
-        f"Suggestion ({name}):\n{sugg}"
-    )
-
-
-@callback(
-    Output("chat-history", "data"),
-    Output("chat-input", "value"),
-    Input("chat-send-btn", "n_clicks"),
-    State("chat-input", "value"),
-    State("chat-history", "data"),
-    State("artifact-tabs", "value"),
-    State(aid("editor", ALL), "value"),
-    prevent_initial_call=True,
-)
-def cb_chat_send(_n, user_text, history, artifact, drafts):
-    """One chat, whose context follows the selected artifact: the profile gets a thinking
-    partner, the judge prompt gets a bounded critic (see _CHAT_CONFIG). `drafts` arrives as one
-    entry per mounted editor, so the live draft is picked by id rather than by position."""
-    if not (user_text and user_text.strip()):
-        return no_update, no_update
-    draft = next((s["value"] for s in ctx.states_list[3]
-                  if s["id"]["artifact"] == artifact), "")
-    history = list(history or [])
-    history.append({"role": "user", "content": user_text.strip()})
-    client = anthropic.Anthropic()
-    cfg = _CHAT_CONFIG[artifact]
-    system = (_prompt_critic_system if artifact == "prompt" else _chat_system)(
-        _interface(artifact).read_active_or_empty(), draft or "")
-    resp = client.messages.create(
-        model=cfg["model"],
-        max_tokens=cfg["max_tokens"],
-        system=system,
-        messages=[{"role": m["role"], "content": m["content"]} for m in history],
-    )
-    history.append({"role": "assistant", "content": resp.content[0].text})
-    return history, ""
-
-
-@callback(
-    Output("chat-context-note", "children"),
-    Input("artifact-tabs", "value"),
-)
-def cb_chat_context_note(artifact):
-    """Says which artifact the chat is reasoning about and with which model. Not cosmetic: the
-    two critics give different KINDS of advice, and asking the prompt critic about topic taste
-    (or the profile partner about scoring mechanics) wastes a turn."""
-    cfg = _CHAT_CONFIG[artifact]
-    return (f"(context: committed {_ARTIFACT_LABEL[artifact]} + live draft | "
-            f"model: {cfg['model']})")
-
-
-@callback(
-    Output("chat-history", "data", allow_duplicate=True),
-    Input("chat-clear-btn", "n_clicks"),
-    prevent_initial_call=True,
-)
-def cb_chat_clear(_n):
-    return []
-
-
-@callback(
-    Output("chat-thread", "children"),
-    Input("chat-history", "data"),
-)
-def cb_render_thread(history):
-    return _render_thread(history or [])
 
 
 # ---------------------------------------------------------------------------

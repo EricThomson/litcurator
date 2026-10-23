@@ -69,7 +69,7 @@ def main():
         # walk the component tree collecting dict ids
         ids = _collect_ids(children)
         for t in ["pat-name", "pat-dir", "pat-desc", "pat-sugg", "pat-reject-note",
-                  "pat-save", "pat-discuss", "pat-hold", "pat-incorporate", "pat-reject",
+                  "pat-save", "pat-hold", "pat-incorporate", "pat-reject",
                   "pat-card"]:
             assert any(i.get("type") == t and i.get("pid") == pat for i in ids), f"missing {t}"
         print(f"pattern card OK: {len([i for i in ids if i.get('pid')==pat])} pattern-matched ids for pid {pat[:8]}")

@@ -89,11 +89,6 @@ CONSOLIDATE_MODEL = "claude-sonnet-4-6"
 # $0.07 more per round than Sonnet.
 PICKER_MODEL = "claude-opus-5"
 
-# The judge workbench chat: a Sonnet thinking partner for the profile (Opus pads prose and adds
-# vocabulary the user did not write), a bounded Opus critic for the judge prompt.
-WORKBENCH_PROFILE_CHAT_MODEL = "claude-sonnet-4-6"
-WORKBENCH_PROMPT_CRITIC_MODEL = "claude-opus-4-8"
-
 # (dollars per million input tokens, dollars per million output tokens): Anthropic's list
 # prices, checked 2026-10-03. Every cost litcurator records comes from this table.
 MODEL_PRICES_PER_MILLION_TOKENS = {
@@ -108,8 +103,7 @@ MODEL_PRICES_PER_MILLION_TOKENS = {
 }
 
 _unpriced_models = {DOMAIN_FILTER_MODEL, JUDGE_MODEL, CLUSTER_MODEL, CONSOLIDATE_MODEL,
-                    PICKER_MODEL, WORKBENCH_PROFILE_CHAT_MODEL,
-                    WORKBENCH_PROMPT_CRITIC_MODEL} - MODEL_PRICES_PER_MILLION_TOKENS.keys()
+                    PICKER_MODEL} - MODEL_PRICES_PER_MILLION_TOKENS.keys()
 if _unpriced_models:
     raise ValueError(f"{sorted(_unpriced_models)} missing from MODEL_PRICES_PER_MILLION_TOKENS; "
                      "add the price, or every cost recorded for that model is wrong")
